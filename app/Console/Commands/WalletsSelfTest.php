@@ -9,6 +9,7 @@ use App\Models\WalletTransaction;
 use App\Models\products;
 use App\Services\DamagedStockService;
 use App\Services\Wallets\WalletLedgerService;
+use App\Support\Digits;
 use App\Support\Money;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
@@ -41,6 +42,10 @@ class WalletsSelfTest extends Command
             $this->error('Create at least one user first.');
 
             return self::FAILURE;
+        }
+
+        if (config('app.timezone') === 'UTC') {
+            $this->warn('APP_TIMEZONE is UTC. Daily and monthly limits reset at UTC midnight. Set APP_TIMEZONE=Africa/Cairo in .env.');
         }
 
         DB::beginTransaction();
@@ -136,6 +141,41 @@ class WalletsSelfTest extends Command
         $this->check('full collection closes the debt', $deferred->fresh()->receivable === '0.00' && $deferred->fresh()->settled_at !== null);
         $this->check('a collected transaction cannot be reversed', $this->blocked(fn () => $ledger->reverse($deferred, 'x', $user)));
 
+        // 6b. replay protection
+        $this->check('a replayed key with a different amount is refused', $this->blocked(fn () => $ledger->record($base + ['type' => 'send', 'amount' => '999', 'idempotency_key' => 'selftest-send-0000001'], $user)));
+
+        // 6c. commission is profit: it never touches the wallet balance and never changes working capital
+        $capital = fn () => $ledger->workingCapital();
+        $profit = fn () => $ledger->profitAvailable();
+
+        [$capital0, $profit0, $balance0] = [$capital(), $profit(), Money::cents($balance())];
+        $ledger->record($base + ['type' => 'send', 'amount' => '100', 'commission' => '3', 'fee' => '1', 'idempotency_key' => 'selftest-send-0000002'], $user);
+        $this->check('send: wallet drops by amount + fee only (commission is not in the wallet)', Money::cents($balance()) === $balance0 - 10100, $balance());
+        $this->check('send: profit grows by commission - fee (+2.00)', $profit() - $profit0 === 200, (string) ($profit() - $profit0));
+        $this->check('send: working capital does not change', $capital() === $capital0);
+
+        [$capital0, $profit0, $balance0] = [$capital(), $profit(), Money::cents($balance())];
+        $ledger->record($base + ['type' => 'receive', 'amount' => '200', 'commission' => '4'], $user);
+        $this->check('receive: wallet gets the full amount, profit grows by the commission (+4.00)', Money::cents($balance()) === $balance0 + 20000 && $profit() - $profit0 === 400);
+        $this->check('receive: working capital does not change', $capital() === $capital0);
+
+        $capital0 = $capital();
+        $debt = $ledger->record($base + ['type' => 'send', 'amount' => '50', 'commission' => '1', 'payment_method' => 'deferred', 'customer_name' => 'عميل'], $user);
+        $this->check('deferred send: working capital does not change', $capital() === $capital0);
+        $ledger->settle($debt, null, $user);
+        $this->check('collecting the debt: working capital does not change', $capital() === $capital0);
+
+        // 6d. profit withdrawal
+        $this->check('withdrawing more than the available profit is blocked', $this->blocked(fn () => $ledger->withdrawProfit('99999999', $wallet->id, 'selftest', $user)));
+        if ($profit() >= 100) {
+            [$capital0, $profit0, $balance0] = [$capital(), $profit(), Money::cents($balance())];
+            $ledger->withdrawProfit('1.00', $wallet->id, 'selftest', $user);
+            $this->check('profit withdrawal lowers the available profit and the wallet by 1.00', $profit() === $profit0 - 100 && Money::cents($balance()) === $balance0 - 100);
+            $this->check('profit withdrawal does not change working capital', $capital() === $capital0);
+        } else {
+            $this->warn('  skipped: not enough available profit to test a withdrawal');
+        }
+
         // 7. balance can never go negative
         $left = Money::cents($balance());
         $ledger->adjust($wallet, Money::decimal(-($left - 5000)), 'selftest', $user);
@@ -145,6 +185,17 @@ class WalletsSelfTest extends Command
         // 8. immutability
         $this->check('ledger rows cannot be edited', $this->throws(LogicException::class, fn () => $send->fresh()->forceFill(['amount' => '1.00'])->save()));
         $this->check('ledger rows cannot be deleted', $this->throws(LogicException::class, fn () => $send->fresh()->delete()));
+
+        // 8b. phone numbers: any real phone number is accepted, junk is refused
+        $this->check('a pasted number with invisible marks and separators is cleaned', Digits::identifier("\u{202A}+20 101-234 5678\u{202C}") === '+201012345678', Digits::identifier("\u{202A}+20 101-234 5678\u{202C}"));
+        foreach (['0402345678', '+201012345678', '00201012345678', '01112345678', 'name@instapay'] as $number) {
+            $accepted = ! $this->blocked(fn () => $ledger->record($base + ['type' => 'receive', 'amount' => '1', 'counterparty' => $number], $user));
+            $this->check("number {$number} is accepted", $accepted);
+        }
+        foreach (['12345', 'abc123', '+', '1234567890123456', '010abc4567'] as $junk) {
+            $this->check("number {$junk} is refused", $this->blocked(fn () => $ledger->record($base + ['type' => 'receive', 'amount' => '1', 'counterparty' => $junk], $user)));
+        }
+        $this->check('sending to the wallet\'s own number is refused', $this->blocked(fn () => $ledger->record($base + ['type' => 'receive', 'amount' => '1', 'counterparty' => $wallet->identifier], $user)));
 
         // 9. the books balance
         $ledgerBalance = Money::cents($wallet->opening_balance) + Money::cents(WalletTransaction::query()->where('wallet_id', $wallet->id)->sum('wallet_delta'));

@@ -16,8 +16,10 @@ class WalletCashierController extends Controller
     {
         $wallets = Wallet::query()->where('is_active', true)->orderBy('name')->orderBy('id')->get();
 
+        $usage = $ledger->usageForWallets($wallets); // one query for every wallet
+
         // Everything the browser needs for the live limit preview, in cents.
-        $walletData = $wallets->map(function (Wallet $wallet) use ($ledger): array {
+        $walletData = $wallets->map(function (Wallet $wallet) use ($usage): array {
             return [
                 'id' => $wallet->id,
                 'name' => $wallet->label(),
@@ -31,7 +33,7 @@ class WalletCashierController extends Controller
                     'received_day' => $wallet->limitCents('daily_receive_limit'),
                     'received_month' => $wallet->limitCents('monthly_receive_limit'),
                 ],
-                'usage' => $ledger->usageFor($wallet),
+                'usage' => $usage[$wallet->id],
                 'warn' => (int) $wallet->warn_at_percent,
                 'commission' => [
                     'percent' => (float) $wallet->default_commission_percent,
@@ -63,7 +65,7 @@ class WalletCashierController extends Controller
     }
 
     /** Every deferred transfer that is still not fully collected, grouped by customer. */
-    public function debts()
+    public function debts(WalletLedgerService $ledger)
     {
         $rows = WalletTransaction::query()
             ->with('wallet:id,name,provider,identifier')
@@ -71,12 +73,14 @@ class WalletCashierController extends Controller
             ->where('payment_method', 'deferred')
             ->where('receivable', '>', 0)
             ->orderBy('occurred_at')
+            ->limit(500)
             ->get();
 
         $groups = $rows->groupBy(fn (WalletTransaction $transaction) => $transaction->customer_name ?: 'بدون اسم');
-        $total = Money::cents($rows->sum('receivable'));
+        $total = $ledger->receivablesTotal();
+        $truncated = $rows->count() >= 500; // the page shows the oldest 500 lines; the total is always complete
 
-        return view('wallet_cashier.debts', compact('groups', 'total'));
+        return view('wallet_cashier.debts', compact('groups', 'total', 'truncated'));
     }
 
     public function store(StoreWalletTransactionRequest $request, WalletLedgerService $ledger): RedirectResponse

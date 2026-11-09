@@ -10,6 +10,8 @@ use App\Http\Middleware\EnsureSuperadmin;
 use Illuminate\Auth\AuthenticationException;
 use Illuminate\Http\Request;
 use Illuminate\Validation\ValidationException;
+use Laravel\Sanctum\Http\Middleware\CheckAbilities;
+use Laravel\Sanctum\Http\Middleware\CheckForAnyAbility;
 use Symfony\Component\HttpKernel\Exception\HttpExceptionInterface;
 
 return Application::configure(basePath: dirname(__DIR__))
@@ -29,12 +31,25 @@ return Application::configure(basePath: dirname(__DIR__))
             'role' => EnsureUserHasRole::class,
             'page.access' => EnsurePagePermission::class,
             'superadmin' => EnsureSuperadmin::class,
+                'abilities' => CheckAbilities::class,
+                'ability' => CheckForAnyAbility::class,
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
         $exceptions->render(function (Throwable $exception, Request $request) {
-            if ($exception instanceof ValidationException
-                || ($exception instanceof AuthenticationException && !$request->expectsJson())) {
+            if ($exception instanceof ValidationException) {
+                if ($request->is('api/*')) {
+                    return response()->json([
+                        'message' => 'The given data was invalid.',
+                        'error_code' => 'VALIDATION_FAILED',
+                        'errors' => $exception->errors(),
+                    ], 422);
+                }
+
+                return null;
+            }
+
+            if ($exception instanceof AuthenticationException && !$request->expectsJson()) {
                 return null;
             }
 
@@ -55,9 +70,21 @@ return Application::configure(basePath: dirname(__DIR__))
             $message = $messages[$status] ?? 'The request could not be completed.';
 
             if ($request->expectsJson() || $request->ajax() || $request->is('api/*')) {
+                $errorCodes = [
+                    400 => 'BAD_REQUEST',
+                    401 => 'AUTHENTICATION_REQUIRED',
+                    403 => 'PERMISSION_DENIED',
+                    404 => 'RESOURCE_NOT_FOUND',
+                    409 => 'CONFLICT',
+                    429 => 'RATE_LIMITED',
+                    500 => 'INTERNAL_SERVER_ERROR',
+                    503 => 'SERVICE_UNAVAILABLE',
+                ];
+
                 return response()->json([
                     'error' => true,
                     'message' => $message,
+                    'error_code' => $errorCodes[$status] ?? 'REQUEST_FAILED',
                     'status' => $status,
                 ], $status);
             }

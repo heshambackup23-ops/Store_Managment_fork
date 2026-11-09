@@ -1,1 +1,0 @@
-<?php /**PATH C:\Users\hussin\Desktop\Store_Managment\resources\views\profile\create.blade.php ENDPATH**/ ?>

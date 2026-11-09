@@ -16,20 +16,25 @@ class WalletController extends Controller
     public function index(WalletLedgerService $ledger)
     {
         $wallets = Wallet::query()->orderByDesc('is_active')->orderBy('name')->orderBy('id')->get();
+        $usage = $ledger->usageForWallets($wallets); // one query for every wallet
 
-        $cards = $wallets->map(function (Wallet $wallet) use ($ledger): array {
-            $usage = $ledger->usageFor($wallet);
-
-            return ['wallet' => $wallet, 'rows' => $ledger->limitRows($wallet, $usage)];
-        });
+        $cards = $wallets->map(fn (Wallet $wallet): array => [
+            'wallet' => $wallet,
+            'rows' => $ledger->limitRows($wallet, $usage[$wallet->id]),
+        ]);
 
         $summary = [
-            'wallets_total' => (int) $wallets->where('is_active', true)->sum(fn (Wallet $wallet) => Money::cents($wallet->balance)),
+            'wallets_total' => (int) $wallets->sum(fn (Wallet $wallet) => Money::cents($wallet->balance)),
             'cash' => $ledger->cashInDrawer(),
             'profit_today' => $ledger->profitSince(now()->startOfDay()),
+            'profit_available' => $ledger->profitAvailable(),
+            'capital' => $ledger->workingCapital(),
         ];
 
-        return view('wallets.index', compact('cards', 'summary'));
+        // Daily and monthly limits reset at local midnight; UTC would shift that by hours.
+        $timezoneWarning = config('app.timezone') === 'UTC';
+
+        return view('wallets.index', compact('cards', 'summary', 'timezoneWarning'));
     }
 
     public function create()

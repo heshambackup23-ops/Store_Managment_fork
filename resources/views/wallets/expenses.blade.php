@@ -88,6 +88,45 @@
         </div>
     @endcan
 
+    <div class="row g-3 mb-3">
+        <div class="col-lg-4">
+            <div class="card shadow-sm h-100"><div class="card-body">
+                <div class="text-body-secondary small">الأرباح المتاحة للسحب</div>
+                <div class="fs-3 fw-bold {{ $profitAvailable < 0 ? 'text-danger' : 'text-success' }}">{{ $m($profitAvailable) }} <small class="fs-6">ج.م</small></div>
+                <div class="small text-body-secondary">= العمولات - رسوم المزود - المصروفات - ما سُحب من الأرباح</div>
+            </div></div>
+        </div>
+        @can('page.wallets.manage')
+            <div class="col-lg-8">
+                <form method="POST" action="{{ route('wallets.profit.store') }}" class="card shadow-sm h-100" autocomplete="off">
+                    @csrf
+                    <div class="card-header fw-semibold">سحب أرباح</div>
+                    <div class="card-body row g-2">
+                        <div class="col-md-5">
+                            <label for="profit_source" class="form-label small mb-1">اسحب من</label>
+                            <select id="profit_source" name="source" class="form-select" required>
+                                <option value="cash">الدرج (نقدي)</option>
+                                @foreach ($walletOptions as $option)
+                                    <option value="wallet:{{ $option->id }}">{{ $option->label() }} (#{{ $option->id }}) - الرصيد {{ $m(\App\Support\Money::cents($option->balance)) }}</option>
+                                @endforeach
+                            </select>
+                        </div>
+                        <div class="col-md-3">
+                            <label for="profit_amount" class="form-label small mb-1">المبلغ (ج.م)</label>
+                            <input type="text" id="profit_amount" name="amount" dir="ltr" inputmode="decimal" class="form-control" required>
+                        </div>
+                        <div class="col-md-4">
+                            <label for="profit_note" class="form-label small mb-1">ملاحظة</label>
+                            <input type="text" id="profit_note" name="note" class="form-control" maxlength="500">
+                        </div>
+                        <div class="col-12 small text-body-secondary">لا يمكن سحب أكثر من الأرباح المتاحة. السحب لا يمس رأس المال التشغيلي.</div>
+                    </div>
+                    <div class="card-footer"><button class="btn btn-success">تسجيل سحب الأرباح</button></div>
+                </form>
+            </div>
+        @endcan
+    </div>
+
     <form method="GET" action="{{ route('wallets.expenses.index') }}" class="card shadow-sm mb-3">
         <div class="card-body row g-2 align-items-end">
             <div class="col-md-4"><label for="from" class="form-label small mb-1">من</label><input type="date" id="from" name="from" class="form-control" value="{{ $from }}"></div>
@@ -142,7 +181,7 @@
                     @forelse ($adjustments as $row)
                         <tr>
                             <td class="text-nowrap" dir="ltr">{{ $row->occurred_at->format('Y-m-d H:i') }}</td>
-                            <td>{{ $cashKinds[$row->kind] ?? $row->kind }}</td>
+                            <td>{{ $kindLabels[$row->kind] ?? $row->kind }}</td>
                             <td class="text-nowrap fw-semibold {{ \App\Support\Money::cents($row->amount) < 0 ? 'text-danger' : 'text-success' }}">{{ $m(\App\Support\Money::cents($row->amount)) }}</td>
                             <td>{{ $row->note }}</td><td class="small">{{ $row->created_by_name }}</td>
                         </tr>

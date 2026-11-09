@@ -6,6 +6,7 @@ use App\Models\Wallet;
 use App\Models\WalletTransaction;
 use App\Support\Money;
 use Illuminate\Console\Command;
+use Illuminate\Support\Facades\Log;
 
 class ReconcileWallets extends Command
 {
@@ -31,6 +32,7 @@ class ReconcileWallets extends Command
         $this->table(['ID', 'Wallet', 'Stored balance', 'Ledger balance', 'Result'], $rows);
 
         if ($bad > 0) {
+            Log::critical("wallets:reconcile found {$bad} wallet(s) whose balance differs from the ledger.");
             $this->error("{$bad} wallet(s) do not match their ledger. Do not trade until this is investigated.");
 
             return self::FAILURE;

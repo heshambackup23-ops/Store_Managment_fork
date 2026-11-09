@@ -24,6 +24,7 @@ final class AuditPresenter
         'expense.created' => 'تسجيل مصروف',
         'expense.voided' => 'إلغاء مصروف',
         'cash.adjusted' => 'حركة في الدرج',
+        'profit.withdrawn' => 'سحب أرباح',
         'damaged.recorded' => 'تسجيل هالِك',
         'damaged.voided' => 'إلغاء سجل هالِك',
     ];
@@ -42,7 +43,7 @@ final class AuditPresenter
         'commission' => 'العمولة', 'method' => 'طريقة الدفع', 'reversal_id' => 'قيد العكس',
         'settlement_id' => 'قيد التحصيل', 'paid' => 'المحصَّل', 'remaining' => 'المتبقي', 'changed' => 'الحقول المعدّلة',
         'category' => 'البند', 'kind' => 'نوع الحركة', 'product_id' => 'المنتج', 'quantity' => 'الكمية',
-        'total_value' => 'إجمالي القيمة', 'stock_restored' => 'إرجاع المخزون',
+        'total_value' => 'إجمالي القيمة', 'stock_restored' => 'إرجاع المخزون', 'source' => 'مصدر السحب', 'note' => 'ملاحظة',
     ];
 
     private const MONEY = ['opening_balance', 'delta', 'amount', 'commission', 'paid', 'remaining', 'total_value'];
@@ -50,9 +51,10 @@ final class AuditPresenter
     private const WORDS = [
         'type' => ['send' => 'تحويل', 'receive' => 'استلام'],
         'method' => ['cash' => 'نقدي', 'deferred' => 'آجل'],
+        'source' => ['cash' => 'الدرج (نقدي)', 'wallet' => 'محفظة'],
         'kind' => [
             'opening' => 'رصيد افتتاحي للدرج', 'owner_deposit' => 'إيداع من المالك',
-            'owner_withdraw' => 'سحب للمالك', 'correction' => 'تسوية',
+            'owner_withdraw' => 'سحب للمالك', 'correction' => 'تسوية', 'profit_withdraw' => 'سحب أرباح',
         ],
     ];
 

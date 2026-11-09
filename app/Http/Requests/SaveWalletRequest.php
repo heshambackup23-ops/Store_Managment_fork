@@ -55,13 +55,13 @@ class SaveWalletRequest extends FormRequest
                 function (string $attribute, mixed $value, \Closure $fail) use ($provider): void {
                     $value = (string) $value;
                     $allowsInstapay = $provider === '' || $provider === 'instapay';
-                    $valid = Digits::isEgyptianMobile($value)
+                    $valid = Digits::isPhoneNumber($value)
                         || ($allowsInstapay && Digits::isInstapayAddress($value));
 
                     if (! $valid) {
                         $fail($allowsInstapay
-                            ? 'اكتب رقم موبايل صحيح أو عنوان إنستا باي (مثل name@instapay)، أو اتركه فارغاً.'
-                            : 'اكتب رقم موبايل مصري صحيح (11 رقماً يبدأ بـ 010 أو 011 أو 012 أو 015)، أو اتركه فارغاً.');
+                            ? 'اكتب رقم هاتف صحيح أو عنوان إنستا باي (مثل name@instapay)، أو اتركه فارغاً.'
+                            : 'اكتب رقم هاتف صحيح (أرقام فقط، من 6 إلى 15 رقماً)، أو اتركه فارغاً.');
                     }
                 },
             ],

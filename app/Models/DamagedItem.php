@@ -22,7 +22,8 @@ class DamagedItem extends Model
     /** Only void bookkeeping may change after a record is created. */
     private const MUTABLE = ['status', 'voided_at', 'voided_by', 'void_reason', 'updated_at'];
 
-    protected $guarded = ['id'];
+    /** Nothing is mass assignable; the services write rows with forceCreate()/forceFill(). */
+    protected $guarded = ['*'];
 
     protected function casts(): array
     {

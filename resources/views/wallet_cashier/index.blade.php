@@ -79,7 +79,8 @@
                                     <label for="counterparty" class="form-label" id="counterpartyLabel">رقم المستلم</label>
                                     <input type="text" id="counterparty" name="counterparty" dir="ltr" inputmode="tel" maxlength="64"
                                            class="form-control form-control-lg @error('counterparty') is-invalid @enderror"
-                                           value="{{ old('counterparty') }}" placeholder="01XXXXXXXXX" required>
+                                           value="{{ old('counterparty') }}" placeholder="رقم الهاتف" required>
+                                    <div class="form-text">أي رقم هاتف (محمول أو أرضي أو دولي)، أو عنوان إنستا باي.</div>
                                     @error('counterparty')<div class="invalid-feedback">{{ $message }}</div>@enderror
                                 </div>
                                 <div class="col-md-6">
@@ -294,6 +295,13 @@
     const fmt = (c) => (c / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     const plain = (c) => (c / 100).toFixed(2);
 
+    // Same cleaning as the server: ASCII digits, no spaces, dashes, brackets or invisible marks.
+    const cleanNumber = (value) => {
+        const v = ascii(value).replace(/[\u200B-\u200F\u202A-\u202E\u2060-\u2069\uFEFF\u00A0]/g, '').trim();
+        return v.includes('@') ? v.toLowerCase() : v.replace(/[\s\-().]+/g, '');
+    };
+    const validCounterparty = (v) => /^\+?\d{6,15}$/.test(v) || /^[a-z0-9._-]{3,64}@[a-z]{2,20}$/.test(v);
+
     // crypto.randomUUID only exists on secure origins; a LAN address is plain http.
     function uuid() {
         if (window.crypto && typeof crypto.randomUUID === 'function') return crypto.randomUUID();
@@ -379,6 +387,11 @@
         const delta = t === 'send' ? -(amount + fee) : (amount - fee);
         const after = w.balance + delta;
         const problems = [];
+
+        const counterparty = counterpartyEl.value.trim();
+        if (counterparty !== '' && !validCounterparty(counterparty)) {
+            problems.push('رقم الهاتف غير صالح. اكتب أرقاماً فقط (من 6 إلى 15 رقماً، ويمكن أن يبدأ بـ +) أو عنوان إنستا باي.');
+        }
 
         if (/[,]/.test(amountEl.value + commissionEl.value + feeEl.value)) problems.push('اكتب الأرقام بدون فواصل (مثال: 1500).');
         if (amountEl.value.trim() !== '' && toCents(amountEl.value) === null) problems.push('المبلغ غير صالح.');
@@ -491,7 +504,8 @@
         render();
     }));
     counterpartyEl.addEventListener('input', () => {
-        counterpartyEl.value = counterpartyEl.value.replace(/[٠-٩]/g, (d) => '٠١٢٣٤٥٦٧٨٩'.indexOf(d));
+        const cleaned = cleanNumber(counterpartyEl.value);
+        if (cleaned !== counterpartyEl.value) counterpartyEl.value = cleaned;
         render();
     });
 

@@ -25,25 +25,31 @@
         </div>
     @endif
 
-    <div class="row g-3 mb-4">
-        <div class="col-md-4">
-            <div class="card shadow-sm h-100"><div class="card-body">
-                <div class="text-body-secondary small">إجمالي أرصدة المحافظ النشطة</div>
-                <div class="fs-3 fw-bold">{{ $money($summary['wallets_total']) }} <small class="fs-6">ج.م</small></div>
-            </div></div>
+    @if ($timezoneWarning)
+        <div class="alert alert-danger" role="alert">
+            المنطقة الزمنية للنظام UTC، فتتجدد الحدود اليومية والشهرية في توقيت خاطئ. اضبط <code dir="ltr">APP_TIMEZONE=Africa/Cairo</code> في ملف .env ثم نفّذ <code dir="ltr">php artisan optimize:clear</code>.
         </div>
-        <div class="col-md-4">
-            <div class="card shadow-sm h-100"><div class="card-body">
-                <div class="text-body-secondary small">النقدية المفروض وجودها في الدرج</div>
-                <div class="fs-3 fw-bold {{ $summary['cash'] < 0 ? 'text-danger' : '' }}">{{ $money($summary['cash']) }} <small class="fs-6">ج.م</small></div>
-            </div></div>
-        </div>
-        <div class="col-md-4">
-            <div class="card shadow-sm h-100"><div class="card-body">
-                <div class="text-body-secondary small">صافي ربح اليوم (عمولات - رسوم المزود)</div>
-                <div class="fs-3 fw-bold text-success">{{ $money($summary['profit_today']) }} <small class="fs-6">ج.م</small></div>
-            </div></div>
-        </div>
+    @endif
+
+    <div class="row row-cols-2 row-cols-lg-5 g-3 mb-2">
+        @foreach ([
+            ['أرصدة المحافظ', $summary['wallets_total'], ''],
+            ['النقدية في الدرج', $summary['cash'], $summary['cash'] < 0 ? 'text-danger' : ''],
+            ['الأرباح المتاحة للسحب', $summary['profit_available'], $summary['profit_available'] < 0 ? 'text-danger' : 'text-success'],
+            ['رأس المال التشغيلي', $summary['capital'], ''],
+            ['ربح اليوم', $summary['profit_today'], 'text-success'],
+        ] as [$label, $value, $class])
+            <div class="col">
+                <div class="card shadow-sm h-100"><div class="card-body">
+                    <div class="text-body-secondary small">{{ $label }}</div>
+                    <div class="fs-5 fw-bold {{ $class }}">{{ $money($value) }} <small class="fs-6">ج.م</small></div>
+                </div></div>
+            </div>
+        @endforeach
+    </div>
+    <div class="small text-body-secondary mb-4">
+        العمولة تُحسب ربحاً مستقلاً ولا تُخصم من رصيد المحفظة ولا تُضاف إلى رأس المال، ورصيد المحفظة يطابق تطبيق المزود.
+        رأس المال التشغيلي = أرصدة المحافظ + النقدية + المستحق على العملاء - الأرباح المتاحة.
     </div>
 
     <div class="alert alert-warning py-2 small">

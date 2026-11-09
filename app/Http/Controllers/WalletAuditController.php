@@ -15,18 +15,18 @@ class WalletAuditController extends Controller
         abort_unless($request->user()->isSuperAdmin(), 403);
 
         $filters = $request->validate([
-            'q'      => ['nullable', 'string', 'max:80'],
+            'q' => ['nullable', 'string', 'max:80'],
             'action' => ['nullable', Rule::in(array_keys(AuditPresenter::ACTIONS))],
-            'from'   => ['nullable', 'date'],
-            'to'     => ['nullable', 'date', 'after_or_equal:from'],
+            'from' => ['nullable', 'date'],
+            'to' => ['nullable', 'date', 'after_or_equal:from'],
         ]);
 
         $term = trim((string) ($filters['q'] ?? ''));
 
         $logs = WalletAuditLog::query()
             ->when($term !== '', function ($query) use ($term) {
-                $like     = '%'.addcslashes($term, '%_\\').'%';
-                $actions  = AuditPresenter::actionsMatching($term);
+                $like = '%'.addcslashes($term, '%_\\').'%';
+                $actions = AuditPresenter::actionsMatching($term);
                 $subjects = AuditPresenter::subjectsMatching($term);
 
                 $query->where(function ($search) use ($like, $term, $actions, $subjects) {
@@ -45,16 +45,16 @@ class WalletAuditController extends Controller
                     }
                 });
             })
-            ->when(! empty($filters['action'] ?? null), fn ($query) => $query->where('action', $filters['action']))
-            ->when(! empty($filters['from'] ?? null),   fn ($query) => $query->whereDate('created_at', '>=', $filters['from']))
-            ->when(! empty($filters['to'] ?? null),     fn ($query) => $query->whereDate('created_at', '<=', $filters['to']))
+            ->when(! empty($filters['action']), fn ($query) => $query->where('action', $filters['action']))
+            ->when(! empty($filters['from']), fn ($query) => $query->whereDate('created_at', '>=', $filters['from']))
+            ->when(! empty($filters['to']), fn ($query) => $query->whereDate('created_at', '<=', $filters['to']))
             ->latest('id')
             ->paginate(50)
             ->withQueryString()
             ->through(fn (WalletAuditLog $log) => AuditPresenter::row($log));
 
         return view('wallets.audit', [
-            'logs'    => $logs,
+            'logs' => $logs,
             'filters' => $filters,
             'actions' => AuditPresenter::ACTIONS,
         ]);

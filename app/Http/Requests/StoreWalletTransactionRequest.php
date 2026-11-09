@@ -41,8 +41,8 @@ class StoreWalletTransactionRequest extends FormRequest
                 function (string $attribute, mixed $value, \Closure $fail): void {
                     $value = (string) $value;
 
-                    if (! Digits::isEgyptianMobile($value) && ! Digits::isInstapayAddress($value)) {
-                        $fail('اكتب رقم موبايل مصري صحيح أو عنوان إنستا باي.');
+                    if (! Digits::isPhoneOrInstapay($value)) {
+                        $fail('اكتب رقم هاتف صحيح (أرقام فقط، من 6 إلى 15 رقماً، ويمكن أن يبدأ بـ +) أو عنوان إنستا باي.');
                     }
                 },
             ],

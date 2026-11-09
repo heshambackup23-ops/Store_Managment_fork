@@ -9,8 +9,11 @@ use App\Models\WalletAuditLog;
 use App\Models\WalletCashAdjustment;
 use App\Models\WalletExpense;
 use App\Models\WalletTransaction;
+use App\Support\Digits;
 use App\Support\Money;
 use Carbon\CarbonInterface;
+use Illuminate\Contracts\Cache\LockTimeoutException;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 
@@ -35,6 +38,7 @@ class WalletLedgerService
     public const REVERSAL = 'reversal';
     public const SETTLEMENT = 'settlement';
     public const ADJUSTMENT = 'adjustment';
+    public const PROFIT_WITHDRAWAL = 'profit_withdrawal';
 
     // ------------------------------------------------------------------ record
 
@@ -59,6 +63,13 @@ class WalletLedgerService
             if ($key) {
                 $existing = WalletTransaction::query()->where('idempotency_key', $key)->first();
                 if ($existing) {
+                    // A key may only ever replay the identical request, never hand back another operation.
+                    if ((int) $existing->wallet_id !== (int) $wallet->id
+                        || $existing->type !== ($input['type'] ?? null)
+                        || Money::cents($existing->amount) !== Money::cents($input['amount'] ?? 0)) {
+                        $this->fail('idempotency_key', 'هذا الطلب استُخدم من قبل لعملية مختلفة. حدّث الصفحة وأعد المحاولة.');
+                    }
+
                     return $existing;
                 }
             }
@@ -87,6 +98,22 @@ class WalletLedgerService
             }
             if (! in_array($method, ['cash', 'deferred'], true)) {
                 $this->fail('payment_method', 'طريقة الدفع غير صالحة.');
+            }
+
+            // Defence in depth: the form request already checks this, but the service never trusts its caller.
+            $counterparty = $this->clean($input['counterparty'] ?? null, 64);
+
+            if ($counterparty !== null) {
+                $counterparty = Digits::identifier($counterparty);
+
+                if (! Digits::isPhoneOrInstapay($counterparty)) {
+                    $this->fail('counterparty', 'رقم الطرف الآخر غير صالح. اكتب رقم هاتف صحيح أو عنوان إنستا باي.');
+                }
+
+                // A transfer from a wallet to itself is always a typing mistake.
+                if ($wallet->identifier !== null && $wallet->identifier !== '' && $counterparty === Digits::identifier($wallet->identifier)) {
+                    $this->fail('counterparty', 'رقم الطرف الآخر هو نفس رقم المحفظة.');
+                }
             }
 
             [$customerId, $customerName] = $this->resolveCustomer($input);
@@ -148,7 +175,7 @@ class WalletLedgerService
                 'balance_after' => Money::decimal($newBalance),
                 'payment_method' => $method,
                 'receivable' => Money::decimal($receivable),
-                'counterparty' => $this->clean($input['counterparty'] ?? null, 64),
+                'counterparty' => $counterparty,
                 'customer_id' => $customerId,
                 'customer_name' => $customerName,
                 'notes' => $this->clean($input['notes'] ?? null, 500),
@@ -347,15 +374,32 @@ class WalletLedgerService
      */
     public function usageFor(Wallet $wallet, ?CarbonInterface $at = null): array
     {
+        return $this->usageForWallets([$wallet], $at)[$wallet->id];
+    }
+
+    /**
+     * Usage for many wallets with ONE query (no query per wallet), keyed by wallet id.
+     * Served by the (wallet_id, status, occurred_at, type) index.
+     *
+     * @param  iterable<Wallet>  $wallets
+     * @return array<int, array{sent_day:int,received_day:int,sent_month:int,received_month:int}>
+     */
+    public function usageForWallets(iterable $wallets, ?CarbonInterface $at = null): array
+    {
+        $ids = collect($wallets)->pluck('id')->map(fn ($id) => (int) $id)->all();
+        $empty = ['sent_day' => 0, 'received_day' => 0, 'sent_month' => 0, 'received_month' => 0];
+        $result = array_fill_keys($ids, $empty);
+
+        if ($ids === []) {
+            return $result;
+        }
+
         $at ??= now();
         $dayStart = $at->copy()->startOfDay()->format('Y-m-d H:i:s');
         $monthStart = $at->copy()->startOfMonth()->format('Y-m-d H:i:s');
 
-        $row = WalletTransaction::query()
-            ->where('wallet_id', $wallet->id)
-            ->whereIn('type', [self::SEND, self::RECEIVE])
-            ->where('status', 'completed')
-            ->where('occurred_at', '>=', $monthStart)
+        $rows = WalletTransaction::query()
+            ->select('wallet_id')
             ->selectRaw(
                 "COALESCE(SUM(CASE WHEN type = 'send' THEN amount END), 0) AS sent_month,
                  COALESCE(SUM(CASE WHEN type = 'receive' THEN amount END), 0) AS received_month,
@@ -363,14 +407,23 @@ class WalletLedgerService
                  COALESCE(SUM(CASE WHEN type = 'receive' AND occurred_at >= ? THEN amount END), 0) AS received_day",
                 [$dayStart, $dayStart]
             )
-            ->first();
+            ->whereIn('wallet_id', $ids)
+            ->whereIn('type', [self::SEND, self::RECEIVE])
+            ->where('status', 'completed')
+            ->where('occurred_at', '>=', $monthStart)
+            ->groupBy('wallet_id')
+            ->get();
 
-        return [
-            'sent_day' => Money::cents($row->sent_day ?? 0),
-            'received_day' => Money::cents($row->received_day ?? 0),
-            'sent_month' => Money::cents($row->sent_month ?? 0),
-            'received_month' => Money::cents($row->received_month ?? 0),
-        ];
+        foreach ($rows as $row) {
+            $result[(int) $row->wallet_id] = [
+                'sent_day' => Money::cents($row->sent_day),
+                'received_day' => Money::cents($row->received_day),
+                'sent_month' => Money::cents($row->sent_month),
+                'received_month' => Money::cents($row->received_month),
+            ];
+        }
+
+        return $result;
     }
 
     /**
@@ -432,6 +485,138 @@ class WalletLedgerService
                 ->where('occurred_at', '>=', $from->format('Y-m-d H:i:s'))
                 ->sum('profit')
         );
+    }
+
+    // ------------------------------------------------------------ profit and capital
+    //
+    // Commission is PROFIT, kept apart from the wallet balance. The wallet balance always
+    // equals the provider's app (that is what `wallets:reconcile` checks), so it can not
+    // be reduced by commission. Instead profit has its own pocket:
+    //   profit available  = commissions - provider fees - expenses - profit already withdrawn
+    //   working capital   = wallets + cash + debts owed to us - profit available
+    // Working capital does not move when you trade; only deposits, withdrawals of capital
+    // and adjustments change it.
+
+    /** Commission minus provider fees on every completed transaction, in cents. */
+    public function profitTotal(): int
+    {
+        return Money::cents(
+            WalletTransaction::query()->whereIn('type', [self::SEND, self::RECEIVE])->where('status', 'completed')->sum('profit')
+        );
+    }
+
+    public function expensesTotal(): int
+    {
+        return Money::cents(WalletExpense::query()->whereNull('voided_at')->sum('amount'));
+    }
+
+    /** Profit the owner already took out (from the drawer or from a wallet), in cents, positive. */
+    public function profitWithdrawn(): int
+    {
+        $fromCash = Money::cents(WalletCashAdjustment::query()->where('kind', 'profit_withdraw')->sum('amount'));
+        $fromWallets = Money::cents(WalletTransaction::query()->where('type', self::PROFIT_WITHDRAWAL)->sum('wallet_delta'));
+
+        return -($fromCash + $fromWallets);
+    }
+
+    public function profitAvailable(): int
+    {
+        return $this->profitTotal() - $this->expensesTotal() - $this->profitWithdrawn();
+    }
+
+    /** Deferred money customers still owe, in cents. */
+    public function receivablesTotal(): int
+    {
+        return Money::cents(
+            WalletTransaction::query()->where('status', 'completed')->where('receivable', '>', 0)->sum('receivable')
+        );
+    }
+
+    public function workingCapital(): int
+    {
+        $wallets = Money::cents(Wallet::query()->sum('balance'));
+
+        return $wallets + $this->cashInDrawer() + $this->receivablesTotal() - $this->profitAvailable();
+    }
+
+    /**
+     * Take profit out of the business, from the cash drawer ($walletId = null) or from a wallet.
+     * Never more than the profit that is available, and never more than the source holds.
+     */
+    public function withdrawProfit(string|float $amount, ?int $walletId, ?string $note, User $user, ?string $ip = null): void
+    {
+        $cents = Money::cents($amount);
+
+        if ($cents <= 0) {
+            $this->fail('amount', 'المبلغ يجب أن يكون أكبر من صفر.');
+        }
+
+        try {
+            // One withdrawal at a time: two people can never take the same profit twice.
+            Cache::lock('wallets:profit-withdrawal', 15)->block(5, function () use ($cents, $walletId, $note, $user, $ip): void {
+                DB::transaction(function () use ($cents, $walletId, $note, $user, $ip): void {
+                    $wallet = null;
+
+                    if ($walletId !== null) {
+                        $wallet = Wallet::query()->lockForUpdate()->find($walletId);
+
+                        if (! $wallet) {
+                            $this->fail('source', 'المحفظة غير موجودة.');
+                        }
+                    }
+
+                    $available = $this->profitAvailable();
+                    if ($cents > $available) {
+                        $this->fail('amount', 'المبلغ أكبر من الأرباح المتاحة ('.Money::format(max(0, $available)).' جنيه).');
+                    }
+
+                    if ($wallet) {
+                        $balance = Money::cents($wallet->balance);
+
+                        if ($cents > $balance) {
+                            $this->fail('amount', 'رصيد المحفظة لا يكفي. المتاح: '.Money::format($balance).' جنيه.');
+                        }
+
+                        $row = WalletTransaction::query()->forceCreate([
+                            'wallet_id' => $wallet->id,
+                            'type' => self::PROFIT_WITHDRAWAL,
+                            'status' => 'completed',
+                            'wallet_delta' => Money::decimal(-$cents),
+                            'balance_after' => Money::decimal($balance - $cents),
+                            'notes' => $this->clean($note, 500),
+                            'occurred_at' => now(),
+                            'created_by' => $user->id,
+                            'created_by_name' => $user->name,
+                        ]);
+                        $wallet->forceFill(['balance' => Money::decimal($balance - $cents)])->save();
+                        $subject = ['wallet_transaction', $row->id];
+                    } else {
+                        if ($cents > $this->cashInDrawer()) {
+                            $this->fail('amount', 'النقدية في الدرج لا تكفي لسحب هذا المبلغ.');
+                        }
+
+                        $row = WalletCashAdjustment::query()->forceCreate([
+                            'kind' => 'profit_withdraw',
+                            'amount' => Money::decimal(-$cents),
+                            'note' => $this->clean($note, 500),
+                            'occurred_at' => now(),
+                            'created_by' => $user->id,
+                            'created_by_name' => $user->name,
+                        ]);
+                        $subject = ['wallet_cash_adjustment', $row->id];
+                    }
+
+                    $this->audit($user, 'profit.withdrawn', $subject[0], $subject[1], [
+                        'source' => $wallet ? 'wallet' : 'cash',
+                        'wallet_id' => $wallet?->id,
+                        'amount' => Money::decimal($cents),
+                        'note' => $note,
+                    ], $ip);
+                }, 3);
+            });
+        } catch (LockTimeoutException) {
+            $this->fail('amount', 'عملية سحب أرباح أخرى قيد التنفيذ. حاول بعد لحظات.');
+        }
     }
 
     // --------------------------------------------------------------- helpers

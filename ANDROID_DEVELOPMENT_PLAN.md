@@ -1,0 +1,33 @@
+# Android Development Plan
+
+**Current phase:** Android foundation and initial workflows in progress; the core Laravel v1 API is available.  
+**Scope rule:** Preserve the existing Laravel application and its business rules. Android consumes only the documented Laravel v1 API.
+
+| Phase | Scope | Acceptance criteria | Status |
+| --- | --- | --- | --- |
+| 0. Audit | Repository, schema source, roles, auth, workflows, API gaps, architecture, reliability, risks | Audit and proposals recorded; database/runtime claims clearly separated from source facts; no application code or data changed | Complete from source; live DB and tests unverified |
+| 1. Laravel API | Versioned API boundary, token lifecycle, Resources/Requests, authorization, error contract, pagination, durable idempotency | Endpoint tests cover auth, active accounts, role/token permissions, validation, object access, transaction rollback, duplicates, and web regression | In progress: token lifecycle, authorized list/detail reads for products/categories/customers/invoices/suppliers/installments, customer/category CRUD, and idempotent invoice creation are implemented; other consequential writes and simultaneous-duplicate DB testing remain |
+| 2. Reliability foundation | Error mapping, Room/cache policy, retry limits, stale state, unknown write outcome and reconciliation | Controlled network tests pass; no false-success or duplicate consequential operation; behavior documented | Partially implemented; Android verification pending |
+| 3. Android foundation | Native Kotlin/Compose project, environments, networking, secure token storage, Room, DI, navigation, UI state | Debug build succeeds; tests cover serialization, repositories, storage, and navigation; no secret or cleartext release config | Development debug APK builds with compileSdk 37/targetSdk 36; 17 Android unit tests pass; production release variant also assembles unsigned |
+| 4. Authentication | Login, session restore, logout/revoke, expiry, account switch, permission-aware UI | Laravel and Android tests verify token and permission behavior; private cache is cleared on account change | Arabic `/v1/me` profile, login/restore/logout, permission-aware navigation, and active-session 401 cleanup implemented; Android verification pending |
+| 5. Business features | Implement only audited/approved modules; API and screens end-to-end | Each chosen feature has API contract, business-rule tests, UI states, permissions, and web/mobile consistency evidence | Arabic profile plus product/category/customer/invoice/supplier/installment lists, product category/stock filters, detail sheets for all v1 read resources, customer/category CRUD, and idempotent invoice creation implemented; installment and supplier financial writes remain unavailable pending safe replay contracts |
+| 6. UX and accessibility | Arabic RTL/English LTR if supported, themes, phone/tablet layout, accessibility | UI tests cover key flows, error/offline/empty states, and accessibility semantics | First-pass Arabic RTL and light/dark themes implemented; tablet/English/accessibility UI verification remains |
+| 7. Device capabilities | Only audited camera/barcode/image/PDF/notification workflows | Upload validation, progress/recovery and permission handling verified where used | Barcode/QR scanning added to invoice product selection with exact server lookup and manual fallback; Google Play services/device verification remains pending |
+| 8. Comprehensive QA | Laravel, Android, integration, two-client, network, backup/restore tests | Recorded exact commands/results; critical transaction and account-isolation tests pass | Android unit tests: 17 passed, 0 failed; debug APK installed on a connected phone. Phone-to-PC TCP and LAN health checks pass; credential login, scanner UI, accessibility, network interruption, and broader end-to-end flows remain unverified |
+| 9. Security/performance/release | Security review, measured performance, release build and signing instructions | No unresolved critical findings; reproducible build and release endpoint verified | Development lint passes with 0 errors; release signing is wired to user-level Gradle properties and documented. Signed production endpoint, device security review, performance checks, and release verification remain |
+| 10. Hosting preparation | Resolve Laravel Cloud/VPS prompt conflict; Cloud compatibility, staging, domain/storage/database/rollback docs | Only real platform-supported instructions; no production deploy, DNS, billing, or migration without explicit authorization | Not started |
+
+## Dependencies and gates
+
+- Keep Composer and npm lockfiles; do not force upgrades. Current local dependency directories are absent, so install/build readiness must be checked later without overwriting the user's state.
+- Reconcile the existing dirty wallet changes, 943 generated storage deletions, and migration changes before tests that write caches or before migration work.
+- Verify actual schema/migration history against a safe non-production database before API contract or migration changes.
+- Hosting remains undecided: detailed Phase 10 selects Cloud, while the prompt's last sentence requests VPS preparation. This does not block the current API work.
+- Phase 0 scope was approved by the user on 2026-11-09. The API also supports idempotent customer/category creation and authorized customer/category updates/deletes. Other consequential writes remain unavailable until their own replay/reconciliation behavior is implemented and tested.
+- Android source lives in `android/`; see `android/README.md`. JDK 17, command-line tools, Android SDK Platform 37, Build Tools 37.0.0, and platform-tools are installed under the user profile. A phone was connected for APK installation; production signing and the login/scanner UI checks remain pending.
+
+## Deferred deliverables
+
+`API_DOCUMENTATION.md` and `openapi.yaml` depend on the approved Phase 1 contract. `.env.production.example`, a Cloud deployment guide, and `deploy/` depend on verified runtime/storage/queue requirements and current platform documentation. `TESTING_REPORT.md` must record actual executed results; it must not be prefilled as passed.
+
+Android branding follows `.env` `APP_NAME=phoneStore`; user-facing app copy is Arabic RTL. Barcode scanning and typed exact-code lookup are implemented in source. The development debug build and 17 JVM unit tests pass; on-device scanning, accessibility, and release verification remain outstanding.

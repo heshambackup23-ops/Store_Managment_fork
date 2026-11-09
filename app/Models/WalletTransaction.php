@@ -19,7 +19,8 @@ class WalletTransaction extends Model
         'receivable', 'settled_at', 'updated_at',
     ];
 
-    protected $guarded = ['id'];
+    /** Nothing is mass assignable; the services write rows with forceCreate()/forceFill(). */
+    protected $guarded = ['*'];
 
     protected function casts(): array
     {

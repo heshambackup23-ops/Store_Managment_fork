@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\Wallet;
 use App\Models\WalletCashAdjustment;
 use App\Models\WalletExpense;
 use App\Services\Wallets\WalletLedgerService;
@@ -49,6 +50,9 @@ class WalletExpenseController extends Controller
             'adjustments' => WalletCashAdjustment::query()->latest('occurred_at')->latest('id')->limit(15)->get(),
             'categories' => self::CATEGORIES,
             'cashKinds' => self::CASH_KINDS,
+            'kindLabels' => self::CASH_KINDS + ['profit_withdraw' => 'سحب أرباح'],
+            'profitAvailable' => $ledger->profitAvailable(),
+            'walletOptions' => Wallet::query()->orderBy('name')->orderBy('id')->get(),
             'from' => $from,
             'to' => $to,
         ]);
@@ -109,6 +113,26 @@ class WalletExpenseController extends Controller
         });
 
         return back()->with('success', 'تم إلغاء المصروف وإرجاع مبلغه إلى الدرج.');
+    }
+
+    /** Take profit out of the business, from the cash drawer or from one wallet. */
+    public function withdrawProfit(Request $request, WalletLedgerService $ledger): RedirectResponse
+    {
+        $request->merge(['amount' => trim((string) Digits::ascii((string) $request->input('amount')))]);
+
+        $sources = array_merge(['cash'], Wallet::query()->pluck('id')->map(fn ($id) => 'wallet:'.$id)->all());
+
+        $data = $request->validate([
+            'amount' => ['required', 'numeric', 'decimal:0,2', 'min:0.01', 'max:99999999'],
+            'source' => ['required', 'string', Rule::in($sources)],
+            'note' => ['nullable', 'string', 'max:500'],
+        ], [], ['amount' => 'المبلغ', 'source' => 'مصدر السحب', 'note' => 'ملاحظة']);
+
+        $walletId = $data['source'] === 'cash' ? null : (int) substr($data['source'], 7);
+
+        $ledger->withdrawProfit($data['amount'], $walletId, $data['note'] ?? null, $request->user(), $request->ip());
+
+        return back()->with('success', 'تم تسجيل سحب الأرباح.');
     }
 
     public function storeCash(Request $request, WalletLedgerService $ledger): RedirectResponse
