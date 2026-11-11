@@ -3,7 +3,7 @@
 @section('main')
     @include('wallets._nav')
 
-    <h3 class="mb-3">سجل العمليات</h3>
+    <h3 class="mb-3">سجل معاملات المحافظ</h3>
 
     @if ($errors->any())
         <div class="alert alert-danger"><ul class="mb-0">@foreach ($errors->all() as $error)<li>{{ $error }}</li>@endforeach</ul></div>
@@ -17,7 +17,7 @@
                        placeholder="اسم المستخدم، نوع الحدث، السبب، رقم العنصر…">
             </div>
             <div class="col-md-3">
-                <label for="action" class="form-label small mb-1">نوع الحدث</label>
+                <label for="action" class="form-label small mb-1">تصفية حسب نوع السجل</label>
                 <select id="action" name="action" class="form-select">
                     <option value="">كل الأحداث</option>
                     @foreach ($actions as $code => $label)

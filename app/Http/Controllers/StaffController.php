@@ -61,7 +61,7 @@ class StaffController extends Controller
             $user->forceFill([
                 'username' => $validated['username'],
                 'name' => $validated['name'],
-                'email' => $this->availableEmail($validated['username']),
+                'email' => $validated['email'] ?? $this->availableEmail($validated['username']),
                 'password' => $validated['password'],
                 'role' => $this->legacyRole($role),
                 'is_active' => (bool) $validated['is_active'],
@@ -95,6 +95,7 @@ class StaffController extends Controller
             $user->forceFill([
                 'username' => $validated['username'],
                 'name' => $validated['name'],
+                'email' => $validated['email'] ?? $user->email,
                 'role' => $this->legacyRole($role),
                 'is_active' => (bool) $validated['is_active'],
             ]);

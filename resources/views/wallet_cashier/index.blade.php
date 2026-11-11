@@ -267,6 +267,9 @@
             </div>
         </div>
     @endif
+    @if ($recent->hasPages())
+        <div class="d-flex justify-content-end mt-3">{{ $recent->links() }}</div>
+    @endif
 @endsection
 
 @push('scripts')

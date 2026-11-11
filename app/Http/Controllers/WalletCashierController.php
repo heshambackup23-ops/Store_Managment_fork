@@ -54,8 +54,7 @@ class WalletCashierController extends Controller
             ->with('wallet:id,name,provider,identifier')
             ->whereIn('type', ['send', 'receive'])
             ->latest('occurred_at')->latest('id')
-            ->limit(25)
-            ->get();
+            ->paginate(20, ['*'], 'transactions_page')->withQueryString();
 
         $outstanding = Money::cents(
             WalletTransaction::query()->where('status', 'completed')->where('receivable', '>', 0)->sum('receivable')
@@ -67,20 +66,43 @@ class WalletCashierController extends Controller
     /** Every deferred transfer that is still not fully collected, grouped by customer. */
     public function debts(WalletLedgerService $ledger)
     {
-        $rows = WalletTransaction::query()
+        $baseQuery = WalletTransaction::query()
+            ->where('status', 'completed')
+            ->where('payment_method', 'deferred')
+            ->where('receivable', '>', 0);
+        $customers = (clone $baseQuery)
+            ->select('customer_name')
+            ->distinct()
+            ->orderBy('customer_name')
+            ->paginate(20, ['customer_name'], 'customers_page')
+            ->withQueryString();
+
+        $names = $customers->getCollection()->pluck('customer_name');
+        $rowsQuery = WalletTransaction::query()
             ->with('wallet:id,name,provider,identifier')
             ->where('status', 'completed')
             ->where('payment_method', 'deferred')
             ->where('receivable', '>', 0)
-            ->orderBy('occurred_at')
-            ->limit(500)
-            ->get();
+            ->where(function ($query) use ($names): void {
+                $named = $names->filter(fn ($name) => $name !== null && $name !== '')->values();
+                if ($named->isNotEmpty()) {
+                    $query->whereIn('customer_name', $named);
+                }
+                if ($names->contains(null) || $names->contains('')) {
+                    $query->orWhereNull('customer_name')->orWhere('customer_name', '');
+                }
+            })
+            ->orderBy('occurred_at')->orderBy('id');
+        $rows = $names->isEmpty() ? collect() : (clone $rowsQuery)->limit(501)->get();
+        $truncated = $rows->count() > 500;
+        if ($truncated) {
+            $rows = $rows->take(500);
+        }
 
         $groups = $rows->groupBy(fn (WalletTransaction $transaction) => $transaction->customer_name ?: 'بدون اسم');
         $total = $ledger->receivablesTotal();
-        $truncated = $rows->count() >= 500; // the page shows the oldest 500 lines; the total is always complete
 
-        return view('wallet_cashier.debts', compact('groups', 'total', 'truncated'));
+        return view('wallet_cashier.debts', compact('groups', 'customers', 'total', 'truncated'));
     }
 
     public function store(StoreWalletTransactionRequest $request, WalletLedgerService $ledger): RedirectResponse

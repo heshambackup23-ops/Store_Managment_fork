@@ -21,6 +21,7 @@ class SaveMaintenanceRequest extends FormRequest
             'name' => ['required', 'string', 'max:255'],
             'owner' => ['required', 'string', 'max:255'],
             'description' => ['required', 'string'],
+            'notes' => ['nullable', 'string', 'max:2000'],
             'status' => ['required', 'string', Rule::in(['قيد الانتظار', 'مكتمل'])],
             'phone' => ['required', 'string', 'max:32'],
             'address' => ['required', 'string', 'max:255'],

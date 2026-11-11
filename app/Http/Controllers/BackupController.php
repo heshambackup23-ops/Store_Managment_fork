@@ -40,7 +40,7 @@ class BackupController extends Controller
         'sales' => ['sales', 'sales_items', 'payments'],
         'invoices' => ['invoices'],
         'installments' => ['installments', 'debts', 'personal_debts', 'personal_debt_payments'],
-        'suppliers' => ['suppliers', 'supplier_payments', 'purchases'],
+        'suppliers' => ['suppliers', 'purchases', 'supplier_payments'],
         'maintenance' => ['maintenances'],
         'wallets' => ['wallets', 'wallet_transactions', 'wallet_expenses', 'wallet_cash_adjustments', 'wallet_audit_logs'],
         'damaged' => ['damaged_items'],
@@ -48,37 +48,34 @@ class BackupController extends Controller
         'team' => ['users', 'profiles', 'settings', 'roles', 'permissions', 'model_has_permissions', 'model_has_roles', 'role_has_permissions'],
     ];
 
-    /** Stream a versioned, restorable NDJSON snapshot. Rows are emitted in bounded chunks. */
+    public function index(Request $request)
+    {
+        abort_unless($request->user()?->can('page.backup.view') || $request->user()?->can('page.backup.manage'), 403);
+        return view('backup.index', ['canManage' => $request->user()->can('page.backup.manage')]);
+    }
+
+    /** Download a restorable ZIP containing one formatted XLSX workbook per selected page. */
     public function apiExport(Request $request): StreamedResponse
     {
         $validated = $request->validate(['pages' => ['nullable', 'array', 'min:1'], 'pages.*' => ['required', 'string', 'in:'.implode(',', array_keys(self::BACKUP_GROUPS))]]);
         $pages = array_values(array_unique($validated['pages'] ?? array_keys(self::BACKUP_GROUPS)));
-        $tables = $this->tablesForPages($pages);
-        $filename = 'store-backup-'.now()->format('Ymd-His').'.json';
-
-        return response()->streamDownload(function () use ($pages, $tables): void {
-            $out = fopen('php://output', 'w');
-            fwrite($out, json_encode(['format' => 'store-management-backup-ndjson', 'version' => 1, 'created_at' => now()->toIso8601String(), 'pages' => $pages], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR)."\n");
-            foreach ($tables as $table) {
-                DB::table($table)->orderBy(Schema::getColumnListing($table)[0] ?? 'id')->chunk(500, function ($rows) use ($out, $table): void {
-                    foreach ($rows as $row) {
-                        fwrite($out, json_encode(['table' => $table, 'row' => (array) $row], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR)."\n");
-                    }
-                });
-            }
-            fclose($out);
-        }, str_replace('.json', '.jsonl', $filename), ['Content-Type' => 'application/x-ndjson; charset=utf-8', 'Cache-Control' => 'no-store']);
+        return $this->backupZip($pages, 'store-backup-'.now()->format('Ymd-His'));
     }
 
     /** Read rows incrementally; any invalid row rolls the complete transaction back. */
     public function apiImport(Request $request): JsonResponse
     {
-        $validated = $request->validate(['file' => ['required', 'file', 'max:512000', 'mimetypes:application/json,text/plain'], 'pages' => ['required', 'string', 'max:1000']]);
+        $validated = $request->validate(['file' => ['required', 'file', 'max:512000'], 'pages' => ['required', 'string', 'max:1000']]);
         $pages = $this->decodeBackupLine($validated['pages']);
         Validator::make(['pages' => $pages], ['pages' => ['required', 'array', 'min:1'], 'pages.*' => ['required', 'string', 'in:'.implode(',', array_keys(self::BACKUP_GROUPS))]])->validate();
         $pages = array_values(array_unique($pages));
         $allowed = $this->tablesForPages($pages);
-        $handle = fopen($validated['file']->getRealPath(), 'r');
+        $file = $validated['file'];
+        if (strtolower($file->getClientOriginalExtension()) === 'zip' || str_starts_with((string) file_get_contents($file->getRealPath(), false, null, 0, 4), "PK\x03\x04")) {
+            return $this->importXlsxZip($file->getRealPath(), $pages);
+        }
+        abort_unless(in_array($file->getMimeType(), ['application/json', 'text/plain', 'application/x-ndjson'], true), 422, 'Unsupported backup file. Select a ZIP backup.');
+        $handle = fopen($file->getRealPath(), 'r');
         abort_if($handle === false, 422, 'Unable to read backup file.');
         $importedTables = [];
         try {
@@ -108,6 +105,110 @@ class BackupController extends Controller
         } finally { fclose($handle); }
 
         return response()->json(['data' => ['imported_tables' => array_keys($importedTables), 'message' => 'Backup data merged successfully.']]);
+    }
+
+    private function backupZip(array $pages, string $name): StreamedResponse
+    {
+        abort_unless(class_exists(ZipArchive::class) && class_exists(\PhpOffice\PhpSpreadsheet\Spreadsheet::class), 500, 'ZIP and spreadsheet support are required for database backups.');
+        $path = $this->tempPath();
+        $zip = new ZipArchive();
+        abort_unless($zip->open($path, ZipArchive::CREATE | ZipArchive::OVERWRITE) === true, 500, 'Unable to create backup archive.');
+        $temporary = [];
+        try {
+            $manifest = ['format' => 'store-management-excel-backup', 'version' => 2, 'created_at' => now()->toIso8601String(), 'pages' => $pages, 'workbooks' => []];
+            foreach ($pages as $page) {
+                $workbookPath = $this->pageWorkbook($page);
+                $temporary[] = $workbookPath;
+                $entry = 'pages/'.$page.'.xlsx';
+                $zip->addFile($workbookPath, $entry);
+                $manifest['workbooks'][$page] = $entry;
+            }
+            $zip->addFromString('manifest.json', json_encode($manifest, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR));
+            $zip->close();
+        } catch (Throwable $exception) {
+            $zip->close(); @unlink($path); throw $exception;
+        } finally { foreach ($temporary as $temp) @unlink($temp); }
+
+        return response()->streamDownload(static function () use ($path): void { readfile($path); @unlink($path); }, $name.'.zip', ['Content-Type' => 'application/zip', 'Cache-Control' => 'no-store']);
+    }
+
+    private function pageWorkbook(string $page): string
+    {
+        $book = new \PhpOffice\PhpSpreadsheet\Spreadsheet();
+        $book->removeSheetByIndex(0);
+        foreach (self::BACKUP_GROUPS[$page] as $table) {
+            if (!Schema::hasTable($table)) continue;
+            $sheet = new \PhpOffice\PhpSpreadsheet\Worksheet\Worksheet($book, mb_substr($table, 0, 31));
+            $book->addSheet($sheet); $sheet->setRightToLeft(true); $sheet->freezePane('A2');
+            $columns = Schema::getColumnListing($table);
+            foreach ($columns as $index => $column) $sheet->setCellValueExplicit([$index + 1, 1], $column, \PhpOffice\PhpSpreadsheet\Cell\DataType::TYPE_STRING);
+            $sheet->getStyle('1:1')->getFont()->setBold(true)->getColor()->setRGB('FFFFFF');
+            $sheet->getStyle('1:1')->getFill()->setFillType(\PhpOffice\PhpSpreadsheet\Style\Fill::FILL_SOLID)->getStartColor()->setRGB('254B70');
+            $sheet->setAutoFilter($sheet->calculateWorksheetDimension());
+            foreach (DB::table($table)->orderBy($columns[0] ?? 'id')->cursor() as $rowIndex => $row) {
+                foreach ($columns as $index => $column) {
+                    $value = $row->{$column} ?? null;
+                    if ($value === null) $value = '__STORE_BACKUP_NULL_V2__';
+                    else {
+                        $value = (string) $value;
+                        if (str_starts_with($value, '__STORE_BACKUP_NULL_V2__') || str_starts_with($value, '__STORE_BACKUP_ESC_V2__')) $value = '__STORE_BACKUP_ESC_V2__'.$value;
+                    }
+                    $sheet->setCellValueExplicit([$index + 1, $rowIndex + 2], $value, \PhpOffice\PhpSpreadsheet\Cell\DataType::TYPE_STRING);
+                }
+            }
+            foreach (range(1, max(1, count($columns))) as $index) $sheet->getColumnDimensionByColumn($index)->setAutoSize(true);
+        }
+        if ($book->getSheetCount() === 0) $book->createSheet()->setTitle('empty');
+        $path = $this->tempPath();
+        (new \PhpOffice\PhpSpreadsheet\Writer\Xlsx($book))->save($path);
+        $book->disconnectWorksheets();
+        return $path;
+    }
+
+    private function importXlsxZip(string $path, array $pages): JsonResponse
+    {
+        abort_unless(class_exists(ZipArchive::class) && class_exists(\PhpOffice\PhpSpreadsheet\IOFactory::class), 422, 'Spreadsheet import is unavailable.');
+        $zip = new ZipArchive(); abort_unless($zip->open($path) === true, 422, 'Invalid backup ZIP.');
+        $manifest = json_decode((string) $zip->getFromName('manifest.json'), true);
+        abort_unless(is_array($manifest) && ($manifest['format'] ?? null) === 'store-management-excel-backup' && ($manifest['version'] ?? null) === 2, 422, 'Unsupported or invalid backup archive.');
+        $imported = [];
+        try {
+            DB::transaction(function () use ($zip, $manifest, $pages, &$imported): void {
+                foreach ($pages as $page) {
+                    abort_unless(in_array($page, $manifest['pages'] ?? [], true), 422, 'Selected page is not present in this backup.');
+                    $entry = $manifest['workbooks'][$page] ?? null;
+                    abort_unless(is_string($entry) && $entry === 'pages/'.$page.'.xlsx', 422, 'Invalid workbook path in backup.');
+                    $content = $zip->getFromName($entry); abort_unless(is_string($content), 422, 'A page workbook is missing.');
+                    $temp = $this->tempPath(); file_put_contents($temp, $content);
+                    try {
+                        $book = \PhpOffice\PhpSpreadsheet\IOFactory::load($temp);
+                        foreach (self::BACKUP_GROUPS[$page] as $table) {
+                            if (!Schema::hasTable($table)) continue;
+                            $sheet = $book->getSheetByName($table); if (!$sheet) continue;
+                            $columns = Schema::getColumnListing($table);
+                            $headers = $sheet->rangeToArray('A1:'.$sheet->getHighestColumn().'1', null, true, false)[0] ?? [];
+                            abort_unless($headers === array_values($columns), 422, 'Workbook columns do not match the current database schema.');
+                            foreach ($sheet->getRowIterator(2) as $row) {
+                                $cells = []; foreach ($row->getCellIterator('A', $sheet->getHighestColumn()) as $cell) $cells[] = $cell->getValue();
+                                if (count(array_filter($cells, fn ($v) => $v !== null && $v !== '')) === 0) continue;
+                                $cells = array_map(static function ($value) {
+                                    if ($value === '__STORE_BACKUP_NULL_V2__') return null;
+                                    if (is_string($value) && str_starts_with($value, '__STORE_BACKUP_ESC_V2__')) return substr($value, strlen('__STORE_BACKUP_ESC_V2__'));
+                                    return $value;
+                                }, array_pad(array_slice($cells, 0, count($columns)), count($columns), null));
+                                $data = array_combine($columns, $cells);
+                                $keys = array_intersect(['id', 'uuid'], array_keys($data));
+                                if ($keys) { $key = reset($keys); DB::table($table)->updateOrInsert([$key => $data[$key]], $data); }
+                                else DB::table($table)->insertOrIgnore($data);
+                                $imported[$table] = true;
+                            }
+                        }
+                        $book->disconnectWorksheets();
+                    } finally { @unlink($temp); }
+                }
+            }, 3);
+        } finally { $zip->close(); }
+        return response()->json(['data' => ['imported_tables' => array_keys($imported), 'message' => 'Backup data imported successfully.']]);
     }
 
     /** @param list<string> $pages @return list<string> */
@@ -140,32 +241,8 @@ class BackupController extends Controller
     {
         $user = $request->user();
         abort_unless($user?->can('page.backup.view') || $user?->can('page.backup.manage'), 403);
-
-        $validated = $request->validate(['format' => ['nullable', 'in:zip,pdf,xlsx,excel,csv,jsonl']]);
-        $format = $validated['format'] ?? 'zip';
-        if ($format === 'jsonl') {
-            abort_unless($request->user()?->can('page.backup.manage'), 403);
-            return $this->apiExport($request);
-        }
-        $name = 'backup-'.now()->format('YmdHis');
-
-        try {
-            $datasets = $this->datasets();
-
-            return match ($format) {
-                'pdf' => $this->pdf($request, $datasets, $name),
-                'xlsx', 'excel' => $this->xlsx($datasets, $name),
-                default => $this->zip($datasets, $name),
-            };
-        } catch (HttpException $exception) {
-            throw $exception;
-        } catch (Throwable $exception) {
-            report($exception);
-
-            return $this->failure($request, 'تعذر إنشاء ملف التصدير.', 500);
-        }
+        return $this->apiExport($request);
     }
-
     /** @return array<string, callable(): iterable<array<string, mixed>>> */
     private function datasets(): array
     {

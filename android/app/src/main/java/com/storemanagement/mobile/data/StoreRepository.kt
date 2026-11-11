@@ -65,7 +65,7 @@ class StoreRepository @Inject constructor(
 
     suspend fun importBackup(pages: List<String>, file: File) {
         val part = MultipartBody.Part.createFormData(
-            "file", file.name, file.asRequestBody("application/json".toMediaType()),
+            "file", file.name, file.asRequestBody("application/zip".toMediaType()),
         )
         val response = api.importBackup(part, org.json.JSONArray(pages).toString().toRequestBody("text/plain".toMediaType()))
         if (!response.isSuccessful) throw retrofit2.HttpException(response)

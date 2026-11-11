@@ -139,6 +139,13 @@
         @endforelse
     </div>
 
+    @if ($cards->hasPages())
+        <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mt-3">
+            <small class="text-body-secondary">عرض {{ $cards->firstItem() }} إلى {{ $cards->lastItem() }} من {{ $cards->total() }} محفظة</small>
+            {{ $cards->links() }}
+        </div>
+    @endif
+
     @can('page.wallets.manage')
         <div class="modal fade" id="adjustModal" tabindex="-1" aria-labelledby="adjustTitle" aria-hidden="true">
             <div class="modal-dialog">

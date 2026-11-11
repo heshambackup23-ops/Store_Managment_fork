@@ -15,16 +15,17 @@ class WalletController extends Controller
 {
     public function index(WalletLedgerService $ledger)
     {
-        $wallets = Wallet::query()->orderByDesc('is_active')->orderBy('name')->orderBy('id')->get();
-        $usage = $ledger->usageForWallets($wallets); // one query for every wallet
+        $wallets = Wallet::query()->orderByDesc('is_active')->orderBy('name')->orderBy('id')
+            ->paginate(12, ['*'], 'wallets_page')->withQueryString();
+        $usage = $ledger->usageForWallets($wallets->getCollection()); // one query for this page
 
-        $cards = $wallets->map(fn (Wallet $wallet): array => [
+        $cards = $wallets->through(fn (Wallet $wallet): array => [
             'wallet' => $wallet,
             'rows' => $ledger->limitRows($wallet, $usage[$wallet->id]),
         ]);
 
         $summary = [
-            'wallets_total' => (int) $wallets->sum(fn (Wallet $wallet) => Money::cents($wallet->balance)),
+            'wallets_total' => Money::cents(Wallet::query()->sum('balance')),
             'cash' => $ledger->cashInDrawer(),
             'profit_today' => $ledger->profitSince(now()->startOfDay()),
             'profit_available' => $ledger->profitAvailable(),

@@ -253,7 +253,7 @@ class StoreViewModel @Inject constructor(
             var temp: File? = null
             try {
                 withContext(Dispatchers.IO) {
-                    temp = File.createTempFile("store-backup-", ".json", cacheDir)
+                    temp = File.createTempFile("store-backup-", ".zip", cacheDir)
                     resolver.openInputStream(uri)?.use { input -> temp!!.outputStream().use(input::copyTo) }
                         ?: error("Unable to read selected file")
                     storeRepository.importBackup(pages, temp!!)

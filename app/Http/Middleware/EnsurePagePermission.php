@@ -41,7 +41,8 @@ class EnsurePagePermission
             && $request->bearerToken() === null
             && !str_starts_with((string) $routeName, 'profile.users.');
 
-        if (!$user || (!$selfService && !array_key_exists($module, config('access.pages', [])))) {
+        $superadminOnlyRoute = $module === 'roles';
+        if (!$user || (!$selfService && !$superadminOnlyRoute && !array_key_exists($module, config('access.pages', [])))) {
             abort(403);
         }
 
@@ -56,13 +57,20 @@ class EnsurePagePermission
             return $next($request);
         }
 
+        // Role administration has its own strict superadmin middleware and is not
+        // a regular permission page. Let that guard make the decision here.
+        if ($superadminOnlyRoute) {
+            abort_unless($user->isSuperAdmin(), 403);
+            return $next($request);
+        }
+
         $action = $route?->getActionMethod();
         $personalNotificationWrite = in_array($action, ['markRead', 'markAllRead'], true);
         $manage = (!$request->isMethodSafe() && !$personalNotificationWrite)
             || in_array($action, ['create', 'edit', 'showPay'], true);
         $ability = $manage ? 'manage' : 'view';
         $permission = "page.{$module}.{$ability}";
-        $allowed = $user->can($permission)
+        $allowed = $user->isSuperAdmin() || $user->can($permission)
             || (!$manage && $user->can("page.{$module}.manage"));
 
         if (!$allowed) {

@@ -9,6 +9,7 @@ use App\Models\products;
 use App\Services\InvoiceCreationService;
 use App\Services\InvoiceInstallmentSync;
 use Illuminate\Http\Request;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
@@ -35,7 +36,9 @@ class InvoiceOperationsController extends Controller
 
     public function create()
     {
-        $products = products::query()->orderBy('name')->get();
+        $oldProductIds = old('product_ids', []);
+        $products = products::query()->whereIn('id', is_array($oldProductIds) ? $oldProductIds : [])
+            ->orderBy('name')->get(['id', 'name', 'price', 'barcode']);
         $allProducts = $products->map(fn (products $product) => [
             'id' => $product->id,
             'name' => $product->name,
@@ -44,6 +47,35 @@ class InvoiceOperationsController extends Controller
         ])->all();
 
         return view('invoice.create', compact('products', 'allProducts'));
+    }
+
+    public function searchProducts(Request $request): JsonResponse
+    {
+        $validated = $request->validate(['q' => ['required', 'string', 'max:100']]);
+        $term = trim($validated['q']);
+
+        if ($term === '') {
+            return response()->json(['data' => []]);
+        }
+
+        $columns = ['id', 'name', 'price', 'barcode'];
+        $exactBarcode = products::query()->where('barcode', $term)->first($columns);
+        if ($exactBarcode) {
+            return response()->json(['data' => [$exactBarcode]]);
+        }
+
+        if (mb_strlen($term) < 2) {
+            return response()->json(['data' => []]);
+        }
+
+        $like = '%'.addcslashes($term, '%_\\').'%';
+        $products = products::query()
+            ->where(fn ($query) => $query->where('name', 'like', $like)->orWhere('barcode', 'like', $like))
+            ->orderByRaw('CASE WHEN name LIKE ? THEN 0 ELSE 1 END, name, id', [addcslashes($term, '%_\\').'%'])
+            ->limit(20)
+            ->get($columns);
+
+        return response()->json(['data' => $products]);
     }
 
     public function store(Request $request)
@@ -62,7 +94,16 @@ class InvoiceOperationsController extends Controller
     public function edit(invoice $invoice)
     {
         abort_if($invoice->status === 'refunded', 404);
-        $products = products::query()->orderBy('name')->get();
+        $snapshotItems = is_array($invoice->items) ? $invoice->items : [];
+        $oldProductIds = old('product_ids');
+        $productIds = is_array($oldProductIds)
+            ? $oldProductIds
+            : array_merge(
+                collect($snapshotItems)->pluck('product_id')->all(),
+                [$invoice->product_id]
+            );
+        $products = products::query()->whereIn('id', $productIds)
+            ->orderBy('name')->get(['id', 'name', 'price', 'barcode']);
         $allProducts = $products->map(fn (products $product) => [
             'id' => $product->id,
             'name' => $product->name,

@@ -39,6 +39,9 @@ Route::middleware(['auth:sanctum', 'page.access'])->group(function () {
 
     Route::get('/installments/products/search', [InstallmentOperationsController::class, 'searchProducts'])
         ->name('installments.products.search');
+    Route::get('/invoices/products/search', [InvoiceOperationsController::class, 'searchProducts'])
+        ->middleware('can:page.invoices.manage')
+        ->name('invoices.products.search');
     Route::resource('/installments', InstallmentOperationsController::class)->except(['store', 'update', 'destroy']);
     Route::put('/installments/{installment}', [InstallmentOperationsController::class, 'update'])->can('update-installments')
     ->name('installments.update');
@@ -109,7 +112,8 @@ Route::middleware(['auth:sanctum', 'page.access'])->group(function () {
     Route::put('/profile', [ProfileController::class, 'update'])->name('profile.update');
     Route::put('/profile/users/{user}/role', [RoleController::class, 'updateLegacyAssignment'])
         ->middleware('superadmin')->name('profile.users.role.update');
-        Route::get('/backup', [BackupController::class, 'export'])->name('backup.export');
+        Route::get('/backup', [BackupController::class, 'index'])->name('backup.index');
+        Route::get('/backup/export', [BackupController::class, 'export'])->name('backup.export');
         Route::post('/backup/import', [BackupController::class, 'webImport'])->name('backup.import');
         Route::get('/notifications', [AppNotificationController::class, 'list'])->name('notifications.list');
         Route::post('/notifications/mark-all-read', [AppNotificationController::class, 'markAllRead'])->name('notifications.markAllRead');

@@ -44,6 +44,10 @@ class SaveStaffUserRequest extends FormRequest
                 Rule::unique('users', 'username')->ignore($target?->id),
             ],
             'name' => ['required', 'string', 'max:255'],
+            'email' => [
+                'nullable', 'email', 'max:255',
+                Rule::unique('users', 'email')->ignore($target?->id),
+            ],
             'role_id' => [
                 'required',
                 'integer',

@@ -20,6 +20,13 @@
         <div class="alert alert-info">يعرض هذا الجدول أقدم 500 عملية آجلة فقط. الإجمالي أعلاه كامل. حصّل الأقدم أولاً لتظهر الباقي.</div>
     @endif
 
+    @if ($customers->hasPages())
+        <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+            <small class="text-body-secondary">عرض {{ $customers->firstItem() }} إلى {{ $customers->lastItem() }} من {{ $customers->total() }} عميل</small>
+            {{ $customers->links() }}
+        </div>
+    @endif
+
     @forelse ($groups as $customer => $rows)
         @php $sum = \App\Support\Money::cents($rows->sum('receivable')); @endphp
         <div class="card shadow-sm mb-3">
@@ -54,6 +61,10 @@
     @empty
         <div class="card"><div class="card-body text-center text-body-secondary py-5">لا توجد مبالغ آجلة. كل العملاء مسدّدون.</div></div>
     @endforelse
+
+    @if ($customers->hasPages())
+        <div class="d-flex justify-content-end mt-3">{{ $customers->links() }}</div>
+    @endif
 
     <div class="modal fade" id="settleModal" tabindex="-1" aria-labelledby="settleTitle" aria-hidden="true">
         <div class="modal-dialog">

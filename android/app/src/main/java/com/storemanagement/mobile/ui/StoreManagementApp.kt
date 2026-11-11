@@ -321,7 +321,7 @@ private enum class StoreTab(val label: String, val permission: String?, val icon
     More("المزيد", null, Icons.Filled.MoreHoriz),
 }
 
-private enum class MoreSection { Home, Categories, Sales, Suppliers, Installments, Wallets, WalletCashier, ProductCashier, Damaged, Notifications, Maintenance, Profile, Backup }
+private enum class MoreSection { Home, Categories, Customers, Sales, Suppliers, Installments, Wallets, WalletCashier, ProductCashier, Damaged, Notifications, Maintenance, Profile, Backup }
 internal enum class CashierAction { Settle, Reverse }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -421,7 +421,7 @@ private fun StoreHomeScreen(
         invoicePdfPendingId = null
         if (uri != null && invoiceId != null) storeViewModel.downloadInvoicePdf(invoiceId, uri, context.contentResolver)
     }
-    val backupExportPicker = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/x-ndjson")) { uri ->
+    val backupExportPicker = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/zip")) { uri ->
         if (uri != null) storeViewModel.downloadBackup(backupPages.toList(), uri, context.contentResolver)
     }
     val backupImportPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -438,6 +438,7 @@ private fun StoreHomeScreen(
     val activeTitle = if (activeTab == StoreTab.More && moreSection != MoreSection.Home) {
         when (moreSection) {
             MoreSection.Categories -> "التصنيفات"
+            MoreSection.Customers -> "العملاء"
             MoreSection.Sales -> "المبيعات"
             MoreSection.Suppliers -> "الموردون"
             MoreSection.Installments -> "الأقساط والديون"
@@ -605,6 +606,7 @@ private fun StoreHomeScreen(
                 storeViewModel.refreshPersonalDebts(query)
             }
             StoreTab.More -> when (moreSection) {
+                MoreSection.Customers -> storeViewModel.refreshCustomers(query)
                 MoreSection.Suppliers -> storeViewModel.refreshSuppliers(query)
                 MoreSection.Installments -> {
                     storeViewModel.refreshInstallments(query)
@@ -953,6 +955,7 @@ private fun StoreHomeScreen(
             StoreTab.More -> when (moreSection) {
                 MoreSection.Home -> MoreHubScreen(
                     canViewCategories = "page.categories.view" in user.permissions,
+                    canViewCustomers = "page.customers.view" in user.permissions,
                     canViewSuppliers = "page.suppliers.view" in user.permissions,
                     canViewInstallments = "page.installments.view" in user.permissions,
                     canViewWallets = "page.wallets.view" in user.permissions,
@@ -970,6 +973,11 @@ private fun StoreHomeScreen(
                     onOpenCategories = {
                         moreSectionName = MoreSection.Categories.name
                         searchQuery = ""
+                    },
+                    onOpenCustomers = {
+                        moreSectionName = MoreSection.Customers.name
+                        searchQuery = ""
+                        storeViewModel.refreshCustomers(null)
                     },
                     onOpenSuppliers = {
                         moreSectionName = MoreSection.Suppliers.name
@@ -1032,6 +1040,21 @@ private fun StoreHomeScreen(
                     },
                     modifier = Modifier.padding(padding),
                 )
+                MoreSection.Customers -> CustomerListScreen(
+                    state = customers,
+                    query = searchQuery,
+                    canManage = "page.customers.manage" in user.permissions,
+                    onQueryChange = { searchQuery = it },
+                    onRefresh = { storeViewModel.refreshCustomers(searchQuery.ifBlank { null }) },
+                    onLoadMore = storeViewModel::loadMoreCustomers,
+                    onEdit = { editor = EditTarget(EditKind.Customer, it.id, it.name, it.phone.orEmpty(), it.address.orEmpty()) },
+                    onDelete = { deleteTarget = DeleteTarget(EditKind.Customer, it.id, it.name) },
+                    onCustomerClick = {
+                        selectedCustomer = it
+                        storeViewModel.loadCustomerDetails(it.id)
+                    },
+                    modifier = Modifier.padding(padding),
+                )
                 MoreSection.Suppliers -> SupplierListScreen(
                     state = suppliers,
                     canManage = "page.suppliers.manage" in user.permissions,
@@ -1058,8 +1081,8 @@ private fun StoreHomeScreen(
                     isBusy = storeViewModel.backupBusy.collectAsStateWithLifecycle().value,
                     canImport = "page.backup.manage" in user.permissions,
                     onToggle = { page -> backupPages = if (page in backupPages) backupPages - page else backupPages + page },
-                    onExport = { backupExportPicker.launch("store-backup.jsonl") },
-                    onImport = { backupImportPicker.launch(arrayOf("application/x-ndjson", "application/json", "text/plain", "application/octet-stream")) },
+                    onExport = { backupExportPicker.launch("store-backup.zip") },
+                    onImport = { backupImportPicker.launch(arrayOf("application/zip", "application/x-zip-compressed", "application/octet-stream")) },
                     snackbarHost = backupMessageHost,
                     modifier = Modifier.padding(padding),
                 )
@@ -2003,6 +2026,7 @@ private fun ProfileScreen(
 @Composable
 private fun MoreHubScreen(
     canViewCategories: Boolean,
+    canViewCustomers: Boolean,
     canViewSuppliers: Boolean,
     canViewInstallments: Boolean,
     canViewWallets: Boolean,
@@ -2015,6 +2039,7 @@ private fun MoreHubScreen(
     canViewBackup: Boolean,
     onOpenProfile: () -> Unit,
     onOpenCategories: () -> Unit,
+    onOpenCustomers: () -> Unit,
     onOpenSuppliers: () -> Unit,
     onOpenInstallments: () -> Unit,
     onOpenWallets: () -> Unit,
@@ -2038,6 +2063,7 @@ private fun MoreHubScreen(
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("إدارة المتجر", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
             if (canViewCategories) MoreActionRow("التصنيفات", "تصنيفات المنتجات", Icons.Filled.Category, onOpenCategories)
+            if (canViewCustomers) MoreActionRow("العملاء", "قائمة العملاء والبحث وإدارة بياناتهم", Icons.Filled.People, onOpenCustomers)
             if (canViewSales) MoreActionRow("المبيعات", "المنتجات المباعة حسب إجمالي الفواتير", Icons.Filled.BarChart, onOpenSales)
             if (canViewSuppliers) MoreActionRow("الموردون", "الأرصدة والحسابات الدائنة", Icons.Filled.People, onOpenSuppliers)
             if (canViewInstallments) MoreActionRow("الأقساط والديون", "الأرصدة ومواعيد السداد", Icons.AutoMirrored.Filled.ReceiptLong, onOpenInstallments)

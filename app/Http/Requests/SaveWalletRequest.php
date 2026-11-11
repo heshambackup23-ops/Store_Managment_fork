@@ -77,7 +77,7 @@ class SaveWalletRequest extends FormRequest
             'default_fee_percent' => ['nullable', 'numeric', 'decimal:0,2', 'between:0,100'],
             'default_fee_min' => $money,
             'default_fee_max' => $money,
-            'is_active' => ['required', 'boolean'],
+            'is_active' => ['sometimes', 'boolean'],
             'notes' => ['nullable', 'string', 'max:500'],
         ];
 
@@ -97,6 +97,10 @@ class SaveWalletRequest extends FormRequest
     public function walletAttributes(): array
     {
         $data = $this->validated();
+
+        if (! $this->route('wallet') && ! array_key_exists('is_active', $data)) {
+            $data['is_active'] = true;
+        }
 
         foreach (['warn_at_percent' => 80, 'default_commission_percent' => 0, 'default_commission_min' => 0, 'default_fee_percent' => 0, 'default_fee_min' => 0] as $key => $default) {
             if (($data[$key] ?? null) === null || $data[$key] === '') {

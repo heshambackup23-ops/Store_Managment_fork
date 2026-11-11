@@ -14,6 +14,7 @@
         ['route' => 'suppliers.index',    'active' => 'suppliers.*',     'can' => 'page.suppliers.view',    'icon' => 'fa-truck-field',       'label' => 'الموردون والحسابات الدائنة'],
         ['route' => 'installments.index', 'active' => 'installments.*',  'can' => 'page.installments.view', 'icon' => 'fa-credit-card',       'label' => 'الديون'],
         ['route' => 'users.index',        'active' => 'users.*',         'can' => 'page.staff.view',        'icon' => 'fa-user-group',        'label' => 'الموظفون'],
+        ['route' => 'backup.index', 'active' => 'backup.*', 'can' => 'page.backup.view', 'icon' => 'fa-database', 'label' => 'Backup'],
     ];
 @endphp
 
