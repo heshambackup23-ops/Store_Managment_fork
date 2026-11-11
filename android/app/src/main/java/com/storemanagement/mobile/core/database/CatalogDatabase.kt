@@ -8,6 +8,7 @@ import androidx.room.OnConflictStrategy
 import androidx.room.PrimaryKey
 import androidx.room.Query
 import androidx.room.RoomDatabase
+import androidx.room.Transaction
 import kotlinx.coroutines.flow.Flow
 
 @Entity(tableName = "cached_products")
@@ -34,28 +35,40 @@ data class CachedCategory(
 )
 
 @Dao
-interface CatalogDao {
+abstract class CatalogDao {
     @Query("SELECT * FROM cached_products ORDER BY id DESC LIMIT 1000")
-    fun observeProducts(): Flow<List<CachedProduct>>
+    abstract fun observeProducts(): Flow<List<CachedProduct>>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun upsertProducts(products: List<CachedProduct>)
+    abstract suspend fun upsertProducts(products: List<CachedProduct>)
 
     @Query("SELECT MAX(cachedAtEpochMillis) FROM cached_products")
-    fun observeProductCacheTime(): Flow<Long?>
+    abstract fun observeProductCacheTime(): Flow<Long?>
 
     @Query("SELECT * FROM cached_categories ORDER BY name, id")
-    fun observeCategories(): Flow<List<CachedCategory>>
+    abstract fun observeCategories(): Flow<List<CachedCategory>>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun upsertCategories(categories: List<CachedCategory>)
+    abstract suspend fun upsertCategories(categories: List<CachedCategory>)
 
     @Query("DELETE FROM cached_products")
-    suspend fun clearProducts()
+    abstract suspend fun clearProducts()
 
     @Query("DELETE FROM cached_categories")
-    suspend fun clearCategories()
+    abstract suspend fun clearCategories()
 
+    /** Clear + insert in one transaction so observers never see an empty catalogue in between. */
+    @Transaction
+    open suspend fun replaceProducts(products: List<CachedProduct>) {
+        clearProducts()
+        upsertProducts(products)
+    }
+
+    @Transaction
+    open suspend fun replaceCategories(categories: List<CachedCategory>) {
+        clearCategories()
+        upsertCategories(categories)
+    }
 }
 
 @Database(

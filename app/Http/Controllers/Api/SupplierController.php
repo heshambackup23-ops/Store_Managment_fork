@@ -3,8 +3,11 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Requests\Api\SupplierIndexRequest;
+use App\Http\Requests\Api\CreateSupplierRequest;
 use App\Http\Resources\Api\SupplierResource;
 use App\Models\Supplier;
+use App\Services\ApiIdempotencyService;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
 
 class SupplierController
@@ -33,5 +36,36 @@ class SupplierController
     public function show(Supplier $supplier): SupplierResource
     {
         return new SupplierResource($supplier->loadCount('purchases'));
+    }
+
+    public function store(CreateSupplierRequest $request, ApiIdempotencyService $idempotency): JsonResponse
+    {
+        $data = $request->validated();
+        $key = $data['idempotency_key'];
+        unset($data['idempotency_key']);
+        $openingBalance = number_format((int) round((float) ($data['opening_balance'] ?? 0) * 100) / 100, 2, '.', '');
+
+        return $idempotency->execute(
+            $request->user(),
+            'suppliers.create',
+            $key,
+            $data,
+            function () use ($request, $data, $openingBalance): array {
+                $supplier = Supplier::query()->create([
+                    'name' => $data['name'],
+                    'phone' => $data['phone'] ?? null,
+                    'email' => $data['email'] ?? null,
+                    'address' => $data['address'] ?? null,
+                    'opening_balance' => $openingBalance,
+                    'balance' => $openingBalance,
+                    'notes' => $data['notes'] ?? null,
+                ]);
+
+                return [
+                    'status' => 201,
+                    'body' => ['data' => (new SupplierResource($supplier))->resolve($request)],
+                ];
+            }
+        );
     }
 }

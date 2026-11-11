@@ -12,6 +12,7 @@ use App\Http\Controllers\CategoryController;
 use App\Http\Controllers\ProductsController;
 use App\Http\Controllers\AuthController;
 use App\Http\Controllers\InstallmentOperationsController;
+use App\Http\Controllers\PersonalDebtOperationsController;
 use App\Http\Controllers\InvoiceOperationsController;
 use App\Http\Controllers\StaffController;
 use App\Http\Controllers\RoleController;
@@ -39,10 +40,26 @@ Route::middleware(['auth:sanctum', 'page.access'])->group(function () {
     ->name('installments.showPay');
     Route::put('/installments/{installment}/pay', [InstallmentOperationsController::class, 'pay'])->can('update-installments')
     ->name('installments.pay');
+    Route::put('/installments/{installment}/status', [InstallmentOperationsController::class, 'changeStatus'])->can('update-installments')
+        ->name('installments.status');
     Route::post('/installments', [InstallmentOperationsController::class, 'store'])->can('create-installments')
     ->name('installments.store');
     Route::delete('/installments/{installment}', [InstallmentOperationsController::class, 'destroy'])->can('delete-installments')
     ->name('installments.destroy');
+    Route::get('/personal-debts/create', [PersonalDebtOperationsController::class, 'create'])->can('create-installments')
+        ->name('personal-debts.create');
+    Route::post('/personal-debts', [PersonalDebtOperationsController::class, 'store'])->can('create-installments')
+        ->name('personal-debts.store');
+    Route::get('/personal-debts/{personalDebt}/edit', [PersonalDebtOperationsController::class, 'edit'])->can('update-installments')
+        ->name('personal-debts.edit');
+    Route::put('/personal-debts/{personalDebt}', [PersonalDebtOperationsController::class, 'update'])->can('update-installments')
+        ->name('personal-debts.update');
+    Route::get('/personal-debts/{personalDebt}/pay', [PersonalDebtOperationsController::class, 'showPay'])->can('update-installments')
+        ->name('personal-debts.showPay');
+    Route::put('/personal-debts/{personalDebt}/pay', [PersonalDebtOperationsController::class, 'pay'])->can('update-installments')
+        ->name('personal-debts.pay');
+    Route::delete('/personal-debts/{personalDebt}', [PersonalDebtOperationsController::class, 'destroy'])->can('delete-installments')
+        ->name('personal-debts.destroy');
     Route::get('/settings', [SettingsController::class, 'index'])->name('settings');
     Route::resource('/customers', CustomersController::class)->except(['store', 'update', 'destroy']);
         Route::post('/customers', [CustomersController::class, 'store'])->can('create-customers')

@@ -9,6 +9,7 @@ final class ApiPermissionMap
     /** @return list<string> */
     public function tokenAbilities(User $user): array
     {
+        $user->loadMissing(['permissions', 'roles.permissions']);
         $abilities = ['api:me'];
 
         foreach (array_keys(config('access.pages', [])) as $page) {

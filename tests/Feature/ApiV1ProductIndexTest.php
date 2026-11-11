@@ -6,6 +6,7 @@ use App\Models\category;
 use App\Models\products;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Str;
 use Spatie\Permission\Models\Permission;
 use Spatie\Permission\Models\Role;
 use Tests\TestCase;
@@ -100,6 +101,84 @@ class ApiV1ProductIndexTest extends TestCase
             ->assertOk()
             ->assertJsonCount(1, 'data')
             ->assertJsonPath('data.0.id', $outOfStock->id);
+    }
+
+    public function test_product_create_is_idempotent_and_requires_manage_permission(): void
+    {
+        $user = User::factory()->create(['is_active' => true]);
+        $permission = Permission::query()->create([
+            'name' => 'page.products.manage',
+            'guard_name' => 'web',
+        ]);
+        $role = Role::query()->create(['name' => 'Catalog manager', 'guard_name' => 'web']);
+        $role->givePermissionTo($permission);
+        $user->assignRole($role);
+        $token = $user->createToken('catalog-manager', [
+            'api:me',
+            'page.products.view',
+            'page.products.manage',
+        ]);
+        $key = (string) Str::uuid();
+        $payload = [
+            'name' => 'New phone',
+            'price' => '199.50',
+            'description' => null,
+            'barcode' => null,
+            'stock' => 8,
+        ];
+
+        $created = $this->withToken($token->plainTextToken)
+            ->withHeader('Idempotency-Key', $key)
+            ->postJson('/api/v1/products', $payload)
+            ->assertCreated()
+            ->assertJsonPath('data.name', 'New phone')
+            ->assertJsonPath('data.price', '199.50');
+
+        $this->withToken($token->plainTextToken)
+            ->withHeader('Idempotency-Key', $key)
+            ->postJson('/api/v1/products', $payload)
+            ->assertCreated()
+            ->assertJsonPath('data.id', $created->json('data.id'));
+
+        $this->assertSame(1, products::query()->count());
+    }
+
+    public function test_product_manager_can_update_and_delete_only_products_without_history(): void
+    {
+        $user = User::factory()->create(['is_active' => true]);
+        $permission = Permission::query()->create(['name' => 'page.products.manage', 'guard_name' => 'web']);
+        $role = Role::query()->create(['name' => 'Catalog editor', 'guard_name' => 'web']);
+        $role->givePermissionTo($permission);
+        $user->assignRole($role);
+        $token = $user->createToken('catalog-editor', ['api:me', 'page.products.view', 'page.products.manage'])->plainTextToken;
+        $product = products::query()->create([
+            'name' => 'Editable product', 'price' => '25.00', 'description' => null, 'stock' => 10,
+        ]);
+        $updateKey = (string) Str::uuid();
+        $updatePayload = [
+            'name' => 'Updated product', 'price' => '30.00', 'description' => null,
+            'barcode' => 'EDIT-001', 'stock' => 8, 'category_id' => null,
+        ];
+
+        $updated = $this->withToken($token)
+            ->withHeader('Idempotency-Key', $updateKey)
+            ->putJson('/api/v1/products/'.$product->id, $updatePayload)
+            ->assertOk()
+            ->assertJsonPath('data.name', 'Updated product')
+            ->assertJsonPath('data.barcode', 'EDIT-001');
+
+        $this->withToken($token)
+            ->withHeader('Idempotency-Key', $updateKey)
+            ->putJson('/api/v1/products/'.$product->id, $updatePayload)
+            ->assertOk()
+            ->assertJsonPath('data.id', $updated->json('data.id'));
+
+        $this->withToken($token)
+            ->withHeader('Idempotency-Key', (string) Str::uuid())
+            ->deleteJson('/api/v1/products/'.$product->id)
+            ->assertNoContent();
+
+        $this->assertDatabaseMissing('products', ['id' => $product->id]);
     }
 
     private function userWithProductViewPermission(): User

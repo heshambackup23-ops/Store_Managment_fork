@@ -23,6 +23,9 @@ object NetworkModule {
     fun provideJson(): Json = Json {
         ignoreUnknownKeys = true
         explicitNulls = false
+        // Older web-created records may carry numbers where the app expects text.
+        isLenient = true
+        coerceInputValues = true
     }
 
     @Provides
@@ -40,8 +43,9 @@ object NetworkModule {
 
     @Provides
     @Singleton
-    fun provideOkHttpClient(authInterceptor: Interceptor): OkHttpClient = OkHttpClient.Builder()
+    fun provideOkHttpClient(authInterceptor: Interceptor, connectionMonitor: ConnectionMonitor): OkHttpClient = OkHttpClient.Builder()
         .addInterceptor(authInterceptor)
+        .addInterceptor(connectionMonitor.interceptor)
         .connectTimeout(20, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
         .writeTimeout(30, TimeUnit.SECONDS)

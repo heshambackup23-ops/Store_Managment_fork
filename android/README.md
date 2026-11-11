@@ -77,15 +77,21 @@ cd android
 - Invoice detail sheet backed by the authorized `/v1/invoices/{id}` endpoint, including server-recorded totals and item snapshots.
 - Room cache for products/categories; cached price and stock are informational and may be stale.
 - Category/customer create, edit, and delete when the server grants the relevant permission.
-- Read-only supplier directory and payable summary when the server grants `page.suppliers.view`; purchase and payment actions remain unavailable.
-- Read-only installment list and detail when the server grants `page.installments.view`; debt creation and payment actions remain unavailable.
+- Supplier directory and payable summary when the server grants `page.suppliers.view`; supplier creation is available with `page.suppliers.manage`. Purchase and payment actions remain unavailable.
+- Installment list and detail when the server grants `page.installments.view`; standalone debt creation is available with `page.installments.manage`. The server uses current product prices and does not change stock; installment payments remain unavailable.
+- Wallet balances, cash/profit/capital summary, limit usage, wallet creation, balance adjustments, and activation controls with the matching wallet permissions.
+- Wallet Cashier page with wallet sends/receives, deferred customer balances, partial/full settlement, and audited reversals. Ledger rows remain immutable; corrections append reversal rows.
+- Read-only sales report from server-maintained sold-product totals when the server grants `page.sales.view`.
+- Active notifications show per-user read state and support marking one or all as read when the server grants `page.notifications.view`; admin notification management is not exposed.
+- Maintenance requests support add, edit, and delete with `page.maintenance.manage`; optional contact and description fields may be blank. Image upload remains unavailable.
+- Damaged stock, staff/roles, settings/backup, and wallet expenses/cash-drawer management are not yet exposed in the native client; each needs an authorized API and reviewed workflow before adding its screen.
 - Online invoice creation with a stable idempotency key. Laravel computes totals and validates current stock. Financial and inventory writes are not queued offline.
 - Invoice product selection supports on-device barcode/QR scanning through Google Play services Code Scanner, plus manual name/barcode filtering. Scanned codes are looked up against Laravel's product search and do not determine price or stock.
 - Invoice form accepts Arabic-Indic digits and checks the date/payment format before submission; Laravel remains the final validator.
 - Invoice status/date values and cached timestamps are presented using Arabic labels and formatting.
-- The customer/category/invoice create APIs require the additive idempotency migration to be applied to the target development database before those actions can succeed. No migration was run as part of this Android work.
+- Customer/category/supplier/installment/invoice create APIs require the additive idempotency migration to be applied to the target database before those actions can succeed. No migration was run against a production database.
 - Barcode scanning requires a compatible Google Play services installation; manual product filtering and selection remain available when the scanner cannot start. The app does not request camera permission.
 
 ## Verification
 
-The development debug APK builds with `:app:assembleDevelopmentDebug`; the artifact is written to `app/build/outputs/apk/development/debug/app-development-debug.apk`. Android unit tests pass with `:app:testDevelopmentDebugUnitTest` (17 tests, 0 failures), and `:app:lintDevelopmentDebug` passes with 0 errors. `:app:assembleProductionRelease` also succeeds, but without signing properties it produces an unsigned APK using the placeholder API host. A physical phone has the LAN-configured debug APK installed; phone-to-PC TCP access and the Laravel `/up` health route were verified. Credential login, barcode scanning, accessibility, and production endpoint behavior still require on-device verification.
+The development debug APK builds with `:app:assembleDevelopmentDebug`; the artifact is written to `app/build/outputs/apk/development/debug/app-development-debug.apk`. Android unit tests pass with `:app:testDevelopmentDebugUnitTest` (21 tests, 0 failures), and `:app:lintDevelopmentDebug` passes with 0 errors. `:app:assembleProductionRelease` also succeeds, but without signing properties it produces an unsigned APK using the placeholder API host. The latest LAN-configured debug APK is installed on the phone; phone-to-PC TCP access and the Laravel `/up` health route were verified. Credential login, create flows, barcode scanning, accessibility, and production endpoint behavior still require on-device verification.

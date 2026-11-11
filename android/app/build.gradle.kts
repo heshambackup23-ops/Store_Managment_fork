@@ -9,7 +9,7 @@ plugins {
 }
 
 val developmentApiUrl = providers.gradleProperty("storeApiDevelopmentUrl")
-    .orElse("http://10.0.2.2:8000/api/")
+    .orElse("http://192.168.1.8:8000/api/")
 val stagingApiUrl = providers.gradleProperty("storeApiStagingUrl")
     .orElse("https://staging.example.invalid/api/")
 val productionApiUrl = providers.gradleProperty("storeApiProductionUrl")

@@ -18,12 +18,17 @@ private val StoreLightColors = lightColorScheme(
     onSecondaryContainer = Color(0xFF281900),
     tertiary = Color(0xFF9B4031),
     onTertiary = Color(0xFFFFFFFF),
-    background = Color(0xFFF5F6F1),
-    surface = Color(0xFFF5F6F1),
+    background = Color(0xFFF1F4EF),
+    surface = Color(0xFFFFFFFF),
     surfaceVariant = Color(0xFFE4E9E2),
     onSurface = Color(0xFF191D1A),
     onSurfaceVariant = Color(0xFF414943),
+    outline = Color(0xFF727971),
+    outlineVariant = Color(0xFFD3DAD1),
     error = Color(0xFFBA1A1A),
+    onError = Color(0xFFFFFFFF),
+    errorContainer = Color(0xFFFFDAD6),
+    onErrorContainer = Color(0xFF410002),
 )
 
 private val StoreDarkColors = darkColorScheme(

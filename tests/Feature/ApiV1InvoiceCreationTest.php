@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Models\products;
 use App\Models\User;
 use App\Models\invoice;
+use App\Models\installments;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Str;
 use Spatie\Permission\Models\Permission;
@@ -106,6 +107,27 @@ class ApiV1InvoiceCreationTest extends TestCase
         $this->assertSame(0, invoice::query()->count());
         $this->assertSame(1, (int) $product->fresh()->stock);
         $this->assertDatabaseCount('api_idempotency_records', 0);
+    }
+
+    public function test_invoice_can_be_marked_paid_and_its_linked_installment_is_synchronized(): void
+    {
+        [, $token] = $this->invoiceManager();
+        $product = $this->product(stock: 5);
+        $created = $this->createInvoice($token, (string) Str::uuid(), $this->payload($product->id))
+            ->assertCreated();
+        $invoiceId = $created->json('data.id');
+        $installmentId = installments::query()->where('invoice_id', $invoiceId)->value('id');
+
+        $this->withToken($token)
+            ->withHeader('Idempotency-Key', (string) Str::uuid())
+            ->postJson('/api/v1/invoices/'.$invoiceId.'/pay', [])
+            ->assertOk()
+            ->assertJsonPath('data.status', 'paid')
+            ->assertJsonPath('data.paid_amount', '200.00')
+            ->assertJsonPath('data.remaining_amount', '0.00');
+
+        $this->assertSame('0.00', number_format((float) installments::query()->findOrFail($installmentId)->remaining, 2, '.', ''));
+        $this->assertSame('مكتمل', installments::query()->findOrFail($installmentId)->status);
     }
 
     private function invoiceManager(): array

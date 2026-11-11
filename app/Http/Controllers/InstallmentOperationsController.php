@@ -5,8 +5,10 @@ namespace App\Http\Controllers;
 use App\Models\AppNotification;
 use App\Models\installments as Installment;
 use App\Models\invoice as Invoice;
+use App\Models\PersonalDebt;
 use App\Models\products as Product;
 use App\Services\CustomerLedgerService;
+use App\Services\InstallmentWorkflowService;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\DB;
@@ -25,7 +27,18 @@ class InstallmentOperationsController extends Controller
                     ->orWhere('product_name', 'like', $search));
             })
             ->orderByDesc('id')->paginate(20)->withQueryString();
-        return view('installments.index', compact('installments'));
+        $personalDebts = PersonalDebt::query()
+            ->when($request->filled('search'), function ($query) use ($request): void {
+                $search = '%'.$request->string('search')->toString().'%';
+                $query->where(fn ($builder) => $builder
+                    ->where('creditor', 'like', $search)
+                    ->orWhere('description', 'like', $search));
+            })
+            ->orderByDesc('id')
+            ->paginate(20, ['*'], 'debts_page')
+            ->withQueryString();
+
+        return view('installments.index', compact('installments', 'personalDebts'));
     }
 
     public function create()
@@ -68,48 +81,10 @@ class InstallmentOperationsController extends Controller
         return view('installments.show', compact('installment'));
     }
 
-    public function store(Request $request)
+    public function store(Request $request, InstallmentWorkflowService $workflow)
     {
         $validated = $this->validatedInput($request);
-        $userId = $request->user()->id;
-
-        DB::transaction(function () use ($validated, $userId): void {
-            [$items, $totalQuantity, $totalCents, $products] = $this->buildItems($validated);
-            $paidCents = (int) round((float) $validated['paid_amount'] * 100);
-
-            if ($paidCents > $totalCents) {
-                throw ValidationException::withMessages(['paid_amount' => 'لا يمكن أن يتجاوز المبلغ المدفوع إجمالي القسط.']);
-            }
-
-            $firstProduct = $products->get($validated['product_ids'][0]);
-            $complete = $paidCents === $totalCents;
-
-            $installment = Installment::create([
-                'customer' => $validated['customer'],
-                'product_id' => $firstProduct->id,
-                'product_name' => collect($items)->pluck('name')->implode(', '),
-                'product_price' => number_format($totalCents / 100, 2, '.', ''),
-                'quantity' => $totalQuantity,
-                'payment_date' => $validated['payment_date'] ?? null,
-                'next_payment_date' => $complete ? null : ($validated['next_payment_date'] ?? null),
-                'paid_amount' => number_format($paidCents / 100, 2, '.', ''),
-                'remaining' => number_format(($totalCents - $paidCents) / 100, 2, '.', ''),
-                'status' => $complete ? 'مكتمل' : 'غير مكتمل',
-                'items' => $items,
-                'notes' => $validated['notes'] ?? null,
-            ]);
-
-            if (! $complete) {
-                app(CustomerLedgerService::class)->syncNamedCustomer($validated['customer'], $installment);
-            }
-
-            AppNotification::create([
-                'title' => 'تم إضافة دين',
-                'message' => 'تم إضافة دين للعميل '.$validated['customer'],
-                'is_active' => true,
-                'created_by' => $userId,
-            ]);
-        }, 3);
+        $workflow->create($validated, (int) $request->user()->id);
 
         return redirect()->route('installments.index')->with('success', 'تم إضافة الدين بنجاح');
     }
@@ -134,16 +109,16 @@ class InstallmentOperationsController extends Controller
         return view('installments.edit', compact('installment', 'products', 'installmentProducts'));
     }
 
-    public function update(Request $request, Installment $installment)
+    public function update(Request $request, Installment $installment, InstallmentWorkflowService $workflow)
     {
         abort_if($installment->invoice_id, 403, 'يجب تعديل الأقساط المرتبطة بفاتورة من صفحة الفاتورة.');
         $validated = $this->validatedInput($request);
         $userId = $request->user()->id;
 
-        DB::transaction(function () use ($validated, $installment, $userId): void {
+        DB::transaction(function () use ($validated, $installment, $userId, $workflow): void {
             $lockedInstallment = Installment::query()->lockForUpdate()->findOrFail($installment->id);
             abort_if($lockedInstallment->invoice_id, 403);
-            [$items, $totalQuantity, $totalCents, $products] = $this->buildItems($validated);
+            [$items, $totalQuantity, $totalCents, $products] = $workflow->buildItems($validated);
             $paidCents = (int) round((float) $validated['paid_amount'] * 100);
 
             if ($paidCents > $totalCents) {
@@ -272,6 +247,16 @@ class InstallmentOperationsController extends Controller
         return redirect()->route('installments.index')->with('success', 'تم تسجيل الدفعة بنجاح.');
     }
 
+    public function changeStatus(Request $request, Installment $installment, InstallmentWorkflowService $workflow)
+    {
+        $validated = $request->validate([
+            'status' => ['required', 'string', 'in:غير مكتمل,متأخر,مكتمل'],
+        ]);
+        $workflow->changeStatus($installment, $validated['status']);
+
+        return redirect()->route('installments.index')->with('success', 'تم تحديث حالة القسط.');
+    }
+
     private function validatedInput(Request $request): array
     {
         $productIds = $request->input('product_ids', []);
@@ -290,36 +275,4 @@ class InstallmentOperationsController extends Controller
         ], ['notes.max' => 'يجب ألا تتجاوز الملاحظات 2000 حرف.']);
     }
 
-    private function buildItems(array $validated): array
-    {
-        $productIds = array_values(array_unique($validated['product_ids']));
-        $products = Product::query()->whereIn('id', $productIds)->orderBy('id')
-            ->lockForUpdate()->get()->keyBy('id');
-
-        if ($products->count() !== count($productIds)) {
-            throw ValidationException::withMessages(['product_ids' => 'أحد المنتجات المحددة لم يعد متاحاً.']);
-        }
-
-        $items = [];
-        $totalQuantity = 0;
-        $totalCents = 0;
-
-        foreach ($validated['product_ids'] as $index => $productId) {
-            $product = $products->get($productId);
-            $quantity = (int) $validated['quantities'][$index];
-            $priceCents = (int) round((float) $product->price * 100);
-            $lineTotalCents = $priceCents * $quantity;
-            $items[] = [
-                'product_id' => $product->id,
-                'name' => $product->name,
-                'price' => number_format($priceCents / 100, 2, '.', ''),
-                'quantity' => $quantity,
-                'line_total' => number_format($lineTotalCents / 100, 2, '.', ''),
-            ];
-            $totalQuantity += $quantity;
-            $totalCents += $lineTotalCents;
-        }
-
-        return [$items, $totalQuantity, $totalCents, $products];
-    }
 }

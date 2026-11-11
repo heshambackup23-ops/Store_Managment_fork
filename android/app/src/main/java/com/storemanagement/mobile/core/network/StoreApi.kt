@@ -17,6 +17,49 @@ interface StoreApi {
     @GET("v1/me")
     suspend fun currentUser(): ApiEnvelope<UserDto>
 
+    @GET("v1/profile")
+    suspend fun profile(): ApiEnvelope<ProfileDto>
+
+    @PUT("v1/profile")
+    suspend fun updateProfile(@Body body: ProfileInputDto): ApiEnvelope<ProfileDto>
+
+    @GET("v1/damaged")
+    suspend fun damagedItems(
+        @Query("q") query: String? = null,
+        @Query("status") status: String? = null,
+        @Query("page") page: Int = 1,
+        @Query("per_page") perPage: Int = 20,
+    ): ApiPage<DamagedItemDto>
+
+    @GET("v1/damaged/products")
+    suspend fun damagedProducts(@Query("q") query: String? = null): ApiEnvelope<List<DamagedProductDto>>
+
+    @POST("v1/damaged")
+    suspend fun createDamagedItem(
+        @Header("Idempotency-Key") key: String,
+        @Body body: DamagedItemInputDto,
+    ): ApiEnvelope<DamagedItemDto>
+
+    @POST("v1/damaged/{item}/void")
+    suspend fun voidDamagedItem(
+        @Path("item") id: Long,
+        @Header("Idempotency-Key") key: String,
+        @Body body: VoidDamagedItemInputDto,
+    ): ApiEnvelope<DamagedItemDto>
+
+    @PUT("v1/damaged/{item}")
+    suspend fun updateDamagedItem(
+        @Path("item") id: Long,
+        @Header("Idempotency-Key") key: String,
+        @Body body: DamagedItemInputDto,
+    ): ApiEnvelope<DamagedItemDto>
+
+    @POST("v1/invoices/{invoice}/refund")
+    suspend fun refundInvoice(
+        @Path("invoice") id: Long,
+        @Header("Idempotency-Key") key: String,
+    ): ApiEnvelope<InvoiceDto>
+
     @DELETE("v1/auth/token")
     suspend fun revokeCurrentToken(): Response<Unit>
 
@@ -28,6 +71,98 @@ interface StoreApi {
         @Query("page") page: Int = 1,
         @Query("per_page") perPage: Int = 20,
     ): ApiPage<ProductDto>
+
+    @POST("v1/products")
+    suspend fun createProduct(
+        @Header("Idempotency-Key") key: String,
+        @Body body: ProductInputDto,
+    ): ApiEnvelope<ProductDto>
+
+    @PUT("v1/products/{product}")
+    suspend fun updateProduct(
+        @Path("product") id: Long,
+        @Header("Idempotency-Key") key: String,
+        @Body body: ProductInputDto,
+    ): ApiEnvelope<ProductDto>
+
+    @DELETE("v1/products/{product}")
+    suspend fun deleteProduct(
+        @Path("product") id: Long,
+        @Header("Idempotency-Key") key: String,
+    ): Response<Unit>
+
+    @GET("v1/sales")
+    suspend fun sales(
+        @Query("q") query: String? = null,
+        @Query("page") page: Int = 1,
+        @Query("per_page") perPage: Int = 20,
+    ): ApiPage<SoldProductDto>
+
+    @GET("v1/cashier/products")
+    suspend fun cashierProducts(@Query("q") query: String? = null): CashierSearchResponseDto
+
+    @POST("v1/cashier/checkout")
+    suspend fun cashierCheckout(
+        @Header("Idempotency-Key") key: String,
+        @Body body: CashierCheckoutInputDto,
+    ): ApiEnvelope<CashierCheckoutResponseDto>
+
+    @GET("v1/notifications")
+    suspend fun notifications(
+        @Query("page") page: Int = 1,
+        @Query("per_page") perPage: Int = 20,
+    ): ApiPage<NotificationDto>
+
+    @POST("v1/notifications/{notification}/read")
+    suspend fun markNotificationRead(@Path("notification") id: Long): Response<Unit>
+
+    @POST("v1/notifications/read-all")
+    suspend fun markAllNotificationsRead(): Response<Unit>
+
+    @GET("v1/maintenance")
+    suspend fun maintenance(
+        @Query("q") query: String? = null,
+        @Query("page") page: Int = 1,
+        @Query("per_page") perPage: Int = 20,
+    ): ApiPage<MaintenanceDto>
+
+    @POST("v1/maintenance")
+    suspend fun createMaintenance(
+        @Header("Idempotency-Key") key: String,
+        @Body body: MaintenanceInputDto,
+    ): ApiEnvelope<MaintenanceDto>
+
+    @PUT("v1/maintenance/{maintenance}")
+    suspend fun updateMaintenance(
+        @Path("maintenance") id: Long,
+        @Body body: MaintenanceInputDto,
+    ): ApiEnvelope<MaintenanceDto>
+
+    @DELETE("v1/maintenance/{maintenance}")
+    suspend fun deleteMaintenance(@Path("maintenance") id: Long): Response<Unit>
+
+    @GET("v1/wallet-cashier")
+    suspend fun walletCashier(): ApiEnvelope<WalletCashierDto>
+
+    @POST("v1/wallet-cashier")
+    suspend fun createWalletTransaction(
+        @Header("Idempotency-Key") key: String,
+        @Body body: WalletCashierInputDto,
+    ): ApiEnvelope<WalletLedgerActionDto>
+
+    @POST("v1/wallet-cashier/{transaction}/settle")
+    suspend fun settleWalletTransaction(
+        @Path("transaction") uuid: String,
+        @Header("Idempotency-Key") key: String,
+        @Body body: SettleWalletTransactionInputDto,
+    ): ApiEnvelope<WalletLedgerActionDto>
+
+    @POST("v1/wallet-cashier/{transaction}/reverse")
+    suspend fun reverseWalletTransaction(
+        @Path("transaction") uuid: String,
+        @Header("Idempotency-Key") key: String,
+        @Body body: ReverseWalletTransactionInputDto,
+    ): ApiEnvelope<WalletLedgerActionDto>
 
     @GET("v1/products/{product}")
     suspend fun product(@Path("product") id: Long): ApiEnvelope<ProductDto>
@@ -59,6 +194,12 @@ interface StoreApi {
         @Query("per_page") perPage: Int = 20,
     ): ApiPage<SupplierDto>
 
+    @POST("v1/suppliers")
+    suspend fun createSupplier(
+        @Header("Idempotency-Key") key: String,
+        @Body body: SupplierInputDto,
+    ): ApiEnvelope<SupplierDto>
+
     @GET("v1/suppliers/{supplier}")
     suspend fun supplier(@Path("supplier") id: Long): ApiEnvelope<SupplierDto>
 
@@ -68,6 +209,72 @@ interface StoreApi {
         @Query("page") page: Int = 1,
         @Query("per_page") perPage: Int = 20,
     ): ApiPage<InstallmentDto>
+
+    @POST("v1/installments")
+    suspend fun createInstallment(
+        @Header("Idempotency-Key") key: String,
+        @Body body: InstallmentInputDto,
+    ): ApiEnvelope<InstallmentDto>
+
+    @PUT("v1/installments/{installment}")
+    suspend fun updateInstallment(
+        @Path("installment") id: Long,
+        @Header("Idempotency-Key") key: String,
+        @Body body: InstallmentInputDto,
+    ): ApiEnvelope<InstallmentDto>
+
+    @DELETE("v1/installments/{installment}")
+    suspend fun deleteInstallment(
+        @Path("installment") id: Long,
+        @Header("Idempotency-Key") key: String,
+    ): Response<Unit>
+
+    @POST("v1/installments/{installment}/pay")
+    suspend fun payInstallment(
+        @Path("installment") id: Long,
+        @Header("Idempotency-Key") key: String,
+        @Body body: PayAmountInputDto,
+    ): ApiEnvelope<InstallmentDto>
+
+    @POST("v1/installments/{installment}/status")
+    suspend fun changeInstallmentStatus(
+        @Path("installment") id: Long,
+        @Header("Idempotency-Key") key: String,
+        @Body body: InstallmentStatusInputDto,
+    ): ApiEnvelope<InstallmentDto>
+
+    @GET("v1/personal-debts")
+    suspend fun personalDebts(
+        @Query("q") query: String? = null,
+        @Query("page") page: Int = 1,
+        @Query("per_page") perPage: Int = 20,
+    ): ApiPage<PersonalDebtDto>
+
+    @POST("v1/personal-debts")
+    suspend fun createPersonalDebt(
+        @Header("Idempotency-Key") key: String,
+        @Body body: PersonalDebtInputDto,
+    ): ApiEnvelope<PersonalDebtDto>
+
+    @PUT("v1/personal-debts/{debt}")
+    suspend fun updatePersonalDebt(
+        @Path("debt") id: Long,
+        @Header("Idempotency-Key") key: String,
+        @Body body: PersonalDebtInputDto,
+    ): ApiEnvelope<PersonalDebtDto>
+
+    @POST("v1/personal-debts/{debt}/pay")
+    suspend fun payPersonalDebt(
+        @Path("debt") id: Long,
+        @Header("Idempotency-Key") key: String,
+        @Body body: PayAmountInputDto,
+    ): ApiEnvelope<PersonalDebtDto>
+
+    @DELETE("v1/personal-debts/{debt}")
+    suspend fun deletePersonalDebt(
+        @Path("debt") id: Long,
+        @Header("Idempotency-Key") key: String,
+    ): Response<Unit>
 
     @GET("v1/installments/{installment}")
     suspend fun installment(@Path("installment") id: Long): ApiEnvelope<InstallmentDto>
@@ -81,6 +288,42 @@ interface StoreApi {
 
     @GET("v1/invoices/{invoice}")
     suspend fun invoice(@Path("invoice") id: Long): ApiEnvelope<InvoiceDto>
+
+    @PUT("v1/invoices/{invoice}")
+    suspend fun updateInvoice(
+        @Path("invoice") id: Long,
+        @Header("Idempotency-Key") key: String,
+        @Body body: InvoiceInputDto,
+    ): ApiEnvelope<InvoiceDto>
+
+    @POST("v1/invoices/{invoice}/pay")
+    suspend fun payInvoice(
+        @Path("invoice") id: Long,
+        @Header("Idempotency-Key") key: String,
+        @Body body: PayAmountInputDto,
+    ): ApiEnvelope<InvoiceDto>
+
+    @GET("v1/wallets")
+    suspend fun wallets(): ApiEnvelope<WalletOverviewDto>
+
+    @POST("v1/wallets")
+    suspend fun createWallet(
+        @Header("Idempotency-Key") key: String,
+        @Body body: WalletInputDto,
+    ): ApiEnvelope<WalletActionDto>
+
+    @POST("v1/wallets/{wallet}/toggle")
+    suspend fun toggleWallet(
+        @Path("wallet") id: Long,
+        @Header("Idempotency-Key") key: String,
+    ): ApiEnvelope<WalletActionDto>
+
+    @POST("v1/wallets/{wallet}/adjust")
+    suspend fun adjustWallet(
+        @Path("wallet") id: Long,
+        @Header("Idempotency-Key") key: String,
+        @Body body: WalletAdjustmentInputDto,
+    ): ApiEnvelope<WalletActionDto>
 
     @POST("v1/customers")
     suspend fun createCustomer(

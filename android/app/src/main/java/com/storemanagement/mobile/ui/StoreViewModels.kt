@@ -14,10 +14,37 @@ import com.storemanagement.mobile.core.network.CustomerInputDto
 import com.storemanagement.mobile.core.network.InvoiceDto
 import com.storemanagement.mobile.core.network.InvoiceInputDto
 import com.storemanagement.mobile.core.network.InstallmentDto
+import com.storemanagement.mobile.core.network.InstallmentInputDto
+import com.storemanagement.mobile.core.network.InstallmentStatusInputDto
+import com.storemanagement.mobile.core.network.PersonalDebtDto
+import com.storemanagement.mobile.core.network.PersonalDebtInputDto
 import com.storemanagement.mobile.core.network.ProductDto
+import com.storemanagement.mobile.core.network.ProductInputDto
 import com.storemanagement.mobile.core.network.SupplierDto
+import com.storemanagement.mobile.core.network.SupplierInputDto
+import com.storemanagement.mobile.core.network.SoldProductDto
+import com.storemanagement.mobile.core.network.NotificationDto
+import com.storemanagement.mobile.core.network.MaintenanceDto
+import com.storemanagement.mobile.core.network.MaintenanceInputDto
+import com.storemanagement.mobile.core.network.CashierSearchResponseDto
+import com.storemanagement.mobile.core.network.CashierCheckoutInputDto
+import com.storemanagement.mobile.core.network.CashierCheckoutResponseDto
+import com.storemanagement.mobile.core.network.CashierProductDto
+import com.storemanagement.mobile.core.network.PayAmountInputDto
+import com.storemanagement.mobile.core.network.ProfileDto
+import com.storemanagement.mobile.core.network.ProfileInputDto
+import com.storemanagement.mobile.core.network.DamagedItemDto
+import com.storemanagement.mobile.core.network.DamagedProductDto
+import com.storemanagement.mobile.core.network.DamagedItemInputDto
+import com.storemanagement.mobile.core.network.VoidDamagedItemInputDto
 import com.storemanagement.mobile.core.network.UserDto
-import com.storemanagement.mobile.data.AppPreferencesRepository
+import com.storemanagement.mobile.core.network.WalletOverviewDto
+import com.storemanagement.mobile.core.network.WalletInputDto
+import com.storemanagement.mobile.core.network.WalletAdjustmentInputDto
+import com.storemanagement.mobile.core.network.WalletCashierDto
+import com.storemanagement.mobile.core.network.WalletCashierInputDto
+import com.storemanagement.mobile.core.network.SettleWalletTransactionInputDto
+import com.storemanagement.mobile.core.network.ReverseWalletTransactionInputDto
 import com.storemanagement.mobile.data.SessionRepository
 import com.storemanagement.mobile.data.StoreRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -137,6 +164,37 @@ data class InstallmentDetailUiState(
     val error: String? = null,
 )
 
+data class WalletOverviewUiState(
+    val overview: WalletOverviewDto? = null,
+    val isLoading: Boolean = false,
+    val error: String? = null,
+)
+
+data class WalletCashierUiState(
+    val data: WalletCashierDto? = null,
+    val isLoading: Boolean = false,
+    val error: String? = null,
+)
+
+data class CashierPosUiState(
+    val products: List<CashierProductDto> = emptyList(),
+    val exactMatch: Boolean = false,
+    val isLoading: Boolean = false,
+    val error: String? = null,
+)
+
+data class ProfileUiState(
+    val profile: ProfileDto? = null,
+    val isLoading: Boolean = false,
+    val error: String? = null,
+)
+
+data class DamagedProductsUiState(
+    val products: List<DamagedProductDto> = emptyList(),
+    val isLoading: Boolean = false,
+    val error: String? = null,
+)
+
 sealed interface StoreEvent {
     data class Saved(val message: String) : StoreEvent
     data class Failed(val message: String) : StoreEvent
@@ -147,13 +205,7 @@ sealed interface StoreEvent {
 class StoreViewModel @Inject constructor(
     private val storeRepository: StoreRepository,
     private val sessionRepository: SessionRepository,
-    private val preferencesRepository: AppPreferencesRepository,
 ) : ViewModel() {
-    val isDarkTheme = preferencesRepository.isDarkTheme.stateIn(
-        viewModelScope,
-        SharingStarted.WhileSubscribed(5_000),
-        false,
-    )
     val products = storeRepository.observeProducts().stateIn(
         viewModelScope,
         SharingStarted.WhileSubscribed(5_000),
@@ -172,12 +224,32 @@ class StoreViewModel @Inject constructor(
 
     private val mutableCustomers = MutableStateFlow(RemotePage<CustomerDto>())
     val customers = mutableCustomers
+    private val mutableSales = MutableStateFlow(RemotePage<SoldProductDto>())
+    val sales = mutableSales
+    private val mutableNotifications = MutableStateFlow(RemotePage<NotificationDto>())
+    val notifications = mutableNotifications
+    private val mutableMaintenances = MutableStateFlow(RemotePage<MaintenanceDto>())
+    val maintenances = mutableMaintenances
     private val mutableInvoices = MutableStateFlow(RemotePage<InvoiceDto>())
     val invoices = mutableInvoices
     private val mutableSuppliers = MutableStateFlow(RemotePage<SupplierDto>())
     val suppliers = mutableSuppliers
     private val mutableInstallments = MutableStateFlow(RemotePage<InstallmentDto>())
     val installments = mutableInstallments
+    private val mutablePersonalDebts = MutableStateFlow(RemotePage<PersonalDebtDto>())
+    val personalDebts = mutablePersonalDebts
+    private val mutableWalletOverview = MutableStateFlow(WalletOverviewUiState())
+    val walletOverview = mutableWalletOverview
+    private val mutableWalletCashier = MutableStateFlow(WalletCashierUiState())
+    val walletCashier = mutableWalletCashier
+    private val mutableCashierPos = MutableStateFlow(CashierPosUiState())
+    val cashierPos = mutableCashierPos
+    private val mutableProfile = MutableStateFlow(ProfileUiState())
+    val profile = mutableProfile
+    private val mutableDamagedItems = MutableStateFlow(RemotePage<DamagedItemDto>())
+    val damagedItems = mutableDamagedItems
+    private val mutableDamagedProducts = MutableStateFlow(DamagedProductsUiState())
+    val damagedProducts = mutableDamagedProducts
     private val mutableProductPage = MutableStateFlow(RemotePage<ProductDto>())
     val productPage = mutableProductPage
     private val mutableProductDetails = MutableStateFlow(ProductDetailUiState())
@@ -200,15 +272,22 @@ class StoreViewModel @Inject constructor(
     val categoryError = mutableCategoryError
     private val mutableEvents = MutableSharedFlow<StoreEvent>(extraBufferCapacity = 8)
     val events = mutableEvents.asSharedFlow()
+    private val mutableIsSaving = MutableStateFlow(false)
+    val isSaving = mutableIsSaving
+    private var activeWrites = 0
 
     private var productQuery: String? = null
     private var productCategoryId: Long? = null
     private var productStockFilter: Boolean? = null
     private var categoryQuery: String? = null
     private var customerQuery: String? = null
+    private var salesQuery: String? = null
     private var invoiceQuery: String? = null
     private var supplierQuery: String? = null
     private var installmentQuery: String? = null
+    private var personalDebtQuery: String? = null
+    private var damagedQuery: String? = null
+    private var damagedStatus: String? = null
     private var productRequest: Job? = null
     private var productDetailsRequest: Job? = null
     private var invoiceDetailsRequest: Job? = null
@@ -218,9 +297,17 @@ class StoreViewModel @Inject constructor(
     private var installmentDetailsRequest: Job? = null
     private var categoryRequest: Job? = null
     private var customerRequest: Job? = null
+    private var salesRequest: Job? = null
+    private var notificationsRequest: Job? = null
+    private var maintenanceQuery: String? = null
+    private var maintenanceRequest: Job? = null
+    private var cashierPosRequest: Job? = null
+    private var damagedRequest: Job? = null
+    private var damagedProductsRequest: Job? = null
     private var invoiceRequest: Job? = null
     private var supplierRequest: Job? = null
     private var installmentRequest: Job? = null
+    private var personalDebtRequest: Job? = null
 
     fun refreshProducts(
         query: String? = productQuery,
@@ -240,7 +327,7 @@ class StoreViewModel @Inject constructor(
         productRequest = viewModelScope.launch {
             mutableProductError.value = null
             mutableProductPage.value = if (page == 1) {
-                RemotePage(isLoading = true)
+                mutableProductPage.value.copy(isLoading = true, error = null)
             } else {
                 mutableProductPage.value.copy(isLoading = true, error = null)
             }
@@ -343,7 +430,7 @@ class StoreViewModel @Inject constructor(
         customerRequest?.cancel()
         customerRequest = viewModelScope.launch {
             mutableCustomers.value = if (page == 1) {
-                RemotePage(isLoading = true)
+                mutableCustomers.value.copy(isLoading = true, error = null)
             } else {
                 mutableCustomers.value.copy(isLoading = true, error = null)
             }
@@ -365,13 +452,185 @@ class StoreViewModel @Inject constructor(
         if (!page.isLoading && page.currentPage < page.lastPage) refreshCustomers(customerQuery, page.currentPage + 1)
     }
 
+    fun refreshSales(query: String? = salesQuery, page: Int = 1) {
+        if (page == 1) salesQuery = query
+        val requestedQuery = salesQuery
+        salesRequest?.cancel()
+        salesRequest = viewModelScope.launch {
+            mutableSales.value = if (page == 1) {
+                mutableSales.value.copy(isLoading = true, error = null)
+            } else {
+                mutableSales.value.copy(isLoading = true, error = null)
+            }
+            mutableSales.value = when (val result = storeRepository.sales(requestedQuery, page)) {
+                is ApiResult.Success -> {
+                    val loaded = result.value.toRemotePage()
+                    if (page == 1) loaded else mutableSales.value.appendPage(loaded, SoldProductDto::id)
+                }
+                is ApiResult.Failure -> {
+                    notifySessionExpiry(result.error)
+                    mutableSales.value.copy(isLoading = false, error = result.error.message)
+                }
+            }
+        }
+    }
+
+    fun loadMoreSales() {
+        val page = mutableSales.value
+        if (!page.isLoading && page.currentPage < page.lastPage) refreshSales(salesQuery, page.currentPage + 1)
+    }
+
+    fun refreshNotifications(page: Int = 1) {
+        notificationsRequest?.cancel()
+        notificationsRequest = viewModelScope.launch {
+            mutableNotifications.value = if (page == 1) {
+                mutableNotifications.value.copy(isLoading = true, error = null)
+            } else {
+                mutableNotifications.value.copy(isLoading = true, error = null)
+            }
+            mutableNotifications.value = when (val result = storeRepository.notifications(page)) {
+                is ApiResult.Success -> {
+                    val loaded = result.value.toRemotePage()
+                    if (page == 1) loaded else mutableNotifications.value.appendPage(loaded, NotificationDto::id)
+                }
+                is ApiResult.Failure -> {
+                    notifySessionExpiry(result.error)
+                    mutableNotifications.value.copy(isLoading = false, error = result.error.message)
+                }
+            }
+        }
+    }
+
+    fun loadMoreNotifications() {
+        val page = mutableNotifications.value
+        if (!page.isLoading && page.currentPage < page.lastPage) refreshNotifications(page.currentPage + 1)
+    }
+
+    fun markNotificationRead(id: Long) {
+        viewModelScope.launch {
+            when (val result = storeRepository.markNotificationRead(id)) {
+                is ApiResult.Success -> mutableNotifications.value = mutableNotifications.value.copy(
+                    items = mutableNotifications.value.items.map { notification ->
+                        if (notification.id == id) notification.copy(isRead = true) else notification
+                    },
+                )
+                is ApiResult.Failure -> {
+                    notifySessionExpiry(result.error)
+                    mutableEvents.emit(StoreEvent.Failed(result.error.message))
+                }
+            }
+        }
+    }
+
+    fun markAllNotificationsRead() {
+        viewModelScope.launch {
+            when (val result = storeRepository.markAllNotificationsRead()) {
+                is ApiResult.Success -> mutableNotifications.value = mutableNotifications.value.copy(
+                    items = mutableNotifications.value.items.map { it.copy(isRead = true) },
+                )
+                is ApiResult.Failure -> {
+                    notifySessionExpiry(result.error)
+                    mutableEvents.emit(StoreEvent.Failed(result.error.message))
+                }
+            }
+        }
+    }
+
+    fun refreshMaintenances(query: String? = maintenanceQuery, page: Int = 1) {
+        if (page == 1) maintenanceQuery = query
+        val requestedQuery = maintenanceQuery
+        maintenanceRequest?.cancel()
+        maintenanceRequest = viewModelScope.launch {
+            mutableMaintenances.value = if (page == 1) {
+                mutableMaintenances.value.copy(isLoading = true, error = null)
+            } else {
+                mutableMaintenances.value.copy(isLoading = true, error = null)
+            }
+            mutableMaintenances.value = when (val result = storeRepository.maintenance(requestedQuery, page)) {
+                is ApiResult.Success -> {
+                    val loaded = result.value.toRemotePage()
+                    if (page == 1) loaded else mutableMaintenances.value.appendPage(loaded, MaintenanceDto::id)
+                }
+                is ApiResult.Failure -> {
+                    notifySessionExpiry(result.error)
+                    mutableMaintenances.value.copy(isLoading = false, error = result.error.message)
+                }
+            }
+        }
+    }
+
+    fun refreshWalletCashier() {
+        viewModelScope.launch {
+            mutableWalletCashier.value = mutableWalletCashier.value.copy(isLoading = true, error = null)
+            when (val result = storeRepository.walletCashier()) {
+                is ApiResult.Success -> mutableWalletCashier.value = WalletCashierUiState(data = result.value)
+                is ApiResult.Failure -> {
+                    mutableWalletCashier.value = WalletCashierUiState(error = result.error.message)
+                    notifySessionExpiry(result.error)
+                }
+            }
+        }
+    }
+
+    fun searchCashierProducts(query: String = "") {
+        cashierPosRequest?.cancel()
+        cashierPosRequest = viewModelScope.launch {
+            mutableCashierPos.value = mutableCashierPos.value.copy(isLoading = true, error = null)
+            when (val result = storeRepository.cashierProducts(query.trim().ifBlank { null })) {
+                is ApiResult.Success -> mutableCashierPos.value = CashierPosUiState(
+                    products = result.value.data,
+                    exactMatch = result.value.exact,
+                )
+                is ApiResult.Failure -> {
+                    mutableCashierPos.value = mutableCashierPos.value.copy(isLoading = false, error = result.error.message)
+                    notifySessionExpiry(result.error)
+                }
+            }
+        }
+    }
+
+    fun checkoutCashier(
+        input: CashierCheckoutInputDto,
+        key: String,
+        onComplete: (CashierCheckoutResponseDto) -> Unit,
+    ) {
+        viewModelScope.launch {
+            activeWrites++
+            mutableIsSaving.value = true
+            try {
+                when (val result = storeRepository.cashierCheckout(key, input)) {
+                    is ApiResult.Success -> {
+                        mutableEvents.emit(StoreEvent.Saved("تم إتمام البيع."))
+                        refreshInvoices(null)
+                        refreshProducts(null)
+                        onComplete(result.value.data)
+                    }
+                    is ApiResult.Failure -> {
+                        if (result.error == ApiFailure.Unauthorized) mutableEvents.emit(StoreEvent.SessionExpired)
+                        else mutableEvents.emit(StoreEvent.Failed(result.error.message))
+                    }
+                }
+            } finally {
+                activeWrites--
+                mutableIsSaving.value = activeWrites > 0
+            }
+        }
+    }
+
+    fun loadMoreMaintenances() {
+        val page = mutableMaintenances.value
+        if (!page.isLoading && page.currentPage < page.lastPage) {
+            refreshMaintenances(maintenanceQuery, page.currentPage + 1)
+        }
+    }
+
     fun refreshInvoices(query: String? = invoiceQuery, page: Int = 1) {
         if (page == 1) invoiceQuery = query
         val requestedQuery = invoiceQuery
         invoiceRequest?.cancel()
         invoiceRequest = viewModelScope.launch {
             mutableInvoices.value = if (page == 1) {
-                RemotePage(isLoading = true)
+                mutableInvoices.value.copy(isLoading = true, error = null)
             } else {
                 mutableInvoices.value.copy(isLoading = true, error = null)
             }
@@ -399,7 +658,7 @@ class StoreViewModel @Inject constructor(
         supplierRequest?.cancel()
         supplierRequest = viewModelScope.launch {
             mutableSuppliers.value = if (page == 1) {
-                RemotePage(isLoading = true)
+                mutableSuppliers.value.copy(isLoading = true, error = null)
             } else {
                 mutableSuppliers.value.copy(isLoading = true, error = null)
             }
@@ -412,6 +671,202 @@ class StoreViewModel @Inject constructor(
                     notifySessionExpiry(result.error)
                     mutableSuppliers.value.copy(isLoading = false, error = result.error.message)
                 }
+            }
+        }
+    }
+
+    fun refreshWalletOverview() {
+        viewModelScope.launch {
+            mutableWalletOverview.value = mutableWalletOverview.value.copy(isLoading = true, error = null)
+            mutableWalletOverview.value = when (val result = storeRepository.walletOverview()) {
+                is ApiResult.Success -> WalletOverviewUiState(overview = result.value)
+                is ApiResult.Failure -> {
+                    notifySessionExpiry(result.error)
+                    WalletOverviewUiState(error = result.error.message)
+                }
+            }
+        }
+    }
+
+    fun refreshProfile() {
+        viewModelScope.launch {
+            mutableProfile.value = mutableProfile.value.copy(isLoading = true, error = null)
+            mutableProfile.value = when (val result = storeRepository.profile()) {
+                is ApiResult.Success -> ProfileUiState(profile = result.value)
+                is ApiResult.Failure -> {
+                    notifySessionExpiry(result.error)
+                    ProfileUiState(error = result.error.message)
+                }
+            }
+        }
+    }
+
+    fun refreshDamagedItems(query: String? = damagedQuery, status: String? = damagedStatus, page: Int = 1) {
+        if (page == 1) {
+            damagedQuery = query
+            damagedStatus = status
+        }
+        val requestedQuery = damagedQuery
+        val requestedStatus = damagedStatus
+        damagedRequest?.cancel()
+        damagedRequest = viewModelScope.launch {
+            mutableDamagedItems.value = if (page == 1) mutableDamagedItems.value.copy(isLoading = true, error = null)
+            else mutableDamagedItems.value.copy(isLoading = true, error = null)
+            when (val result = storeRepository.damagedItems(requestedQuery, requestedStatus, page)) {
+                is ApiResult.Success -> {
+                    val loaded = result.value.toRemotePage()
+                    mutableDamagedItems.value = if (page == 1) loaded else mutableDamagedItems.value.appendPage(loaded, DamagedItemDto::id)
+                }
+                is ApiResult.Failure -> {
+                    notifySessionExpiry(result.error)
+                    mutableDamagedItems.value = mutableDamagedItems.value.copy(isLoading = false, error = result.error.message)
+                }
+            }
+        }
+    }
+
+    fun searchDamagedProducts(query: String? = null) {
+        damagedProductsRequest?.cancel()
+        damagedProductsRequest = viewModelScope.launch {
+            mutableDamagedProducts.value = mutableDamagedProducts.value.copy(isLoading = true, error = null)
+            mutableDamagedProducts.value = when (val result = storeRepository.damagedProducts(query)) {
+                is ApiResult.Success -> DamagedProductsUiState(products = result.value)
+                is ApiResult.Failure -> {
+                    notifySessionExpiry(result.error)
+                    DamagedProductsUiState(error = result.error.message)
+                }
+            }
+        }
+    }
+
+    fun createDamagedItem(input: DamagedItemInputDto, key: String) {
+        viewModelScope.launch {
+            if (reportOperation("تم تسجيل الهالك وخصم الكمية من المخزون.") { storeRepository.createDamagedItem(key, input) }) {
+                refreshDamagedItems()
+                refreshProducts(null)
+            }
+        }
+    }
+
+    fun updateDamagedItem(id: Long, input: DamagedItemInputDto, key: String) {
+        viewModelScope.launch {
+            if (reportOperation("تم تعديل سجل الهالك وتحديث المخزون.") { storeRepository.updateDamagedItem(id, key, input) }) {
+                refreshDamagedItems()
+                refreshProducts(null)
+            }
+        }
+    }
+
+    fun voidDamagedItem(id: Long, input: VoidDamagedItemInputDto, key: String) {
+        viewModelScope.launch {
+            if (reportOperation("تم إلغاء السجل وإرجاع الكمية للمخزون.") { storeRepository.voidDamagedItem(id, key, input) }) {
+                refreshDamagedItems()
+                refreshProducts(null)
+            }
+        }
+    }
+
+    fun updateProfile(input: ProfileInputDto) {
+        viewModelScope.launch {
+            if (reportOperation("تم تحديث الحساب.") { storeRepository.updateProfile(input) }) refreshProfile()
+        }
+    }
+
+    fun createProduct(input: ProductInputDto, key: String) {
+        viewModelScope.launch {
+            if (reportOperation("تمت إضافة المنتج.") { storeRepository.createProduct(key, input) }) {
+                refreshProducts(null)
+            }
+        }
+    }
+
+    fun updateProduct(id: Long, input: ProductInputDto, key: String) {
+        viewModelScope.launch {
+            if (reportOperation("تم تحديث المنتج.") { storeRepository.updateProduct(id, key, input) }) {
+                refreshProducts(null)
+            }
+        }
+    }
+
+    fun deleteProduct(id: Long, key: String) {
+        viewModelScope.launch {
+            if (reportOperation("تم حذف المنتج.") { storeRepository.deleteProduct(id, key) }) {
+                refreshProducts(null)
+            }
+        }
+    }
+
+    fun createMaintenance(input: MaintenanceInputDto, key: String) {
+        viewModelScope.launch {
+            if (reportOperation("تمت إضافة طلب الصيانة.") { storeRepository.createMaintenance(key, input) }) {
+                refreshMaintenances(null)
+            }
+        }
+    }
+
+    fun updateMaintenance(id: Long, input: MaintenanceInputDto) {
+        viewModelScope.launch {
+            if (reportOperation("تم تحديث طلب الصيانة.") { storeRepository.updateMaintenance(id, input) }) {
+                refreshMaintenances(null)
+            }
+        }
+    }
+
+    fun deleteMaintenance(id: Long) {
+        viewModelScope.launch {
+            if (reportOperation("تم حذف طلب الصيانة.") { storeRepository.deleteMaintenance(id) }) {
+                refreshMaintenances(null)
+            }
+        }
+    }
+
+    fun createWalletTransaction(input: WalletCashierInputDto, key: String) {
+        viewModelScope.launch {
+            if (reportOperation("تم تسجيل العملية.") { storeRepository.createWalletTransaction(key, input) }) {
+                refreshWalletCashier()
+                refreshWalletOverview()
+            }
+        }
+    }
+
+    fun settleWalletTransaction(uuid: String, input: SettleWalletTransactionInputDto, key: String) {
+        viewModelScope.launch {
+            if (reportOperation("تم تسجيل التحصيل.") { storeRepository.settleWalletTransaction(uuid, key, input) }) {
+                refreshWalletCashier()
+                refreshWalletOverview()
+            }
+        }
+    }
+
+    fun reverseWalletTransaction(uuid: String, input: ReverseWalletTransactionInputDto, key: String) {
+        viewModelScope.launch {
+            if (reportOperation("تم عكس العملية.") { storeRepository.reverseWalletTransaction(uuid, key, input) }) {
+                refreshWalletCashier()
+                refreshWalletOverview()
+            }
+        }
+    }
+
+    fun createWallet(input: WalletInputDto, key: String) {
+        viewModelScope.launch {
+            if (reportOperation("تمت إضافة المحفظة.") { storeRepository.createWallet(key, input) }) {
+                refreshWalletOverview()
+            }
+        }
+    }
+
+    fun toggleWallet(id: Long, key: String) {
+        viewModelScope.launch {
+            if (reportOperation("تم تحديث حالة المحفظة.") { storeRepository.toggleWallet(id, key) }) {
+                refreshWalletOverview()
+            }
+        }
+    }
+
+    fun adjustWallet(id: Long, input: WalletAdjustmentInputDto, key: String) {
+        viewModelScope.launch {
+            if (reportOperation("تم تسجيل تسوية الرصيد.") { storeRepository.adjustWallet(id, key, input) }) {
+                refreshWalletOverview()
             }
         }
     }
@@ -484,7 +939,7 @@ class StoreViewModel @Inject constructor(
         installmentRequest?.cancel()
         installmentRequest = viewModelScope.launch {
             mutableInstallments.value = if (page == 1) {
-                RemotePage(isLoading = true)
+                mutableInstallments.value.copy(isLoading = true, error = null)
             } else {
                 mutableInstallments.value.copy(isLoading = true, error = null)
             }
@@ -525,23 +980,155 @@ class StoreViewModel @Inject constructor(
         mutableInstallmentDetails.value = InstallmentDetailUiState()
     }
 
-    fun setDarkTheme(enabled: Boolean) {
+    fun createCustomer(input: CustomerInputDto, key: String) {
         viewModelScope.launch {
-            preferencesRepository.setDarkTheme(enabled)
+            if (reportOperation("تمت إضافة العميل.") { storeRepository.createCustomer(key, input) }) {
+                refreshCustomers()
+            }
         }
     }
 
-    fun createCustomer(input: CustomerInputDto, key: String) {
+    fun createSupplier(input: SupplierInputDto, key: String) {
         viewModelScope.launch {
-            if (reportOperation(storeRepository.createCustomer(key, input), "تمت إضافة العميل.")) {
-                refreshCustomers()
+            if (reportOperation("تمت إضافة المورد.") { storeRepository.createSupplier(key, input) }) {
+                refreshSuppliers(null)
+                refreshWalletOverview()
+            }
+        }
+    }
+
+    fun createInstallment(input: InstallmentInputDto, key: String) {
+        viewModelScope.launch {
+            if (reportOperation("تمت إضافة القسط.") { storeRepository.createInstallment(key, input) }) {
+                refreshInstallments(null)
+            }
+        }
+    }
+
+    fun updateInstallment(id: Long, input: InstallmentInputDto, key: String) {
+        viewModelScope.launch {
+            if (reportOperation("تم تحديث القسط.") { storeRepository.updateInstallment(id, key, input) }) {
+                refreshInstallments(null)
+            }
+        }
+    }
+
+    fun deleteInstallment(id: Long, key: String) {
+        viewModelScope.launch {
+            if (reportOperation("تم حذف القسط.") { storeRepository.deleteInstallment(id, key) }) {
+                refreshInstallments(null)
+            }
+        }
+    }
+
+    fun payInstallment(id: Long, input: PayAmountInputDto, key: String) {
+        viewModelScope.launch {
+            if (reportOperation("تم تسجيل دفعة القسط.") { storeRepository.payInstallment(id, key, input) }) {
+                refreshInstallments(null)
+                refreshInvoices(null)
+            }
+        }
+    }
+
+    fun changeInstallmentStatus(id: Long, status: String, key: String) {
+        viewModelScope.launch {
+            if (reportOperation("تم تحديث حالة القسط.") {
+                storeRepository.changeInstallmentStatus(id, key, InstallmentStatusInputDto(status))
+            }) {
+                refreshInstallments(null)
+            }
+        }
+    }
+
+    fun refreshPersonalDebts(query: String? = personalDebtQuery, page: Int = 1) {
+        if (page == 1) personalDebtQuery = query
+        val requestedQuery = personalDebtQuery
+        personalDebtRequest?.cancel()
+        personalDebtRequest = viewModelScope.launch {
+            mutablePersonalDebts.value = if (page == 1) mutablePersonalDebts.value.copy(isLoading = true, error = null)
+            else mutablePersonalDebts.value.copy(isLoading = true, error = null)
+            mutablePersonalDebts.value = when (val result = storeRepository.personalDebts(requestedQuery, page)) {
+                is ApiResult.Success -> {
+                    val loaded = result.value.toRemotePage()
+                    if (page == 1) loaded else mutablePersonalDebts.value.appendPage(loaded, PersonalDebtDto::id)
+                }
+                is ApiResult.Failure -> {
+                    notifySessionExpiry(result.error)
+                    mutablePersonalDebts.value.copy(isLoading = false, error = result.error.message)
+                }
+            }
+        }
+    }
+
+    fun loadMorePersonalDebts() {
+        val page = mutablePersonalDebts.value
+        if (!page.isLoading && page.currentPage < page.lastPage) refreshPersonalDebts(personalDebtQuery, page.currentPage + 1)
+    }
+
+    fun createPersonalDebt(input: PersonalDebtInputDto, key: String) {
+        viewModelScope.launch {
+            if (reportOperation("تم تسجيل الدين الشخصي.") { storeRepository.createPersonalDebt(key, input) }) {
+                refreshPersonalDebts(null)
+            }
+        }
+    }
+
+    fun updatePersonalDebt(id: Long, input: PersonalDebtInputDto, key: String) {
+        viewModelScope.launch {
+            if (reportOperation("تم تحديث الدين الشخصي.") { storeRepository.updatePersonalDebt(id, key, input) }) {
+                refreshPersonalDebts(null)
+            }
+        }
+    }
+
+    fun payPersonalDebt(id: Long, input: PayAmountInputDto, key: String) {
+        viewModelScope.launch {
+            if (reportOperation("تم تسجيل دفعة الدين الشخصي.") { storeRepository.payPersonalDebt(id, key, input) }) {
+                refreshPersonalDebts(null)
+            }
+        }
+    }
+
+    fun deletePersonalDebt(id: Long, key: String) {
+        viewModelScope.launch {
+            if (reportOperation("تم حذف الدين الشخصي.") { storeRepository.deletePersonalDebt(id, key) }) {
+                refreshPersonalDebts(null)
+            }
+        }
+    }
+
+    fun payInvoice(id: Long, input: PayAmountInputDto, key: String) {
+        viewModelScope.launch {
+            if (reportOperation("تم تسجيل دفعة الفاتورة.") { storeRepository.payInvoice(id, key, input) }) {
+                refreshInvoices(null)
+                refreshInstallments(null)
+            }
+        }
+    }
+
+    fun refundInvoice(id: Long, key: String) {
+        viewModelScope.launch {
+            if (reportOperation("تم استرداد الفاتورة وإرجاع الكميات للمخزون.") { storeRepository.refundInvoice(id, key) }) {
+                refreshInvoices(null)
+                refreshProducts(null)
+                refreshInstallments(null)
+            }
+        }
+    }
+
+    fun updateInvoice(id: Long, input: InvoiceInputDto, key: String) {
+        viewModelScope.launch {
+            if (reportOperation("تم تحديث الفاتورة.") { storeRepository.updateInvoice(id, key, input) }) {
+                refreshInvoices(null)
+                refreshProducts(null)
+                refreshInstallments(null)
             }
         }
     }
 
     fun createCategory(input: CategoryInputDto, key: String) {
         viewModelScope.launch {
-            if (reportOperation(storeRepository.createCategory(key, input), "تمت إضافة التصنيف.")) {
+            if (reportOperation("تمت إضافة التصنيف.") { storeRepository.createCategory(key, input) }) {
                 refreshCategories()
             }
         }
@@ -549,19 +1136,19 @@ class StoreViewModel @Inject constructor(
 
     fun updateCustomer(id: Long, input: CustomerInputDto) {
         viewModelScope.launch {
-            if (reportOperation(storeRepository.updateCustomer(id, input), "تم تحديث العميل.")) refreshCustomers()
+            if (reportOperation("تم تحديث العميل.") { storeRepository.updateCustomer(id, input) }) refreshCustomers()
         }
     }
 
     fun deleteCustomer(id: Long) {
         viewModelScope.launch {
-            if (reportOperation(storeRepository.deleteCustomer(id), "تم حذف العميل.")) refreshCustomers()
+            if (reportOperation("تم حذف العميل.") { storeRepository.deleteCustomer(id) }) refreshCustomers()
         }
     }
 
     fun updateCategory(id: Long, input: CategoryInputDto) {
         viewModelScope.launch {
-            if (reportOperation(storeRepository.updateCategory(id, input), "تم تحديث التصنيف.")) {
+            if (reportOperation("تم تحديث التصنيف.") { storeRepository.updateCategory(id, input) }) {
                 refreshCategories()
                 refreshProducts(null)
             }
@@ -570,7 +1157,7 @@ class StoreViewModel @Inject constructor(
 
     fun deleteCategory(id: Long) {
         viewModelScope.launch {
-            if (reportOperation(storeRepository.deleteCategory(id), "تم حذف التصنيف.")) {
+            if (reportOperation("تم حذف التصنيف.") { storeRepository.deleteCategory(id) }) {
                 refreshCategories()
                 refreshProducts()
             }
@@ -579,25 +1166,34 @@ class StoreViewModel @Inject constructor(
 
     fun createInvoice(input: InvoiceInputDto, key: String) {
         viewModelScope.launch {
-            if (reportOperation(storeRepository.createInvoice(key, input), "تم إنشاء الفاتورة.")) {
+            if (reportOperation("تم إنشاء الفاتورة.") { storeRepository.createInvoice(key, input) }) {
                 refreshInvoices()
                 refreshProducts(null)
             }
         }
     }
 
-    private suspend fun <T> reportOperation(result: ApiResult<T>, successMessage: String): Boolean {
-        mutableEvents.emit(
-            when (result) {
-                is ApiResult.Success -> StoreEvent.Saved(successMessage)
-                is ApiResult.Failure -> if (result.error == ApiFailure.Unauthorized) {
-                    StoreEvent.SessionExpired
-                } else {
-                    StoreEvent.Failed(result.error.message)
+    private suspend fun <T> reportOperation(successMessage: String, operation: suspend () -> ApiResult<T>): Boolean {
+        activeWrites++
+        mutableIsSaving.value = true
+        return try {
+            when (val result = operation()) {
+                is ApiResult.Success -> {
+                    mutableEvents.emit(StoreEvent.Saved(successMessage))
+                    true
                 }
-            },
-        )
-        return result is ApiResult.Success
+                is ApiResult.Failure -> {
+                    mutableEvents.emit(
+                        if (result.error == ApiFailure.Unauthorized) StoreEvent.SessionExpired
+                        else StoreEvent.Failed(result.error.message),
+                    )
+                    false
+                }
+            }
+        } finally {
+            activeWrites--
+            mutableIsSaving.value = activeWrites > 0
+        }
     }
 
     private suspend fun notifySessionExpiry(error: ApiFailure) {

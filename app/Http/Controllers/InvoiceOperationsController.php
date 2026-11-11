@@ -83,92 +83,13 @@ class InvoiceOperationsController extends Controller
     public function update(Request $request, invoice $invoice)
     {
         $validated = $this->validatedInvoiceInput($request);
-        $userId = $request->user()->id;
-
-        DB::transaction(function () use ($invoice, $validated, $userId): void {
-            $lockedInvoice = invoice::query()->lockForUpdate()->findOrFail($invoice->id);
-            abort_if($lockedInvoice->status === 'refunded', 404);
-
-            $oldQuantities = $this->itemQuantities($lockedInvoice);
-            $newQuantities = [];
-            $productIds = array_values(array_unique(array_merge(
-                array_keys($oldQuantities),
-                $validated['product_ids']
-            )));
-            $lockedProducts = products::query()->whereIn('id', $productIds)
-                ->orderBy('id')->lockForUpdate()->get()->keyBy('id');
-
-            if ($lockedProducts->count() !== count($productIds)) {
-                throw ValidationException::withMessages(['product_ids' => 'أحد منتجات الفاتورة لم يعد متاحاً.']);
-            }
-
-            $items = [];
-            $totalCents = 0;
-            $totalQuantity = 0;
-
-            foreach ($validated['product_ids'] as $index => $productId) {
-                $quantity = (int) $validated['quantities'][$index];
-                $product = $lockedProducts->get($productId);
-                $priceCents = (int) round((float) $product->price * 100);
-                $lineTotalCents = $priceCents * $quantity;
-
-                $items[] = [
-                    'product_id' => $product->id,
-                    'name' => $product->name,
-                    'price' => number_format($priceCents / 100, 2, '.', ''),
-                    'quantity' => $quantity,
-                    'line_total' => number_format($lineTotalCents / 100, 2, '.', ''),
-                ];
-                $newQuantities[$product->id] = ($newQuantities[$product->id] ?? 0) + $quantity;
-                $totalCents += $lineTotalCents;
-                $totalQuantity += $quantity;
-            }
-
-            $paidCents = (int) round((float) $validated['paid_amount'] * 100);
-            if ($paidCents > $totalCents) {
-                throw ValidationException::withMessages(['paid_amount' => 'لا يمكن أن يتجاوز المبلغ المدفوع إجمالي الفاتورة.']);
-            }
-
-            foreach ($productIds as $productId) {
-                $product = $lockedProducts->get($productId);
-                $stock = $product->stock + ($oldQuantities[$productId] ?? 0) - ($newQuantities[$productId] ?? 0);
-
-                if ($stock < 0) {
-                    throw ValidationException::withMessages([
-                        'product_ids' => 'المخزون غير كافٍ للمنتج '.$product->name.'.',
-                    ]);
-                }
-
-                $product->stock = $stock;
-                $product->total_sold = max(0, $product->total_sold - ($oldQuantities[$productId] ?? 0) + ($newQuantities[$productId] ?? 0));
-                $product->save();
-            }
-
-            $firstProduct = $lockedProducts->get($validated['product_ids'][0]);
-            $total = number_format($totalCents / 100, 2, '.', '');
-            $paid = number_format($paidCents / 100, 2, '.', '');
-
-            $lockedInvoice->update([
-                'customer' => $validated['customer'],
-                'product_id' => $firstProduct->id,
-                'quantity' => $totalQuantity,
-                'invoice_date' => $validated['invoice_date'],
-                'total_amount' => $total,
-                'product_price' => $firstProduct->price,
-                'paid_amount' => $paid,
-                'status' => $paidCents >= $totalCents ? 'paid' : 'unpaid',
-                'items' => $items,
-                'notes' => $validated['notes'] ?? $lockedInvoice->notes,
-            ]);
-
-            $this->syncInvoiceInstallment($lockedInvoice, $items, $totalCents / 100, $paidCents / 100);
-            AppNotification::create([
-                'title' => 'تم تحديث فاتورة',
-                'message' => 'تم تحديث الفاتورة #'.$lockedInvoice->invoice_number,
-                'is_active' => true,
-                'created_by' => $userId,
-            ]);
-        }, 3);
+        app(InvoiceCreationService::class)->update(
+            $invoice,
+            $validated,
+            $request->user()->id,
+            fn (invoice $updated, array $items, float $total, float $paid) =>
+                $this->syncInvoiceInstallment($updated, $items, $total, $paid)
+        );
 
         return redirect()->route('invoices.index')->with('success', 'تم تحديث الفاتورة بنجاح.');
     }

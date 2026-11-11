@@ -21,5 +21,14 @@ internal fun String.isValidInvoiceDate(): Boolean {
 
 internal fun String.isValidPaidAmount(): Boolean = PAID_AMOUNT_PATTERN.matches(normalizeArabicDigits())
 
+internal fun String.isValidSignedAmount(): Boolean {
+    val normalized = normalizeArabicDigits()
+    val amount = normalized.toBigDecimalOrNull() ?: return false
+    return SIGNED_AMOUNT_PATTERN.matches(normalized) && amount.compareTo(java.math.BigDecimal.ZERO) != 0 &&
+        amount.abs() <= MAX_WALLET_ADJUSTMENT
+}
+
 private val INVOICE_DATE_PATTERN = Regex("^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
 private val PAID_AMOUNT_PATTERN = Regex("^[0-9]+(?:\\.[0-9]{1,2})?$")
+private val SIGNED_AMOUNT_PATTERN = Regex("^-?[0-9]+(?:\\.[0-9]{1,2})?$")
+private val MAX_WALLET_ADJUSTMENT = java.math.BigDecimal("99999999")

@@ -14,7 +14,20 @@ internal fun String.toArabicInvoiceStatus(): String = when (lowercase(Locale.ROO
 internal fun String.toArabicInstallmentStatus(): String = when (trim().lowercase(Locale.ROOT)) {
     "مكتمل", "complete", "completed" -> "مكتمل"
     "غير مكتمل", "pending", "incomplete" -> "غير مكتمل"
-    "overdue" -> "متأخر"
+    "متأخر", "overdue" -> "متأخر"
+    "مسترد", "refunded" -> "مسترد"
+    else -> "حالة غير معروفة"
+}
+
+internal fun String.toArabicPersonalDebtStatus(): String = when (trim().lowercase(Locale.ROOT)) {
+    "paid", "مسدد" -> "مسدد"
+    "open", "مفتوح" -> "مفتوح"
+    else -> "حالة غير معروفة"
+}
+
+internal fun String.toArabicDamagedStatus(): String = when (trim().lowercase(Locale.ROOT)) {
+    "recorded" -> "مسجل"
+    "voided" -> "ملغى"
     else -> "حالة غير معروفة"
 }
 

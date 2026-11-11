@@ -2,7 +2,7 @@ openapi: 3.1.0
 info:
   title: Store Management API
   version: 1.0.0
-  description: Initial native-client API. Consequential business writes are not enabled.
+  description: Versioned native-client API with permission-gated reads and selected idempotent writes.
 servers:
   - url: /api/v1
 paths:
@@ -58,7 +58,6 @@ paths:
           $ref: '#/components/responses/ValidationFailed'
         '429':
           $ref: '#/components/responses/RateLimited'
-  /auth/token:
     delete:
       operationId: revokeCurrentToken
       summary: Revoke the current personal access token
@@ -129,6 +128,68 @@ paths:
           $ref: '#/components/responses/Unauthenticated'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+    post:
+      operationId: createProduct
+      summary: Create a catalog product
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema:
+            type: string
+            minLength: 16
+            maxLength: 64
+            pattern: '^[A-Za-z0-9-]+$'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, price, stock]
+              properties:
+                name:
+                  type: string
+                  maxLength: 255
+                price:
+                  type: string
+                  pattern: '^\d+(\.\d{1,2})?$'
+                description:
+                  type: [string, 'null']
+                  maxLength: 2000
+                barcode:
+                  type: [string, 'null']
+                  maxLength: 255
+                stock:
+                  type: integer
+                  minimum: 0
+                  maximum: 1000000
+                category_id:
+                  type: [integer, 'null']
+      responses:
+        '201':
+          description: Product created or the stored result of an identical replay
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Product'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: Idempotency key reused for a different payload
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '422':
           $ref: '#/components/responses/ValidationFailed'
   /categories:
@@ -634,6 +695,1176 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+  /invoices/{invoice}/pay:
+    post:
+      operationId: payInvoice
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: invoice
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema:
+            type: string
+            minLength: 16
+            maxLength: 64
+            pattern: '^[A-Za-z0-9-]+$'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                amount:
+                  type: [string, 'null']
+                  pattern: '^\d+(\.\d{1,2})?$'
+      responses:
+        '200':
+          description: Invoice payment and linked installment state updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Invoice'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+  /installments:
+    get:
+      operationId: listInstallments
+      summary: Search and paginate installment snapshots
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/Search'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PerPage'
+      responses:
+        '200':
+          description: Paginated installment records
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PaginatedResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/Installment'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    post:
+      operationId: createInstallment
+      summary: Create a standalone installment debt using current server prices
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema:
+            type: string
+            minLength: 16
+            maxLength: 64
+            pattern: '^[A-Za-z0-9-]+$'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [customer, paid_amount]
+              oneOf:
+                - required: [product_ids, quantities]
+                - required: [product_name, total_amount]
+              properties:
+                customer:
+                  type: string
+                  maxLength: 255
+                product_ids:
+                  type: array
+                  minItems: 1
+                  maxItems: 100
+                  items:
+                    type: integer
+                    minimum: 1
+                quantities:
+                  type: array
+                  minItems: 1
+                  maxItems: 100
+                  items:
+                    type: integer
+                    minimum: 1
+                    maximum: 100000
+                product_name:
+                  type: string
+                  maxLength: 255
+                total_amount:
+                  type: string
+                  pattern: '^\d+(\.\d{1,2})?$'
+                payment_date:
+                  type: [string, 'null']
+                  format: date
+                next_payment_date:
+                  type: [string, 'null']
+                  format: date
+                paid_amount:
+                  type: string
+                  pattern: '^\d+(\.\d{1,2})?$'
+                notes:
+                  type: [string, 'null']
+                  maxLength: 2000
+      responses:
+        '201':
+          description: Debt created or the stored result of an identical replay
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Installment'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: Idempotency key reused for a different payload
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+  /installments/{installment}:
+    get:
+      operationId: showInstallment
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: installment
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        '200':
+          description: Installment snapshot and server-recorded balances
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Installment'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      operationId: updateInstallment
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: installment
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema:
+            type: string
+            minLength: 16
+            maxLength: 64
+            pattern: '^[A-Za-z0-9-]+$'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [customer, paid_amount]
+              oneOf:
+                - required: [product_ids, quantities]
+                - required: [product_name, total_amount]
+              properties:
+                customer:
+                  type: string
+                product_ids:
+                  type: array
+                  items:
+                    type: integer
+                quantities:
+                  type: array
+                  items:
+                    type: integer
+                product_name:
+                  type: string
+                total_amount:
+                  type: string
+                paid_amount:
+                  type: string
+                payment_date:
+                  type: [string, 'null']
+                  format: date
+                next_payment_date:
+                  type: [string, 'null']
+                  format: date
+                notes:
+                  type: [string, 'null']
+      responses:
+        '200':
+          description: Updated standalone installment
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Installment'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+    delete:
+      operationId: deleteInstallment
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: installment
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema:
+            type: string
+            minLength: 16
+            maxLength: 64
+            pattern: '^[A-Za-z0-9-]+$'
+      responses:
+        '204':
+          description: Standalone installment deleted
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+  /installments/{installment}/pay:
+    post:
+      operationId: payInstallment
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: installment
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema:
+            type: string
+            minLength: 16
+            maxLength: 64
+            pattern: '^[A-Za-z0-9-]+$'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                amount:
+                  type: [string, 'null']
+                  pattern: '^\d+(\.\d{1,2})?$'
+      responses:
+        '200':
+          description: Installment and linked invoice payment updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Installment'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+  /cashier/products:
+    get:
+      operationId: searchCashierProducts
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/Search'
+      responses:
+        '200':
+          description: Top sellers for an empty query or product/barcode matches
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  exact:
+                    type: boolean
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: integer
+                        name:
+                          type: string
+                        price:
+                          type: string
+                        barcode:
+                          type: [string, 'null']
+                        stock:
+                          type: integer
+                        image_url:
+                          type: [string, 'null']
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /cashier/checkout:
+    post:
+      operationId: checkoutProductCashier
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema:
+            type: string
+            minLength: 16
+            maxLength: 64
+            pattern: '^[A-Za-z0-9-]+$'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [items]
+              properties:
+                customer:
+                  type: [string, 'null']
+                  maxLength: 255
+                items:
+                  type: array
+                  minItems: 1
+                  items:
+                    type: object
+                    required: [product_id, quantity]
+                    properties:
+                      product_id:
+                        type: integer
+                      quantity:
+                        type: integer
+                        minimum: 1
+                        maximum: 100000
+                received:
+                  type: [string, 'null']
+                  pattern: '^\d+(\.\d{1,2})?$'
+      responses:
+        '201':
+          description: Invoice checkout completed or identical retry returned
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      invoice_id:
+                        type: integer
+                      invoice_number:
+                        type: string
+                      total:
+                        type: string
+                      paid:
+                        type: string
+                      remaining:
+                        type: string
+                      change:
+                        type: string
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: Idempotency key conflict or checkout already processing
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+  /suppliers:
+    get:
+      operationId: listSuppliers
+      summary: Search and paginate supplier payable summaries
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/Search'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PerPage'
+      responses:
+        '200':
+          description: Paginated supplier summaries
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PaginatedResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/Supplier'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    post:
+      operationId: createSupplier
+      summary: Create a supplier and initialize its opening balance
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema:
+            type: string
+            minLength: 16
+            maxLength: 64
+            pattern: '^[A-Za-z0-9-]+$'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+                  maxLength: 255
+                phone:
+                  type: [string, 'null']
+                  maxLength: 20
+                email:
+                  type: [string, 'null']
+                  format: email
+                  maxLength: 255
+                address:
+                  type: [string, 'null']
+                  maxLength: 255
+                opening_balance:
+                  type: [string, number]
+                  minimum: 0
+                  maximum: 99999999
+                notes:
+                  type: [string, 'null']
+                  maxLength: 2000
+      responses:
+        '201':
+          description: Supplier created or the stored result of an identical replay
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Supplier'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: Idempotency key reused for a different payload
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+  /suppliers/{supplier}:
+    get:
+      operationId: showSupplier
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: supplier
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        '200':
+          description: Supplier contact and payable summary
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Supplier'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /wallets:
+    get:
+      operationId: getWalletOverview
+      summary: Read wallet balances and ledger summary
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Wallet overview; notes and transaction rows are omitted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/WalletOverview'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    post:
+      operationId: createWallet
+      summary: Create a wallet with an opening balance
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema:
+            type: string
+            minLength: 16
+            maxLength: 64
+            pattern: '^[A-Za-z0-9-]+$'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, provider, opening_balance]
+              properties:
+                name:
+                  type: string
+                  maxLength: 100
+                provider:
+                  type: string
+                  enum: [vodafone_cash, instapay, orange_cash, etisalat_cash, we_pay, other]
+                identifier:
+                  type: [string, 'null']
+                  maxLength: 64
+                opening_balance:
+                  type: string
+                  pattern: '^\d+(\.\d{1,2})?$'
+      responses:
+        '201':
+          description: Wallet created or the stored result of an identical replay
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      id:
+                        type: integer
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: Idempotency key reused for a different payload
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+  /wallets/{wallet}/toggle:
+    post:
+      operationId: toggleWallet
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: wallet
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema:
+            type: string
+            minLength: 16
+            maxLength: 64
+            pattern: '^[A-Za-z0-9-]+$'
+      responses:
+        '200':
+          description: Updated active state
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /wallets/{wallet}/adjust:
+    post:
+      operationId: adjustWallet
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: wallet
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema:
+            type: string
+            minLength: 16
+            maxLength: 64
+            pattern: '^[A-Za-z0-9-]+$'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [amount, reason]
+              properties:
+                amount:
+                  type: string
+                  pattern: '^-?\d+(\.\d{1,2})?$'
+                reason:
+                  type: string
+                  minLength: 3
+                  maxLength: 255
+      responses:
+        '201':
+          description: Ledger adjustment recorded
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+  /wallet-cashier:
+    get:
+      operationId: getWalletCashier
+      summary: Read active wallets, recent ledger transactions, and receivables
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Cashier data and append-only transaction history
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/WalletCashierOverview'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    post:
+      operationId: createWalletTransaction
+      summary: Record a wallet send or receive transaction
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema:
+            type: string
+            minLength: 16
+            maxLength: 64
+            pattern: '^[A-Za-z0-9-]+$'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [wallet_id, type, amount, counterparty]
+              properties:
+                wallet_id:
+                  type: integer
+                  minimum: 1
+                type:
+                  type: string
+                  enum: [send, receive]
+                amount:
+                  type: string
+                  pattern: '^\d+(\.\d{1,2})?$'
+                counterparty:
+                  type: string
+                  maxLength: 64
+                commission:
+                  type: [string, 'null']
+                fee:
+                  type: [string, 'null']
+                payment_method:
+                  type: [string, 'null']
+                  enum: [cash, deferred, null]
+                customer_name:
+                  type: [string, 'null']
+                  maxLength: 120
+                notes:
+                  type: [string, 'null']
+                  maxLength: 500
+      responses:
+        '201':
+          description: Transaction recorded or identical replay returned
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      uuid:
+                        type: string
+                        format: uuid
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: Idempotency key reused for a different payload
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+  /wallet-cashier/{transaction}/settle:
+    post:
+      operationId: settleWalletReceivable
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: transaction
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema:
+            type: string
+            minLength: 16
+            maxLength: 64
+            pattern: '^[A-Za-z0-9-]+$'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                amount:
+                  type: [string, 'null']
+                  pattern: '^\d+(\.\d{1,2})?$'
+      responses:
+        '201':
+          description: Settlement ledger row created
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+  /wallet-cashier/{transaction}/reverse:
+    post:
+      operationId: reverseWalletTransaction
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: transaction
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema:
+            type: string
+            minLength: 16
+            maxLength: 64
+            pattern: '^[A-Za-z0-9-]+$'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason:
+                  type: string
+                  minLength: 3
+                  maxLength: 255
+      responses:
+        '201':
+          description: Reversal ledger row created; original row remains immutable
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+  /sales:
+    get:
+      operationId: listSoldProducts
+      summary: Search the read-only sold-products report
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/Search'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PerPage'
+      responses:
+        '200':
+          description: Paginated sold-product totals from products.total_sold
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PaginatedResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/SoldProduct'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /maintenance:
+    get:
+      operationId: listMaintenance
+      summary: Search and paginate maintenance requests
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/Search'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PerPage'
+      responses:
+        '200':
+          description: Paginated read-only maintenance requests
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PaginatedResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/Maintenance'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    post:
+      operationId: createMaintenance
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema:
+            type: string
+            minLength: 16
+            maxLength: 64
+            pattern: '^[A-Za-z0-9-]+$'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, owner, status, requested_date]
+              properties:
+                name:
+                  type: string
+                  maxLength: 255
+                owner:
+                  type: string
+                  maxLength: 255
+                phone:
+                  type: [string, 'null']
+                  maxLength: 32
+                address:
+                  type: [string, 'null']
+                  maxLength: 255
+                description:
+                  type: [string, 'null']
+                  maxLength: 5000
+                status:
+                  type: string
+                  enum: [قيد الانتظار, قيد الصيانة, مكتمل, مرفوض]
+                requested_date:
+                  type: string
+                  format: date
+      responses:
+        '201':
+          description: Maintenance record created or identical replay returned
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Maintenance'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+  /maintenance/{maintenance}:
+    get:
+      operationId: showMaintenance
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: maintenance
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        '200':
+          description: Allowlisted maintenance request details
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Maintenance'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      operationId: updateMaintenance
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: maintenance
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, owner, status, requested_date]
+              properties:
+                name:
+                  type: string
+                  maxLength: 255
+                owner:
+                  type: string
+                  maxLength: 255
+                phone:
+                  type: [string, 'null']
+                  maxLength: 32
+                address:
+                  type: [string, 'null']
+                  maxLength: 255
+                description:
+                  type: [string, 'null']
+                  maxLength: 5000
+                status:
+                  type: string
+                  enum: [قيد الانتظار, قيد الصيانة, مكتمل, مرفوض]
+                requested_date:
+                  type: string
+                  format: date
+      responses:
+        '200':
+          description: Updated maintenance resource
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Maintenance'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+    delete:
+      operationId: deleteMaintenance
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: maintenance
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        '204':
+          description: Maintenance record and associated image deleted
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /notifications:
+    get:
+      operationId: listNotifications
+      summary: List active notifications and current-user read state
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PerPage'
+      responses:
+        '200':
+          description: Paginated active notifications
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PaginatedResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/Notification'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /notifications/{notification}/read:
+    post:
+      operationId: markNotificationRead
+      summary: Mark an active notification read for the current user
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: notification
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        '204':
+          description: Notification marked read
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /notifications/read-all:
+    post:
+      operationId: markAllNotificationsRead
+      summary: Mark all active notifications read for the current user
+      security:
+        - bearerAuth: []
+      responses:
+        '204':
+          description: Active notifications marked read
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
 components:
   securitySchemes:
     bearerAuth:
@@ -700,7 +1931,7 @@ components:
           type: string
           pattern: '^\d+\.\d{2}$'
         description:
-          type: string
+          type: [string, 'null']
         barcode:
           type: [string, 'null']
         stock:
@@ -726,6 +1957,256 @@ components:
         phone:
           type: [string, 'null']
         address:
+          type: [string, 'null']
+    Supplier:
+      type: object
+      required: [id, name, phone, email, address, opening_balance, balance]
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        phone:
+          type: [string, 'null']
+        email:
+          type: [string, 'null']
+        address:
+          type: [string, 'null']
+        opening_balance:
+          type: string
+          pattern: '^\d+\.\d{2}$'
+        balance:
+          type: string
+          pattern: '^\d+\.\d{2}$'
+        purchases_count:
+          type: [integer, 'null']
+    Installment:
+      type: object
+      required: [id, invoice_id, customer_id, customer, product_id, product_name, product_price, payment_date, next_payment_date, paid_amount, remaining, quantity, status, items]
+      properties:
+        id:
+          type: integer
+        invoice_id:
+          type: [integer, 'null']
+        customer_id:
+          type: [integer, 'null']
+        customer:
+          type: string
+        product_id:
+          type: [integer, 'null']
+        product_name:
+          type: string
+        product_price:
+          type: string
+        payment_date:
+          type: [string, 'null']
+          format: date
+        next_payment_date:
+          type: [string, 'null']
+          format: date
+        paid_amount:
+          type: string
+        remaining:
+          type: string
+        quantity:
+          type: integer
+        status:
+          type: string
+        items:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+    SoldProduct:
+      type: object
+      required: [id, name, sold_quantity]
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        sold_quantity:
+          type: integer
+          minimum: 1
+    Notification:
+      type: object
+      required: [id, title, message, starts_at, ends_at, created_at, is_read]
+      properties:
+        id:
+          type: integer
+        title:
+          type: string
+        message:
+          type: string
+        starts_at:
+          type: [string, 'null']
+          format: date-time
+        ends_at:
+          type: [string, 'null']
+          format: date-time
+        created_at:
+          type: [string, 'null']
+          format: date-time
+        is_read:
+          type: boolean
+    Maintenance:
+      type: object
+      required: [id, name, owner, phone, address, description, status, requested_date, completed_date]
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        owner:
+          type: string
+        phone:
+          type: [string, 'null']
+        address:
+          type: [string, 'null']
+        description:
+          type: [string, 'null']
+        status:
+          type: string
+        requested_date:
+          type: string
+          format: date
+        completed_date:
+          type: [string, 'null']
+          format: date
+    WalletLimit:
+      type: object
+      required: [label, used, limit, remaining, percent, level]
+      properties:
+        label:
+          type: string
+        used:
+          type: string
+        limit:
+          type: [string, 'null']
+        remaining:
+          type: [string, 'null']
+        percent:
+          type: [integer, 'null']
+        level:
+          type: string
+    Wallet:
+      type: object
+      required: [id, name, provider, identifier, balance, is_active, warn_at_percent, limits]
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        provider:
+          type: string
+        identifier:
+          type: [string, 'null']
+        balance:
+          type: string
+        is_active:
+          type: boolean
+        warn_at_percent:
+          type: integer
+        limits:
+          type: array
+          items:
+            $ref: '#/components/schemas/WalletLimit'
+    WalletOverview:
+      type: object
+      required: [summary, wallets]
+      properties:
+        summary:
+          type: object
+          required: [wallets_total, cash, profit_today, profit_available, receivables, capital]
+          properties:
+            wallets_total:
+              type: string
+            cash:
+              type: string
+            profit_today:
+              type: string
+            profit_available:
+              type: string
+            receivables:
+              type: string
+            capital:
+              type: string
+        wallets:
+          type: array
+          items:
+            $ref: '#/components/schemas/Wallet'
+    WalletCashierOverview:
+      type: object
+      required: [wallets, transactions, outstanding]
+      properties:
+        wallets:
+          type: array
+          items:
+            type: object
+            required: [id, name, provider, identifier, balance, per_transaction_limit, default_commission_percent, default_commission_min, default_fee_percent, default_fee_min, default_fee_max]
+            properties:
+              id:
+                type: integer
+              name:
+                type: string
+              provider:
+                type: string
+              identifier:
+                type: [string, 'null']
+              balance:
+                type: string
+              per_transaction_limit:
+                type: [string, 'null']
+              default_commission_percent:
+                type: string
+              default_commission_min:
+                type: string
+              default_fee_percent:
+                type: string
+              default_fee_min:
+                type: string
+              default_fee_max:
+                type: [string, 'null']
+        transactions:
+          type: array
+          items:
+            type: object
+            required: [uuid, wallet_id, wallet_name, type, status, amount, commission, fee, counterparty, customer_name, payment_method, receivable, occurred_at, can_settle, can_reverse]
+            properties:
+              uuid:
+                type: string
+                format: uuid
+              wallet_id:
+                type: integer
+              wallet_name:
+                type: [string, 'null']
+              type:
+                type: string
+                enum: [send, receive]
+              status:
+                type: string
+              amount:
+                type: string
+              commission:
+                type: string
+              fee:
+                type: string
+              counterparty:
+                type: [string, 'null']
+              customer_name:
+                type: [string, 'null']
+              payment_method:
+                type: string
+              receivable:
+                type: string
+              occurred_at:
+                type: [string, 'null']
+                format: date-time
+              can_settle:
+                type: boolean
+              can_reverse:
+                type: boolean
+        outstanding:
           type: string
     Invoice:
       type: object

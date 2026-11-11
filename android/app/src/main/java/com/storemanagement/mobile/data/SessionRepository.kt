@@ -38,7 +38,12 @@ class SessionRepository @Inject constructor(
                 }
                 ApiResult.Success(result.value.data.user)
             }
-            is ApiResult.Failure -> result
+            // A 401 while signing in means wrong credentials, not an expired session.
+            is ApiResult.Failure -> if (result.error == ApiFailure.Unauthorized) {
+                ApiResult.Failure(ApiFailure.InvalidCredentials)
+            } else {
+                result
+            }
         }
     }
 

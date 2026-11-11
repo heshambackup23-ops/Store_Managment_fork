@@ -88,6 +88,84 @@ class DamagedStockService
     }
 
     /**
+     * Correct an active entry (quantity, reason, unit value, date, notes).
+     * The stock difference is applied to the product in the same transaction,
+     * and the change is written to the audit log with the old and new values.
+     *
+     * @param  array{quantity:int,reason:string,unit_value?:string|float|null,damaged_on:string,notes?:?string}  $data
+     */
+    public function update(DamagedItem $item, array $data, User $user, ?string $ip = null): DamagedItem
+    {
+        return DB::transaction(function () use ($item, $data, $user, $ip): DamagedItem {
+            // Same lock order as record()/void(): product first, then the record.
+            $product = $item->product_id
+                ? products::query()->lockForUpdate()->find($item->product_id)
+                : null;
+            $locked = DamagedItem::query()->lockForUpdate()->findOrFail($item->id);
+
+            if ($locked->isVoided()) {
+                $this->fail('item', 'لا يمكن تعديل سجل ملغى.');
+            }
+
+            $oldQuantity = (int) $locked->quantity;
+            $newQuantity = (int) $data['quantity'];
+            if ($newQuantity < 1) {
+                $this->fail('quantity', 'الكمية يجب أن تكون 1 على الأقل.');
+            }
+
+            $delta = $newQuantity - $oldQuantity;
+            if ($delta !== 0) {
+                if (! $product) {
+                    $this->fail('quantity', 'المنتج لم يعد موجوداً، لا يمكن تغيير الكمية. ألغِ السجل بدلاً من ذلك.');
+                }
+                if ($delta > (int) $product->stock) {
+                    $this->fail('quantity', 'الزيادة أكبر من المخزون المتاح ('.(int) $product->stock.').');
+                }
+                $product->stock = (int) $product->stock - $delta;
+                $product->save();
+            }
+
+            $unitCents = isset($data['unit_value']) && $data['unit_value'] !== ''
+                ? Money::cents($data['unit_value'])
+                : Money::cents($locked->unit_value);
+
+            $before = [
+                'quantity' => $oldQuantity,
+                'reason' => $locked->reason,
+                'unit_value' => (string) $locked->unit_value,
+                'damaged_on' => $locked->damaged_on?->toDateString(),
+                'notes' => $locked->notes,
+            ];
+
+            DamagedItem::whileServiceEditing(function () use ($locked, $data, $newQuantity, $unitCents): void {
+                $locked->forceFill([
+                    'quantity' => $newQuantity,
+                    'unit_value' => Money::decimal($unitCents),
+                    'total_value' => Money::decimal($unitCents * $newQuantity),
+                    'reason' => $data['reason'],
+                    'notes' => $this->clean($data['notes'] ?? null, 500),
+                    'damaged_on' => $data['damaged_on'],
+                    'stock_after' => (int) $locked->stock_before - $newQuantity,
+                ])->save();
+            });
+
+            $this->audit($user, 'damaged.updated', $locked->id, [
+                'before' => $before,
+                'after' => [
+                    'quantity' => $newQuantity,
+                    'reason' => $data['reason'],
+                    'unit_value' => Money::decimal($unitCents),
+                    'damaged_on' => $data['damaged_on'],
+                    'notes' => $this->clean($data['notes'] ?? null, 500),
+                ],
+                'stock_delta' => -$delta,
+            ], $ip);
+
+            return $locked->refresh();
+        }, 3);
+    }
+
+    /**
      * Cancel a mistaken entry. The units go back to stock and the record stays,
      * marked as voided, with who did it and why.
      */

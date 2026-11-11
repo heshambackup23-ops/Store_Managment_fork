@@ -165,4 +165,102 @@ class StoreApiTest {
         assertEquals("75.00", installment.remaining)
         assertEquals("غير مكتمل", installment.status)
     }
+
+    @Test
+    fun supplierAndInstallmentCreationAndWalletOverviewUseTheirAuthorizedContracts() = runBlocking {
+        server.enqueue(
+            MockResponse()
+                .setHeader("Content-Type", "application/json")
+                .setBody("""{"data":{"id":4,"name":"مورد","phone":null,"email":null,"address":null,"opening_balance":"25.00","balance":"25.00"}}"""),
+        )
+        server.enqueue(
+            MockResponse()
+                .setHeader("Content-Type", "application/json")
+                .setBody("""{"data":{"id":8,"invoice_id":null,"customer_id":12,"customer":"ليلى","product_id":3,"product_name":"هاتف","product_price":"100.00","payment_date":null,"next_payment_date":"2026-12-09","paid_amount":"0.00","remaining":"100.00","quantity":1,"status":"غير مكتمل","items":[]}}"""),
+        )
+        server.enqueue(
+            MockResponse()
+                .setHeader("Content-Type", "application/json")
+                .setBody("""{"data":{"summary":{"wallets_total":"250.00","cash":"0.00","profit_today":"0.00","profit_available":"0.00","receivables":"0.00","capital":"250.00"},"wallets":[{"id":2,"name":"المحفظة الرئيسية","provider":"فودافون كاش","identifier":"01012345678","balance":"250.00","is_active":true,"warn_at_percent":80,"limits":[]}]}}"""),
+        )
+
+        val supplier = api.createSupplier("supplier-key-0001", SupplierInputDto("مورد", openingBalance = "25.00")).data
+        val installment = api.createInstallment(
+            "installment-key-001",
+            InstallmentInputDto("ليلى", listOf(3), listOf(1), nextPaymentDate = "2026-12-09", paidAmount = "0.00"),
+        ).data
+        val wallets = api.wallets().data
+        val supplierRequest = server.takeRequest()
+        val installmentRequest = server.takeRequest()
+        val walletRequest = server.takeRequest()
+
+        assertEquals("25.00", supplier.balance)
+        assertEquals("100.00", installment.remaining)
+        assertEquals("250.00", wallets.summary.walletsTotal)
+        assertEquals("فودافون كاش", wallets.wallets.single().provider)
+        assertEquals("/api/v1/suppliers", supplierRequest.path)
+        assertEquals("supplier-key-0001", supplierRequest.getHeader("Idempotency-Key"))
+        assertEquals("/api/v1/installments", installmentRequest.path)
+        assertEquals("installment-key-001", installmentRequest.getHeader("Idempotency-Key"))
+        assertEquals("/api/v1/wallets", walletRequest.path)
+    }
+
+    @Test
+    fun salesReportUsesTheAuthorizedPaginatedRoute() = runBlocking {
+        server.enqueue(
+            MockResponse()
+                .setHeader("Content-Type", "application/json")
+                .setBody("""{"data":[{"id":12,"name":"Phone A","sold_quantity":7}],"links":{"next":null,"prev":null},"meta":{"current_page":1,"last_page":1,"per_page":20,"total":1}}"""),
+        )
+
+        val report = api.sales(query = "Phone")
+        val request = server.takeRequest()
+
+        assertEquals("Phone A", report.data.single().name)
+        assertEquals(7, report.data.single().soldQuantity)
+        assertEquals("/api/v1/sales", request.requestUrl?.encodedPath)
+        assertEquals("Phone", request.requestUrl?.queryParameter("q"))
+    }
+
+    @Test
+    fun notificationInboxAndReadActionsUseUserScopedRoutes() = runBlocking {
+        server.enqueue(
+            MockResponse()
+                .setHeader("Content-Type", "application/json")
+                .setBody("""{"data":[{"id":9,"title":"تنبيه","message":"رسالة","starts_at":null,"ends_at":null,"created_at":"2026-11-09T10:00:00Z","is_read":false}],"links":{"next":null,"prev":null},"meta":{"current_page":1,"last_page":1,"per_page":20,"total":1}}"""),
+        )
+        server.enqueue(MockResponse().setResponseCode(204))
+        server.enqueue(MockResponse().setResponseCode(204))
+
+        val page = api.notifications(page = 1, perPage = 20)
+        api.markNotificationRead(9)
+        api.markAllNotificationsRead()
+        val listRequest = server.takeRequest()
+        val readRequest = server.takeRequest()
+        val readAllRequest = server.takeRequest()
+
+        assertEquals(false, page.data.single().isRead)
+        assertEquals("/api/v1/notifications", listRequest.requestUrl?.encodedPath)
+        assertEquals("/api/v1/notifications/9/read", readRequest.path)
+        assertEquals("POST", readRequest.method)
+        assertEquals("/api/v1/notifications/read-all", readAllRequest.path)
+        assertEquals("POST", readAllRequest.method)
+    }
+
+    @Test
+    fun maintenanceListDecodesItsReadOnlyResourceContract() = runBlocking {
+        server.enqueue(
+            MockResponse()
+                .setHeader("Content-Type", "application/json")
+                .setBody("""{"data":[{"id":5,"name":"Repair","owner":"Omar","phone":"01010000000","address":"Cairo","description":"Screen replacement","status":"قيد الصيانة","requested_date":"2026-11-09","completed_date":null}],"links":{"next":null,"prev":null},"meta":{"current_page":1,"last_page":1,"per_page":20,"total":1}}"""),
+        )
+
+        val result = api.maintenance(query = "Omar")
+        val request = server.takeRequest()
+
+        assertEquals("Repair", result.data.single().name)
+        assertEquals("قيد الصيانة", result.data.single().status)
+        assertEquals("/api/v1/maintenance", request.requestUrl?.encodedPath)
+        assertEquals("Omar", request.requestUrl?.queryParameter("q"))
+    }
 }

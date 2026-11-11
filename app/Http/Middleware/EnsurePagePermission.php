@@ -29,6 +29,8 @@ class EnsurePagePermission
             $module = 'staff';
         } elseif ($module === 'admin') {
             $module = 'notifications';
+        } elseif ($module === 'personal-debts') {
+            $module = 'installments';
         }
 
         // Every signed-in, active user can view and edit THEIR OWN profile (details,

@@ -30,4 +30,14 @@ class InvoiceFormValidationTest {
         assertFalse("1e2".isValidPaidAmount())
     }
 
+    @Test
+    fun walletAdjustmentAmountMustBeSignedNonzeroCurrency() {
+        assertTrue("25.50".isValidSignedAmount())
+        assertTrue("-25".isValidSignedAmount())
+        assertTrue("-٢٥.٥٠".isValidSignedAmount())
+        assertFalse("0.00".isValidSignedAmount())
+        assertFalse("1.234".isValidSignedAmount())
+        assertFalse("100000000".isValidSignedAmount())
+    }
+
 }

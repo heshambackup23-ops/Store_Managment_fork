@@ -2,6 +2,7 @@ package com.storemanagement.mobile.ui
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -13,30 +14,49 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import com.storemanagement.mobile.core.network.ConnectionStatus
+import com.storemanagement.mobile.core.network.ConnectionState
+import androidx.lifecycle.compose.LifecycleEventEffect
+import androidx.lifecycle.Lifecycle
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
+import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material.icons.filled.Payments
+import androidx.compose.material.icons.filled.Inbox
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.automirrored.filled.ReceiptLong
 import androidx.compose.material.icons.filled.Category
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AccountCircle
+import androidx.compose.material.icons.filled.AccountBalanceWallet
+import androidx.compose.material.icons.filled.BarChart
+import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.QrCodeScanner
+import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Inventory2
-import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.MoreHoriz
+import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.People
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
@@ -46,6 +66,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -62,7 +83,6 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -83,10 +103,14 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
@@ -104,9 +128,28 @@ import com.storemanagement.mobile.core.network.ApiResult
 import com.storemanagement.mobile.core.network.InvoiceDto
 import com.storemanagement.mobile.core.network.InvoiceInputDto
 import com.storemanagement.mobile.core.network.InstallmentDto
+import com.storemanagement.mobile.core.network.InstallmentInputDto
+import com.storemanagement.mobile.core.network.PayAmountInputDto
+import com.storemanagement.mobile.core.network.PersonalDebtDto
+import com.storemanagement.mobile.core.network.DamagedItemDto
 import com.storemanagement.mobile.core.network.ProductDto
 import com.storemanagement.mobile.core.network.SupplierDto
+import com.storemanagement.mobile.core.network.SupplierInputDto
+import com.storemanagement.mobile.core.network.SoldProductDto
+import com.storemanagement.mobile.core.network.NotificationDto
+import com.storemanagement.mobile.core.network.MaintenanceDto
+import com.storemanagement.mobile.core.network.MaintenanceInputDto
 import com.storemanagement.mobile.core.network.UserDto
+import com.storemanagement.mobile.core.network.WalletDto
+import com.storemanagement.mobile.core.network.WalletOverviewDto
+import com.storemanagement.mobile.core.network.WalletCashierInputDto
+import com.storemanagement.mobile.core.network.WalletCashierTransactionDto
+import com.storemanagement.mobile.core.network.SettleWalletTransactionInputDto
+import com.storemanagement.mobile.core.network.ReverseWalletTransactionInputDto
+import com.storemanagement.mobile.core.network.CashierCheckoutInputDto
+import com.storemanagement.mobile.core.network.CashierCheckoutItemDto
+import com.storemanagement.mobile.core.network.CashierCheckoutResponseDto
+import com.storemanagement.mobile.core.network.CashierProductDto
 import com.storemanagement.mobile.ui.theme.StoreTheme
 import coil3.compose.AsyncImage
 import com.google.mlkit.vision.barcode.common.Barcode
@@ -125,27 +168,44 @@ import java.util.Locale
 fun StoreManagementApp(
     sessionViewModel: SessionViewModel = hiltViewModel(),
     storeViewModel: StoreViewModel = hiltViewModel(),
+    connectionViewModel: ConnectionViewModel = hiltViewModel(),
 ) {
     val session by sessionViewModel.state.collectAsStateWithLifecycle()
-    val darkTheme by storeViewModel.isDarkTheme.collectAsStateWithLifecycle()
+    val connection by connectionViewModel.state.collectAsStateWithLifecycle()
+    val isSaving by storeViewModel.isSaving.collectAsStateWithLifecycle()
     val currentUser = session.user
 
-    StoreTheme(darkTheme = darkTheme) {
-        Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-            when {
-                session.isRestoring -> LoadingScreen()
-                currentUser == null -> LoginScreen(
-                    error = session.error,
-                    isSubmitting = session.isSubmitting,
-                    onLogin = sessionViewModel::login,
-                    onRetry = sessionViewModel::restoreSession,
-                )
-                else -> StoreHomeScreen(
-                    user = currentUser,
-                    storeViewModel = storeViewModel,
-                    onLogout = sessionViewModel::logout,
-                    onSessionExpired = sessionViewModel::expireSession,
-                )
+    LifecycleEventEffect(Lifecycle.Event.ON_START) { connectionViewModel.resume() }
+    LifecycleEventEffect(Lifecycle.Event.ON_STOP) { connectionViewModel.pause() }
+
+    StoreTheme(darkTheme = false) {
+        CompositionLocalProvider(LocalIsSaving provides isSaving) {
+            Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+                when {
+                    session.isRestoring -> LoadingScreen()
+                    currentUser == null -> Column(Modifier.fillMaxSize().statusBarsPadding()) {
+                        ConnectionBanner(connection, connectionViewModel::checkNow)
+                        Box(Modifier.weight(1f)) {
+                            LoginScreen(
+                                error = session.error,
+                                isSubmitting = session.isSubmitting,
+                                onLogin = sessionViewModel::login,
+                                onRetry = {
+                                    connectionViewModel.checkNow()
+                                    sessionViewModel.restoreSession()
+                                },
+                            )
+                        }
+                    }
+                    else -> StoreHomeScreen(
+                        user = currentUser,
+                        storeViewModel = storeViewModel,
+                        connection = connection,
+                        onCheckConnection = connectionViewModel::checkNow,
+                        onLogout = sessionViewModel::logout,
+                        onSessionExpired = sessionViewModel::expireSession,
+                    )
+                }
             }
         }
     }
@@ -168,14 +228,24 @@ private fun LoginScreen(
     var username by rememberSaveable { mutableStateOf("") }
     var password by rememberSaveable { mutableStateOf("") }
     var showPassword by rememberSaveable { mutableStateOf(false) }
+    val passwordFocusRequester = remember { FocusRequester() }
+    val keyboardController = LocalSoftwareKeyboardController.current
+    val submitLogin = {
+        if (!isSubmitting) {
+            keyboardController?.hide()
+            onLogin(username, password)
+        }
+    }
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(horizontal = 24.dp),
-        verticalArrangement = Arrangement.Center,
-    ) {
+    BoxWithConstraints(Modifier.fillMaxSize().imePadding()) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = maxHeight)
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 24.dp),
+            verticalArrangement = Arrangement.Center,
+        ) {
         Surface(
             color = MaterialTheme.colorScheme.primary,
             shape = RoundedCornerShape(16.dp),
@@ -195,7 +265,8 @@ private fun LoginScreen(
             onValueChange = { username = it },
             label = { Text("اسم المستخدم") },
             singleLine = true,
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text, imeAction = ImeAction.Next),
+            keyboardActions = KeyboardActions(onNext = { passwordFocusRequester.requestFocus() }),
             modifier = Modifier.fillMaxWidth(),
         )
         Spacer(Modifier.height(12.dp))
@@ -204,6 +275,8 @@ private fun LoginScreen(
             onValueChange = { password = it },
             label = { Text("كلمة المرور") },
             singleLine = true,
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Done),
+            keyboardActions = KeyboardActions(onDone = { submitLogin() }),
             visualTransformation = if (showPassword) androidx.compose.ui.text.input.VisualTransformation.None
             else PasswordVisualTransformation(),
             trailingIcon = {
@@ -211,7 +284,7 @@ private fun LoginScreen(
                     Text(if (showPassword) "إخفاء" else "إظهار")
                 }
             },
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier.fillMaxWidth().focusRequester(passwordFocusRequester),
         )
         if (error != null) {
             Spacer(Modifier.height(16.dp))
@@ -222,7 +295,7 @@ private fun LoginScreen(
         }
         Spacer(Modifier.height(20.dp))
         androidx.compose.material3.Button(
-            onClick = { onLogin(username, password) },
+            onClick = { submitLogin() },
             enabled = !isSubmitting,
             modifier = Modifier.fillMaxWidth(),
             contentPadding = PaddingValues(vertical = 14.dp),
@@ -234,6 +307,7 @@ private fun LoginScreen(
             Text("دخول")
         }
     }
+    }
 }
 
 private enum class StoreTab(val label: String, val permission: String?, val icon: ImageVector) {
@@ -244,24 +318,37 @@ private enum class StoreTab(val label: String, val permission: String?, val icon
     More("المزيد", null, Icons.Filled.MoreHoriz),
 }
 
-private enum class MoreSection { Home, Categories, Suppliers, Installments, Profile }
+private enum class MoreSection { Home, Categories, Sales, Suppliers, Installments, Wallets, WalletCashier, ProductCashier, Damaged, Notifications, Maintenance, Profile }
+internal enum class CashierAction { Settle, Reverse }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun StoreHomeScreen(
     user: UserDto,
     storeViewModel: StoreViewModel,
+    connection: ConnectionState,
+    onCheckConnection: () -> Unit,
     onLogout: () -> Unit,
     onSessionExpired: () -> Unit,
 ) {
-    val darkTheme by storeViewModel.isDarkTheme.collectAsStateWithLifecycle()
+    val isSaving by storeViewModel.isSaving.collectAsStateWithLifecycle()
     val products by storeViewModel.products.collectAsStateWithLifecycle()
     val cacheTime by storeViewModel.productCacheTime.collectAsStateWithLifecycle()
     val categories by storeViewModel.categories.collectAsStateWithLifecycle()
     val customers by storeViewModel.customers.collectAsStateWithLifecycle()
+    val sales by storeViewModel.sales.collectAsStateWithLifecycle()
+    val notifications by storeViewModel.notifications.collectAsStateWithLifecycle()
+    val maintenances by storeViewModel.maintenances.collectAsStateWithLifecycle()
     val invoices by storeViewModel.invoices.collectAsStateWithLifecycle()
     val suppliers by storeViewModel.suppliers.collectAsStateWithLifecycle()
     val installments by storeViewModel.installments.collectAsStateWithLifecycle()
+    val personalDebts by storeViewModel.personalDebts.collectAsStateWithLifecycle()
+    val walletState by storeViewModel.walletOverview.collectAsStateWithLifecycle()
+    val walletCashierState by storeViewModel.walletCashier.collectAsStateWithLifecycle()
+    val cashierPosState by storeViewModel.cashierPos.collectAsStateWithLifecycle()
+    val profileState by storeViewModel.profile.collectAsStateWithLifecycle()
+    val damagedItems by storeViewModel.damagedItems.collectAsStateWithLifecycle()
+    val damagedProductsState by storeViewModel.damagedProducts.collectAsStateWithLifecycle()
     val productPage by storeViewModel.productPage.collectAsStateWithLifecycle()
     val productDetails by storeViewModel.productDetails.collectAsStateWithLifecycle()
     val invoiceDetails by storeViewModel.invoiceDetails.collectAsStateWithLifecycle()
@@ -276,6 +363,39 @@ private fun StoreHomeScreen(
     var editor by remember { mutableStateOf<EditTarget?>(null) }
     var deleteTarget by remember { mutableStateOf<DeleteTarget?>(null) }
     var invoiceDialogOpen by remember { mutableStateOf(false) }
+    var productDialogOpen by remember { mutableStateOf(false) }
+    var productEditTarget by remember { mutableStateOf<CachedProduct?>(null) }
+    var productDeleteTarget by remember { mutableStateOf<CachedProduct?>(null) }
+    var damagedDialogOpen by remember { mutableStateOf(false) }
+    var damagedVoidTarget by remember { mutableStateOf<DamagedItemDto?>(null) }
+    var profileEditOpen by remember { mutableStateOf(false) }
+    var supplierDialogOpen by remember { mutableStateOf(false) }
+    var installmentDialogOpen by remember { mutableStateOf(false) }
+    var installmentEditTarget by remember { mutableStateOf<InstallmentDto?>(null) }
+    var paymentInstallmentTarget by remember { mutableStateOf<InstallmentDto?>(null) }
+    var personalDebtDialogOpen by remember { mutableStateOf(false) }
+    var personalDebtEditTarget by remember { mutableStateOf<PersonalDebtDto?>(null) }
+    var paymentPersonalDebtTarget by remember { mutableStateOf<PersonalDebtDto?>(null) }
+    var personalDebtDeleteTarget by remember { mutableStateOf<PersonalDebtDto?>(null) }
+    var debtsSection by rememberSaveable { mutableStateOf("customers") }
+    var invoiceEditTarget by remember { mutableStateOf<InvoiceDto?>(null) }
+    var paymentInvoiceTarget by remember { mutableStateOf<InvoiceDto?>(null) }
+    var invoiceStatusTarget by remember { mutableStateOf<InvoiceDto?>(null) }
+    var invoiceRefundTarget by remember { mutableStateOf<InvoiceDto?>(null) }
+    var installmentStatusTarget by remember { mutableStateOf<InstallmentDto?>(null) }
+    var maintenanceStatusTarget by remember { mutableStateOf<MaintenanceDto?>(null) }
+    var damagedEditTarget by remember { mutableStateOf<DamagedItemDto?>(null) }
+    var selectedDamaged by remember { mutableStateOf<DamagedItemDto?>(null) }
+    var selectedPersonalDebt by remember { mutableStateOf<PersonalDebtDto?>(null) }
+    var damagedStatusFilter by rememberSaveable { mutableStateOf<String?>(null) }
+    var walletDialogOpen by remember { mutableStateOf(false) }
+    var walletAdjustmentTarget by remember { mutableStateOf<WalletDto?>(null) }
+    var maintenanceDialogOpen by remember { mutableStateOf(false) }
+    var maintenanceEditTarget by remember { mutableStateOf<MaintenanceDto?>(null) }
+    var maintenanceDeleteTarget by remember { mutableStateOf<MaintenanceDto?>(null) }
+    var walletCashierDialogOpen by remember { mutableStateOf(false) }
+    var cashierActionTarget by remember { mutableStateOf<WalletCashierTransactionDto?>(null) }
+    var cashierAction by remember { mutableStateOf<CashierAction?>(null) }
     var selectedProduct by remember { mutableStateOf<CachedProduct?>(null) }
     var selectedInvoice by remember { mutableStateOf<InvoiceDto?>(null) }
     var selectedSupplier by remember { mutableStateOf<SupplierDto?>(null) }
@@ -296,8 +416,15 @@ private fun StoreHomeScreen(
     val activeTitle = if (activeTab == StoreTab.More && moreSection != MoreSection.Home) {
         when (moreSection) {
             MoreSection.Categories -> "التصنيفات"
+            MoreSection.Sales -> "المبيعات"
             MoreSection.Suppliers -> "الموردون"
-            MoreSection.Installments -> "الأقساط"
+            MoreSection.Installments -> "الأقساط والديون"
+            MoreSection.Wallets -> "المحافظ"
+            MoreSection.WalletCashier -> "كاشير المحافظ"
+            MoreSection.ProductCashier -> "نقطة البيع"
+            MoreSection.Damaged -> "الهالك"
+            MoreSection.Notifications -> "الإشعارات"
+            MoreSection.Maintenance -> "الصيانة"
             MoreSection.Profile -> "حسابي"
             MoreSection.Home -> "المزيد"
         }
@@ -315,6 +442,8 @@ private fun StoreHomeScreen(
         if ("page.categories.view" in user.permissions) storeViewModel.refreshCategories(null)
         if ("page.customers.view" in user.permissions) storeViewModel.refreshCustomers(null)
         if ("page.invoices.view" in user.permissions) storeViewModel.refreshInvoices(null)
+        if ("page.wallets.view" in user.permissions) storeViewModel.refreshWalletOverview()
+        storeViewModel.refreshProfile()
     }
 
     LaunchedEffect(storeViewModel) {
@@ -324,6 +453,34 @@ private fun StoreHomeScreen(
                     editor = null
                     deleteTarget = null
                     invoiceDialogOpen = false
+                    productDialogOpen = false
+                    productEditTarget = null
+                    productDeleteTarget = null
+                    damagedDialogOpen = false
+                    damagedVoidTarget = null
+                    profileEditOpen = false
+                    supplierDialogOpen = false
+                    installmentDialogOpen = false
+                    installmentEditTarget = null
+                    paymentInstallmentTarget = null
+                    personalDebtDialogOpen = false
+                    personalDebtEditTarget = null
+                    paymentPersonalDebtTarget = null
+                    personalDebtDeleteTarget = null
+                    invoiceEditTarget = null
+                    paymentInvoiceTarget = null
+                    invoiceStatusTarget = null
+                    invoiceRefundTarget = null
+                    installmentStatusTarget = null
+                    maintenanceStatusTarget = null
+                    damagedEditTarget = null
+                    walletDialogOpen = false
+                    walletAdjustmentTarget = null
+                    maintenanceDialogOpen = false
+                    maintenanceDeleteTarget = null
+                    walletCashierDialogOpen = false
+                    cashierActionTarget = null
+                    cashierAction = null
                     snackbars.showSnackbar(event.message)
                 }
                 is StoreEvent.Failed -> snackbars.showSnackbar(event.message)
@@ -331,10 +488,40 @@ private fun StoreHomeScreen(
                     editor = null
                     deleteTarget = null
                     invoiceDialogOpen = false
+                    productDialogOpen = false
+                    productEditTarget = null
+                    productDeleteTarget = null
+                    damagedDialogOpen = false
+                    damagedVoidTarget = null
+                    profileEditOpen = false
+                    supplierDialogOpen = false
+                    installmentDialogOpen = false
+                    installmentEditTarget = null
+                    paymentInstallmentTarget = null
+                    personalDebtDialogOpen = false
+                    personalDebtEditTarget = null
+                    paymentPersonalDebtTarget = null
+                    personalDebtDeleteTarget = null
+                    invoiceEditTarget = null
+                    paymentInvoiceTarget = null
+                    invoiceStatusTarget = null
+                    invoiceRefundTarget = null
+                    installmentStatusTarget = null
+                    maintenanceStatusTarget = null
+                    damagedEditTarget = null
+                    walletDialogOpen = false
+                    walletAdjustmentTarget = null
+                    maintenanceDialogOpen = false
+                    maintenanceDeleteTarget = null
+                    walletCashierDialogOpen = false
+                    cashierActionTarget = null
+                    cashierAction = null
                     selectedProduct = null
                     selectedInvoice = null
                     selectedSupplier = null
                     selectedInstallment = null
+                    selectedDamaged = null
+                    selectedPersonalDebt = null
                     selectedCategory = null
                     selectedCustomer = null
                     storeViewModel.clearProductDetails()
@@ -349,57 +536,241 @@ private fun StoreHomeScreen(
         }
     }
 
-    LaunchedEffect(activeTab, searchQuery, selectedProductCategoryId, productStockFilter, moreSection) {
-        delay(300)
+    val openTab: (StoreTab) -> Unit = { tab ->
+        selectedTab = tab.name
+        searchQuery = ""
+        if (tab == StoreTab.More) moreSectionName = MoreSection.Home.name
+    }
+    val openSection: (MoreSection) -> Unit = { section ->
+        selectedTab = StoreTab.More.name
+        moreSectionName = section.name
+        searchQuery = ""
+    }
+
+    BackHandler(enabled = activeTab != StoreTab.Dashboard && !(activeTab == StoreTab.More && moreSection != MoreSection.Home)) {
+        openTab(StoreTab.Dashboard)
+    }
+
+    val dashboardLoadedAt = remember { LongArray(1) }
+    val refreshCurrent: (Boolean) -> Unit = { force ->
+        val query = searchQuery.ifBlank { null }
         when (activeTab) {
+            StoreTab.Dashboard -> {
+                // Reopening the dashboard must not refetch five lists every time.
+                val now = System.currentTimeMillis()
+                if (force || now - dashboardLoadedAt[0] > 60_000L) {
+                    dashboardLoadedAt[0] = now
+                    if ("page.products.view" in user.permissions) storeViewModel.refreshProducts(null)
+                    if ("page.customers.view" in user.permissions) storeViewModel.refreshCustomers(null)
+                    if ("page.invoices.view" in user.permissions) storeViewModel.refreshInvoices(null)
+                    if ("page.installments.view" in user.permissions) {
+                        storeViewModel.refreshInstallments(null)
+                        storeViewModel.refreshPersonalDebts(null)
+                    }
+                    if ("page.maintenance.view" in user.permissions) storeViewModel.refreshMaintenances(null)
+                }
+            }
             StoreTab.Products -> storeViewModel.refreshProducts(
-                searchQuery.ifBlank { null },
+                query,
                 categoryId = selectedProductCategoryId,
                 inStock = productStockFilter,
             )
-            StoreTab.Customers -> storeViewModel.refreshCustomers(searchQuery.ifBlank { null })
-            StoreTab.Invoices -> storeViewModel.refreshInvoices(searchQuery.ifBlank { null })
-            StoreTab.More -> if (moreSection == MoreSection.Suppliers) {
-                storeViewModel.refreshSuppliers(searchQuery.ifBlank { null })
-            } else if (moreSection == MoreSection.Installments) {
-                storeViewModel.refreshInstallments(searchQuery.ifBlank { null })
+            StoreTab.Customers -> storeViewModel.refreshCustomers(query)
+            StoreTab.Invoices -> storeViewModel.refreshInvoices(query)
+            StoreTab.More -> when (moreSection) {
+                MoreSection.Suppliers -> storeViewModel.refreshSuppliers(query)
+                MoreSection.Installments -> {
+                    storeViewModel.refreshInstallments(query)
+                    storeViewModel.refreshPersonalDebts(query)
+                }
+                MoreSection.Sales -> storeViewModel.refreshSales(query)
+                MoreSection.Notifications -> storeViewModel.refreshNotifications()
+                MoreSection.Maintenance -> storeViewModel.refreshMaintenances(query)
+                MoreSection.WalletCashier -> storeViewModel.refreshWalletCashier()
+                MoreSection.ProductCashier -> storeViewModel.searchCashierProducts("")
+                MoreSection.Damaged -> storeViewModel.refreshDamagedItems(query, damagedStatusFilter)
+                else -> Unit
             }
-            StoreTab.Dashboard -> Unit
         }
+    }
+
+    LaunchedEffect(activeTab, searchQuery, selectedProductCategoryId, productStockFilter, moreSection) {
+        delay(300)
+        refreshCurrent(false)
+    }
+
+    var wasDisconnected by remember { mutableStateOf(false) }
+    val latestRefresh by rememberUpdatedState(refreshCurrent)
+    LaunchedEffect(connection.status) {
+        when {
+            connection.status.isProblem() -> wasDisconnected = true
+            connection.status == ConnectionStatus.Online && wasDisconnected -> {
+                wasDisconnected = false
+                latestRefresh(true)
+            }
+        }
+    }
+
+    var pullRefreshing by remember { mutableStateOf(false) }
+    val pullScope = rememberCoroutineScope()
+
+
+    val isDashboardTab = activeTab == StoreTab.Dashboard
+    val todayIso = remember(isDashboardTab) { SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date()) }
+    val stats = remember(isDashboardTab, products, installments.items, personalDebts.items, maintenances.items, invoices.items, todayIso) {
+        if (isDashboardTab) {
+            computeDashboardStats(products, installments.items, personalDebts.items, maintenances.items, invoices.items, todayIso)
+        } else {
+            DashboardStats()
+        }
+    }
+    val outOfStockCount = stats.outOfStock
+    val lowStockCount = stats.lowStock
+    val overdueInstallmentCount = stats.overdueInstallmentCount
+    val overdueInstallmentsTotal = stats.overdueInstallmentsTotal
+    val customerOutstanding = stats.customerOutstanding
+    val myDebtsOutstanding = stats.myDebtsOutstanding
+    val overdueDebtsCount = stats.overdueDebtsCount
+    val pendingMaintenanceCount = stats.pendingMaintenance
+    val unpaidInvoicesCount = stats.unpaidInvoices
+    val canViewInstallments = "page.installments.view" in user.permissions
+    val canViewMaintenance = "page.maintenance.view" in user.permissions
+
+    val dashboardMetrics = buildList {
+        if (StoreTab.Products in availableTabs) add(DashboardMetric("المنتجات", products.size.toString(), Icons.Filled.Inventory2, StatusTone.Positive, onClick = { openTab(StoreTab.Products) }))
+        if (StoreTab.Customers in availableTabs) add(DashboardMetric("العملاء", customers.total.toString(), Icons.Filled.People, StatusTone.Neutral, onClick = { openTab(StoreTab.Customers) }))
+        if (StoreTab.Invoices in availableTabs) {
+            add(DashboardMetric("الفواتير", invoices.total.toString(), Icons.AutoMirrored.Filled.ReceiptLong, StatusTone.Neutral, onClick = { openTab(StoreTab.Invoices) }))
+            add(DashboardMetric("فواتير غير مسددة", unpaidInvoicesCount.toString(), Icons.Filled.Payments, if (unpaidInvoicesCount > 0) StatusTone.Warning else StatusTone.Positive, onClick = { openTab(StoreTab.Invoices) }))
+        }
+        if (canViewInstallments) {
+            add(DashboardMetric("المتبقي على العملاء", "${customerOutstanding.setScale(2, java.math.RoundingMode.HALF_UP).toPlainString()} ج.م", Icons.Filled.Payments, StatusTone.Warning, onClick = { debtsSection = "customers"; openSection(MoreSection.Installments) }))
+            add(DashboardMetric("المتبقي عليّ", "${myDebtsOutstanding.setScale(2, java.math.RoundingMode.HALF_UP).toPlainString()} ج.م", Icons.Filled.Payments, StatusTone.Danger, onClick = { debtsSection = "personal"; openSection(MoreSection.Installments) }))
+        }
+        if (canViewMaintenance) add(DashboardMetric("أجهزة قيد الصيانة", pendingMaintenanceCount.toString(), Icons.Filled.Build, StatusTone.Neutral, onClick = { openSection(MoreSection.Maintenance) }))
+    }
+
+    val dashboardAlerts = buildList {
+        if (StoreTab.Products in availableTabs && outOfStockCount > 0) {
+            add(DashboardAlert("منتجات نفدت من المخزون", "$outOfStockCount منتج بحاجة إلى إعادة توريد", StatusTone.Danger, Icons.Filled.Warning) { openTab(StoreTab.Products) })
+        }
+        if (StoreTab.Products in availableTabs && lowStockCount > 0) {
+            add(DashboardAlert("مخزون منخفض", "$lowStockCount منتج متبقٍ منه 5 وحدات أو أقل", StatusTone.Warning, Icons.Filled.Inventory2) { openTab(StoreTab.Products) })
+        }
+        if (canViewInstallments && overdueInstallmentCount > 0) {
+            add(DashboardAlert("أقساط عملاء متأخرة", "$overdueInstallmentCount قسط بإجمالي ${overdueInstallmentsTotal.setScale(2, java.math.RoundingMode.HALF_UP).toPlainString()} ج.م", StatusTone.Danger, Icons.Filled.Payments) { debtsSection = "customers"; openSection(MoreSection.Installments) })
+        }
+        if (canViewInstallments && overdueDebtsCount > 0) {
+            add(DashboardAlert("ديون عليك متأخرة", "$overdueDebtsCount دين تجاوز تاريخ استحقاقه", StatusTone.Danger, Icons.Filled.Warning) { debtsSection = "personal"; openSection(MoreSection.Installments) })
+        }
+        if (StoreTab.Invoices in availableTabs && unpaidInvoicesCount > 0) {
+            add(DashboardAlert("فواتير بانتظار السداد", "$unpaidInvoicesCount فاتورة لم تُسدد بالكامل", StatusTone.Warning, Icons.Filled.Payments) { openTab(StoreTab.Invoices) })
+        }
+        if (canViewMaintenance && pendingMaintenanceCount > 0) {
+            add(DashboardAlert("أجهزة قيد المتابعة", "$pendingMaintenanceCount جهاز لم يكتمل بعد", StatusTone.Warning, Icons.Filled.Build) { openSection(MoreSection.Maintenance) })
+        }
+    }
+
+    val quickActions = buildList {
+        if ("page.invoices.manage" in user.permissions && "page.products.view" in user.permissions) {
+            add(QuickAction("فاتورة جديدة", Icons.AutoMirrored.Filled.ReceiptLong) { storeViewModel.refreshProducts(null); invoiceDialogOpen = true })
+        }
+        if ("page.invoices.manage" in user.permissions) add(QuickAction("نقطة البيع", Icons.Filled.Store) { openSection(MoreSection.ProductCashier) })
+        if ("page.products.manage" in user.permissions) add(QuickAction("منتج جديد", Icons.Filled.Inventory2) { productEditTarget = null; productDialogOpen = true })
+        if ("page.customers.manage" in user.permissions) add(QuickAction("عميل جديد", Icons.Filled.People) { editor = EditTarget(EditKind.Customer) })
+        if ("page.damaged.manage" in user.permissions) add(QuickAction("تسجيل هالك", Icons.Filled.Delete) { storeViewModel.searchDamagedProducts(null); damagedDialogOpen = true })
+        if ("page.installments.manage" in user.permissions) add(QuickAction("دين عليّ", Icons.Filled.Payments) { personalDebtEditTarget = null; personalDebtDialogOpen = true })
+        if ("page.maintenance.manage" in user.permissions) add(QuickAction("طلب صيانة", Icons.Filled.Build) { maintenanceEditTarget = null; maintenanceDialogOpen = true })
     }
 
     Scaffold(
         topBar = {
-            TopAppBar(
-                title = {
-                    Column {
-                        Text(activeTitle, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        Text(user.name, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                },
-                navigationIcon = {
-                    if (activeTab == StoreTab.More && moreSection != MoreSection.Home) {
-                        IconButton(onClick = {
-                            moreSectionName = MoreSection.Home.name
-                            searchQuery = ""
-                        }) {
-                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "رجوع")
+            Column {
+                TopAppBar(
+                    title = {
+                        Column {
+                            Text(activeTitle, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text(user.name, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
-                    }
-                },
-                actions = {
-                    IconButton(onClick = onLogout) {
-                        Icon(Icons.AutoMirrored.Filled.Logout, contentDescription = "تسجيل الخروج")
-                    }
-                },
-            )
+                    },
+                    navigationIcon = {
+                        if (activeTab == StoreTab.More && moreSection != MoreSection.Home) {
+                            IconButton(onClick = {
+                                moreSectionName = MoreSection.Home.name
+                                searchQuery = ""
+                            }) {
+                                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "رجوع")
+                            }
+                        }
+                    },
+                    actions = {
+                        ConnectionPill(connection, onCheckConnection)
+                        IconButton(onClick = onLogout) {
+                            Icon(Icons.AutoMirrored.Filled.Logout, contentDescription = "تسجيل الخروج")
+                        }
+                    },
+                )
+                ConnectionBanner(connection, onCheckConnection)
+                if (isSaving) LinearProgressIndicator(Modifier.fillMaxWidth())
+            }
         },
         snackbarHost = { SnackbarHost(snackbars) },
         floatingActionButton = {
             when {
+                activeTab == StoreTab.Products && "page.products.manage" in user.permissions -> {
+                    FloatingActionButton(onClick = { productEditTarget = null; productDialogOpen = true }) {
+                        Icon(Icons.Filled.Add, contentDescription = "إضافة منتج")
+                    }
+                }
                 activeTab == StoreTab.More && moreSection == MoreSection.Categories && "page.categories.manage" in user.permissions -> {
                     FloatingActionButton(onClick = { editor = EditTarget(EditKind.Category) }) {
                         Icon(Icons.Filled.Add, contentDescription = "إضافة تصنيف")
+                    }
+                }
+                activeTab == StoreTab.More && moreSection == MoreSection.Suppliers && "page.suppliers.manage" in user.permissions -> {
+                    FloatingActionButton(onClick = { supplierDialogOpen = true }) {
+                        Icon(Icons.Filled.Add, contentDescription = "إضافة مورد")
+                    }
+                }
+                activeTab == StoreTab.More && moreSection == MoreSection.Installments &&
+                    "page.installments.manage" in user.permissions -> {
+                    FloatingActionButton(onClick = {
+                        if (debtsSection == "personal") {
+                            personalDebtEditTarget = null
+                            personalDebtDialogOpen = true
+                        } else {
+                            if ("page.products.view" in user.permissions) storeViewModel.refreshProducts(null)
+                            installmentEditTarget = null
+                            installmentDialogOpen = true
+                        }
+                    }) {
+                        Icon(Icons.Filled.Add, contentDescription = if (debtsSection == "personal") "إضافة دين عليّ" else "إضافة دين عميل")
+                    }
+                }
+                activeTab == StoreTab.More && moreSection == MoreSection.Wallets && "page.wallets.manage" in user.permissions -> {
+                    FloatingActionButton(onClick = { walletDialogOpen = true }) {
+                        Icon(Icons.Filled.Add, contentDescription = "إضافة محفظة")
+                    }
+                }
+                activeTab == StoreTab.More && moreSection == MoreSection.Maintenance && "page.maintenance.manage" in user.permissions -> {
+                    FloatingActionButton(onClick = {
+                        maintenanceEditTarget = null
+                        maintenanceDialogOpen = true
+                    }) {
+                        Icon(Icons.Filled.Add, contentDescription = "إضافة طلب صيانة")
+                    }
+                }
+                activeTab == StoreTab.More && moreSection == MoreSection.Damaged && "page.damaged.manage" in user.permissions -> {
+                    FloatingActionButton(onClick = {
+                        storeViewModel.searchDamagedProducts(null)
+                        damagedDialogOpen = true
+                    }) {
+                        Icon(Icons.Filled.Add, contentDescription = "تسجيل هالك")
+                    }
+                }
+                activeTab == StoreTab.More && moreSection == MoreSection.WalletCashier && "page.wallet_cashier.manage" in user.permissions -> {
+                    FloatingActionButton(onClick = { walletCashierDialogOpen = true }) {
+                        Icon(Icons.Filled.Add, contentDescription = "تسجيل معاملة")
                     }
                 }
                 activeTab == StoreTab.Customers && "page.customers.manage" in user.permissions -> {
@@ -435,16 +806,28 @@ private fun StoreHomeScreen(
                 }
             }
         },
-    ) { padding ->
-        when (activeTab) {
-            StoreTab.Dashboard -> DashboardScreen(
-                user = user,
-                productsCount = products.size,
-                categoriesCount = categories.size,
-                customersCount = customers.total,
-                invoicesCount = invoices.total,
-                isDarkTheme = storeViewModel.isDarkTheme.collectAsState().value,
-                onDarkThemeChange = storeViewModel::setDarkTheme,
+    ) { scaffoldPadding ->
+        PullToRefreshBox(
+            isRefreshing = pullRefreshing,
+            onRefresh = {
+                pullRefreshing = true
+                refreshCurrent(true)
+                onCheckConnection()
+                pullScope.launch {
+                    delay(900)
+                    pullRefreshing = false
+                }
+            },
+            modifier = Modifier.padding(scaffoldPadding).fillMaxSize(),
+        ) {
+            val padding = PaddingValues(0.dp)
+            when (activeTab) {
+            StoreTab.Dashboard -> HomeDashboardScreen(
+                userName = user.name,
+                isLoading = products.isEmpty() && productPage.isLoading,
+                metrics = dashboardMetrics,
+                alerts = dashboardAlerts,
+                quickActions = quickActions,
                 modifier = Modifier.padding(padding),
             )
             StoreTab.Products -> ProductListScreen(
@@ -456,6 +839,7 @@ private fun StoreHomeScreen(
                 query = searchQuery,
                 selectedCategoryId = selectedProductCategoryId,
                 inStockFilter = productStockFilter,
+                canManage = "page.products.manage" in user.permissions,
                 onQueryChange = { searchQuery = it },
                 onCategoryChange = { selectedProductCategoryId = it },
                 onStockFilterChange = { productStockFilter = it },
@@ -471,6 +855,8 @@ private fun StoreHomeScreen(
                     selectedProduct = it
                     storeViewModel.loadProductDetails(it.id)
                 },
+                onEdit = { productEditTarget = it; productDialogOpen = true },
+                onDelete = { productDeleteTarget = it },
                 modifier = Modifier.padding(padding),
             )
             StoreTab.Customers -> CustomerListScreen(
@@ -480,7 +866,7 @@ private fun StoreHomeScreen(
                 onQueryChange = { searchQuery = it },
                 onRefresh = { storeViewModel.refreshCustomers(searchQuery.ifBlank { null }) },
                 onLoadMore = storeViewModel::loadMoreCustomers,
-                onEdit = { editor = EditTarget(EditKind.Customer, it.id, it.name, it.phone.orEmpty(), it.address) },
+                onEdit = { editor = EditTarget(EditKind.Customer, it.id, it.name, it.phone.orEmpty(), it.address.orEmpty()) },
                 onDelete = { deleteTarget = DeleteTarget(EditKind.Customer, it.id, it.name) },
                 onCustomerClick = {
                     selectedCustomer = it
@@ -488,15 +874,23 @@ private fun StoreHomeScreen(
                 },
                 modifier = Modifier.padding(padding),
             )
-            StoreTab.Invoices -> InvoiceListScreen(
+            StoreTab.Invoices -> InvoicesScreen(
                 state = invoices,
                 query = searchQuery,
+                canManage = "page.invoices.manage" in user.permissions,
+                canEdit = "page.invoices.manage" in user.permissions && "page.products.view" in user.permissions,
                 onQueryChange = { searchQuery = it },
                 onRefresh = { storeViewModel.refreshInvoices(searchQuery.ifBlank { null }) },
                 onLoadMore = storeViewModel::loadMoreInvoices,
                 onInvoiceClick = {
                     selectedInvoice = it
                     storeViewModel.loadInvoiceDetails(it.id)
+                },
+                onPay = { paymentInvoiceTarget = it },
+                onChangeStatus = { invoiceStatusTarget = it },
+                onEdit = {
+                    storeViewModel.refreshProducts(null)
+                    invoiceEditTarget = it
                 },
                 modifier = Modifier.padding(padding),
             )
@@ -505,12 +899,17 @@ private fun StoreHomeScreen(
                     canViewCategories = "page.categories.view" in user.permissions,
                     canViewSuppliers = "page.suppliers.view" in user.permissions,
                     canViewInstallments = "page.installments.view" in user.permissions,
+                    canViewWallets = "page.wallets.view" in user.permissions,
+                    canViewWalletCashier = "page.wallet_cashier.view" in user.permissions,
+                    canViewProductCashier = "page.invoices.manage" in user.permissions,
+                    canViewSales = "page.sales.view" in user.permissions,
+                    canViewNotifications = "page.notifications.view" in user.permissions,
+                    canViewMaintenance = "page.maintenance.view" in user.permissions,
+                    canViewDamaged = "page.damaged.view" in user.permissions,
                     onOpenProfile = {
                         moreSectionName = MoreSection.Profile.name
                         searchQuery = ""
                     },
-                    isDarkTheme = darkTheme,
-                    onDarkThemeChange = storeViewModel::setDarkTheme,
                     onOpenCategories = {
                         moreSectionName = MoreSection.Categories.name
                         searchQuery = ""
@@ -522,6 +921,39 @@ private fun StoreHomeScreen(
                     onOpenInstallments = {
                         moreSectionName = MoreSection.Installments.name
                         searchQuery = ""
+                    },
+                    onOpenWallets = {
+                        moreSectionName = MoreSection.Wallets.name
+                        searchQuery = ""
+                        storeViewModel.refreshWalletOverview()
+                    },
+                    onOpenWalletCashier = {
+                        moreSectionName = MoreSection.WalletCashier.name
+                        searchQuery = ""
+                        storeViewModel.refreshWalletCashier()
+                    },
+                    onOpenProductCashier = {
+                        moreSectionName = MoreSection.ProductCashier.name
+                        searchQuery = ""
+                        storeViewModel.searchCashierProducts("")
+                    },
+                    onOpenSales = {
+                        moreSectionName = MoreSection.Sales.name
+                        searchQuery = ""
+                    },
+                    onOpenNotifications = {
+                        moreSectionName = MoreSection.Notifications.name
+                        searchQuery = ""
+                        storeViewModel.refreshNotifications()
+                    },
+                    onOpenMaintenance = {
+                        moreSectionName = MoreSection.Maintenance.name
+                        searchQuery = ""
+                    },
+                    onOpenDamaged = {
+                        moreSectionName = MoreSection.Damaged.name
+                        searchQuery = ""
+                        storeViewModel.refreshDamagedItems(null)
                     },
                     modifier = Modifier.padding(padding),
                 )
@@ -554,20 +986,122 @@ private fun StoreHomeScreen(
                     },
                     modifier = Modifier.padding(padding),
                 )
-                MoreSection.Profile -> ProfileScreen(user, Modifier.padding(padding))
-                MoreSection.Installments -> InstallmentListScreen(
-                    state = installments,
+                MoreSection.Profile -> ProfileScreen(
+                    user = user,
+                    state = profileState,
+                    onEdit = { profileEditOpen = true },
+                    modifier = Modifier.padding(padding),
+                )
+                MoreSection.Installments -> InstallmentsHubScreen(
+                    section = debtsSection,
+                    onSectionChange = { debtsSection = it },
+                    installments = installments,
+                    personalDebts = personalDebts,
                     query = searchQuery,
                     onQueryChange = { searchQuery = it },
-                    onRefresh = { storeViewModel.refreshInstallments(searchQuery.ifBlank { null }) },
-                    onLoadMore = storeViewModel::loadMoreInstallments,
+                    onRefresh = {
+                        storeViewModel.refreshInstallments(searchQuery.ifBlank { null })
+                        storeViewModel.refreshPersonalDebts(searchQuery.ifBlank { null })
+                    },
+                    canManage = "page.installments.manage" in user.permissions,
                     onInstallmentClick = {
                         selectedInstallment = it
                         storeViewModel.loadInstallmentDetails(it.id)
                     },
+                    onInstallmentPay = { paymentInstallmentTarget = it },
+                    onInstallmentStatus = { installmentStatusTarget = it },
+                    onInstallmentEdit = { installmentEditTarget = it; installmentDialogOpen = true },
+                    onInstallmentDelete = { deleteTarget = DeleteTarget(EditKind.Installment, it.id, it.customer) },
+                    onLoadMoreInstallments = storeViewModel::loadMoreInstallments,
+                    onDebtClick = { selectedPersonalDebt = it },
+                    onDebtPay = { paymentPersonalDebtTarget = it },
+                    onDebtEdit = { personalDebtEditTarget = it; personalDebtDialogOpen = true },
+                    onDebtDelete = { personalDebtDeleteTarget = it },
+                    onLoadMoreDebts = storeViewModel::loadMorePersonalDebts,
+                    modifier = Modifier.padding(padding),
+                )
+                MoreSection.Wallets -> WalletOverviewScreen(
+                    state = walletState,
+                    canManage = "page.wallets.manage" in user.permissions,
+                    canUseCashier = "page.wallet_cashier.view" in user.permissions,
+                    onRefresh = storeViewModel::refreshWalletOverview,
+                    onOpenCashier = {
+                        moreSectionName = MoreSection.WalletCashier.name
+                        storeViewModel.refreshWalletCashier()
+                    },
+                    onAdjustWallet = { walletAdjustmentTarget = it },
+                    onToggleWallet = { id -> storeViewModel.toggleWallet(id, UUID.randomUUID().toString()) },
+                    modifier = Modifier.padding(padding),
+                )
+                MoreSection.WalletCashier -> WalletCashierScreen(
+                    state = walletCashierState,
+                    canManage = "page.wallet_cashier.manage" in user.permissions,
+                    canReverse = "page.wallets.manage" in user.permissions,
+                    onRefresh = storeViewModel::refreshWalletCashier,
+                    onSettle = { cashierActionTarget = it; cashierAction = CashierAction.Settle },
+                    onReverse = { cashierActionTarget = it; cashierAction = CashierAction.Reverse },
+                    modifier = Modifier.padding(padding),
+                )
+                MoreSection.ProductCashier -> ProductCashierScreen(
+                    state = cashierPosState,
+                    isSaving = isSaving,
+                    onSearch = storeViewModel::searchCashierProducts,
+                    onCheckout = storeViewModel::checkoutCashier,
+                    modifier = Modifier.padding(padding),
+                )
+                MoreSection.Damaged -> DamagedScreen(
+                    state = damagedItems,
+                    statusFilter = damagedStatusFilter,
+                    onStatusChange = {
+                        damagedStatusFilter = it
+                        storeViewModel.refreshDamagedItems(searchQuery.ifBlank { null }, it)
+                    },
+                    canManage = "page.damaged.manage" in user.permissions,
+                    query = searchQuery,
+                    onQueryChange = { searchQuery = it },
+                    onRefresh = { storeViewModel.refreshDamagedItems(searchQuery.ifBlank { null }, damagedStatusFilter) },
+                    onLoadMore = {
+                        storeViewModel.refreshDamagedItems(
+                            searchQuery.ifBlank { null },
+                            damagedStatusFilter,
+                            page = damagedItems.currentPage + 1,
+                        )
+                    },
+                    onDetails = { selectedDamaged = it },
+                    onEdit = { damagedEditTarget = it },
+                    onDelete = { damagedVoidTarget = it },
+                    modifier = Modifier.padding(padding),
+                )
+                MoreSection.Sales -> SalesListScreen(
+                    state = sales,
+                    query = searchQuery,
+                    onQueryChange = { searchQuery = it },
+                    onRefresh = { storeViewModel.refreshSales(searchQuery.ifBlank { null }) },
+                    onLoadMore = storeViewModel::loadMoreSales,
+                    modifier = Modifier.padding(padding),
+                )
+                MoreSection.Notifications -> NotificationListScreen(
+                    state = notifications,
+                    onRefresh = { storeViewModel.refreshNotifications() },
+                    onLoadMore = storeViewModel::loadMoreNotifications,
+                    onMarkRead = storeViewModel::markNotificationRead,
+                    onMarkAllRead = storeViewModel::markAllNotificationsRead,
+                    modifier = Modifier.padding(padding),
+                )
+                MoreSection.Maintenance -> MaintenanceScreen(
+                    state = maintenances,
+                    query = searchQuery,
+                    canManage = "page.maintenance.manage" in user.permissions,
+                    onQueryChange = { searchQuery = it },
+                    onRefresh = { storeViewModel.refreshMaintenances(searchQuery.ifBlank { null }) },
+                    onLoadMore = storeViewModel::loadMoreMaintenances,
+                    onChangeStatus = { maintenanceStatusTarget = it },
+                    onEdit = { maintenanceEditTarget = it; maintenanceDialogOpen = true },
+                    onDelete = { maintenanceDeleteTarget = it },
                     modifier = Modifier.padding(padding),
                 )
             }
+        }
         }
     }
 
@@ -583,10 +1117,11 @@ private fun StoreHomeScreen(
                         else storeViewModel.updateCategory(id, input)
                     }
                     EditKind.Customer -> {
-                        val input = CustomerInputDto(name, phone, address)
+                        val input = CustomerInputDto(name.trim(), phone.trim().ifBlank { null }, address.trim().ifBlank { null })
                         if (id == null) storeViewModel.createCustomer(input, key)
                         else storeViewModel.updateCustomer(id, input)
                     }
+                    EditKind.Installment -> Unit
                 }
             },
         )
@@ -596,12 +1131,13 @@ private fun StoreHomeScreen(
         AlertDialog(
             onDismissRequest = { deleteTarget = null },
             title = { Text("تأكيد الحذف") },
-            text = { Text("هل تريد حذف ${target.name}؟") },
+            text = { DialogForm(maxHeight = 320.dp) { Text("هل تريد حذف ${target.name}؟") } },
             confirmButton = {
-                Button(onClick = {
+                Button(enabled = !LocalIsSaving.current, onClick = {
                     when (target.kind) {
                         EditKind.Category -> storeViewModel.deleteCategory(target.id)
                         EditKind.Customer -> storeViewModel.deleteCustomer(target.id)
+                        EditKind.Installment -> storeViewModel.deleteInstallment(target.id, UUID.randomUUID().toString())
                     }
                 }) { Text("حذف") }
             },
@@ -615,6 +1151,285 @@ private fun StoreHomeScreen(
             onDismiss = { invoiceDialogOpen = false },
             onCreate = storeViewModel::createInvoice,
             onBarcodeLookup = storeViewModel::findProductByBarcode,
+        )
+    }
+
+    if (productDialogOpen) {
+        ProductEditDialog(
+            product = productEditTarget,
+            categories = categories,
+            onDismiss = { productDialogOpen = false },
+            onSave = { id, input, key ->
+                if (id == null) storeViewModel.createProduct(input, key)
+                else storeViewModel.updateProduct(id, input, key)
+            },
+        )
+    }
+
+    invoiceEditTarget?.let { invoice ->
+        InvoiceCreateDialog(
+            products = products,
+            initial = invoice,
+            onDismiss = { invoiceEditTarget = null },
+            onCreate = { input, key -> storeViewModel.updateInvoice(invoice.id, input, key) },
+            onBarcodeLookup = storeViewModel::findProductByBarcode,
+        )
+    }
+
+    invoiceStatusTarget?.let { invoice ->
+        StatusChoiceDialog(
+            title = "تغيير حالة الفاتورة",
+            summary = "فاتورة ${invoice.invoiceNumber} · الإجمالي ${invoice.totalAmount} · المتبقي ${invoice.remainingAmount} ج.م. لتحويلها إلى غير مدفوعة عدّل المبلغ المدفوع من زر التعديل.",
+            options = invoiceStatusOptions(invoice),
+            initial = null,
+            confirmLabel = "تأكيد",
+            onDismiss = { invoiceStatusTarget = null },
+            onConfirm = { value, key ->
+                if (value == "paid") {
+                    storeViewModel.payInvoice(invoice.id, PayAmountInputDto(), key)
+                } else {
+                    invoiceStatusTarget = null
+                    invoiceRefundTarget = invoice
+                }
+            },
+        )
+    }
+
+    invoiceRefundTarget?.let { invoice ->
+        val refundKey = remember(invoice.id) { UUID.randomUUID().toString() }
+        ConfirmDialog(
+            title = "استرداد الفاتورة",
+            message = "سيتم استرداد الفاتورة ${invoice.invoiceNumber} وإرجاع منتجاتها إلى المخزون وإغلاق أي قسط مرتبط بها. لا يمكن التراجع عن هذا الإجراء.",
+            confirmLabel = "استرداد",
+            onDismiss = { invoiceRefundTarget = null },
+            onConfirm = { storeViewModel.refundInvoice(invoice.id, refundKey) },
+        )
+    }
+
+    installmentStatusTarget?.let { installment ->
+        StatusChoiceDialog(
+            title = "تغيير حالة القسط",
+            summary = "${installment.customer} · المتبقي ${installment.remaining} ج.م",
+            options = installmentStatusOptions(installment),
+            initial = installment.statusValueForDialog(),
+            confirmLabel = "تغيير الحالة",
+            onDismiss = { installmentStatusTarget = null },
+            onConfirm = { status, key -> storeViewModel.changeInstallmentStatus(installment.id, status, key) },
+        )
+    }
+
+    maintenanceStatusTarget?.let { record ->
+        StatusChoiceDialog(
+            title = "تغيير حالة الجهاز",
+            summary = "${record.name} · ${record.owner}",
+            options = MaintenanceStatusOptions.map { ChoiceOption(it, it) },
+            initial = record.status,
+            confirmLabel = "حفظ الحالة",
+            onDismiss = { maintenanceStatusTarget = null },
+            onConfirm = { status, _ ->
+                storeViewModel.updateMaintenance(
+                    record.id,
+                    MaintenanceInputDto(
+                        name = record.name,
+                        owner = record.owner,
+                        phone = record.phone,
+                        address = record.address,
+                        description = record.description,
+                        status = status,
+                        requestedDate = record.requestedDate,
+                    ),
+                )
+            },
+        )
+    }
+
+    damagedEditTarget?.let { item ->
+        DamagedItemEditDialog(
+            item = item,
+            onDismiss = { damagedEditTarget = null },
+            onSave = { input, key -> storeViewModel.updateDamagedItem(item.id, input, key) },
+        )
+    }
+
+    if (personalDebtDialogOpen) {
+        PersonalDebtEditDialog(
+            debt = personalDebtEditTarget,
+            onDismiss = { personalDebtDialogOpen = false },
+            onSave = { id, input, key ->
+                if (id == null) storeViewModel.createPersonalDebt(input, key)
+                else storeViewModel.updatePersonalDebt(id, input, key)
+            },
+        )
+    }
+
+    paymentPersonalDebtTarget?.let { debt ->
+        PaymentAmountDialog(
+            title = "سداد دين ${debt.creditor}",
+            remaining = debt.remaining,
+            requireAmount = true,
+            onDismiss = { paymentPersonalDebtTarget = null },
+            onPay = { input, key -> storeViewModel.payPersonalDebt(debt.id, input, key) },
+        )
+    }
+
+    personalDebtDeleteTarget?.let { debt ->
+        val deleteKey = remember(debt.id) { UUID.randomUUID().toString() }
+        ConfirmDialog(
+            title = "حذف الدين",
+            message = "هل تريد حذف الدين المستحق لـ ${debt.creditor}؟ لا يمكن حذف دين له سجل دفعات.",
+            confirmLabel = "حذف",
+            onDismiss = { personalDebtDeleteTarget = null },
+            onConfirm = { storeViewModel.deletePersonalDebt(debt.id, deleteKey) },
+        )
+    }
+
+    selectedPersonalDebt?.let { debt ->
+        ModalBottomSheet(onDismissRequest = { selectedPersonalDebt = null }) {
+            PersonalDebtDetailsSheet(debt)
+        }
+    }
+
+    selectedDamaged?.let { item ->
+        ModalBottomSheet(onDismissRequest = { selectedDamaged = null }) {
+            DamagedDetailsSheet(item)
+        }
+    }
+
+    if (profileEditOpen) {
+        ProfileEditDialog(
+            profile = profileState.profile,
+            onDismiss = { profileEditOpen = false },
+            onSave = storeViewModel::updateProfile,
+        )
+    }
+
+    if (damagedDialogOpen) {
+        DamagedItemCreateDialog(
+            products = damagedProductsState.products,
+            isLoading = damagedProductsState.isLoading,
+            error = damagedProductsState.error,
+            onSearch = storeViewModel::searchDamagedProducts,
+            onDismiss = { damagedDialogOpen = false },
+            onCreate = storeViewModel::createDamagedItem,
+        )
+    }
+
+    damagedVoidTarget?.let { item ->
+        VoidDamagedItemDialog(
+            item = item,
+            onDismiss = { damagedVoidTarget = null },
+            onVoid = { input, key -> storeViewModel.voidDamagedItem(item.id, input, key) },
+        )
+    }
+
+    productDeleteTarget?.let { product ->
+        AlertDialog(
+            onDismissRequest = { productDeleteTarget = null },
+            title = { Text("حذف المنتج") },
+            text = { DialogForm(maxHeight = 320.dp) { Text("هل تريد حذف ${product.name}؟ لا يمكن حذف منتج له سجل مبيعات أو فواتير أو أقساط.") } },
+            confirmButton = {
+                Button(enabled = !LocalIsSaving.current, onClick = { storeViewModel.deleteProduct(product.id, UUID.randomUUID().toString()) }) { Text("حذف") }
+            },
+            dismissButton = { TextButton(onClick = { productDeleteTarget = null }) { Text("إلغاء") } },
+        )
+    }
+
+    if (walletDialogOpen) {
+        WalletCreateDialog(
+            onDismiss = { walletDialogOpen = false },
+            onCreate = storeViewModel::createWallet,
+        )
+    }
+
+    walletAdjustmentTarget?.let { wallet ->
+        WalletAdjustmentDialog(
+            wallet = wallet,
+            onDismiss = { walletAdjustmentTarget = null },
+            onAdjust = { input, key ->
+                storeViewModel.adjustWallet(wallet.id, input, key)
+            },
+        )
+    }
+
+    if (supplierDialogOpen) {
+        SupplierCreateDialog(
+            onDismiss = { supplierDialogOpen = false },
+            onCreate = storeViewModel::createSupplier,
+        )
+    }
+
+    if (installmentDialogOpen) {
+        InstallmentCreateDialog(
+            products = products,
+            canSelectProducts = "page.products.view" in user.permissions,
+            record = installmentEditTarget,
+            onDismiss = { installmentDialogOpen = false },
+            onSave = { id, input, key ->
+                if (id == null) storeViewModel.createInstallment(input, key)
+                else storeViewModel.updateInstallment(id, input, key)
+            },
+        )
+    }
+
+    paymentInstallmentTarget?.let { installment ->
+        PaymentAmountDialog(
+            title = "سداد القسط",
+            remaining = installment.remaining,
+            onDismiss = { paymentInstallmentTarget = null },
+            onPay = { input, key -> storeViewModel.payInstallment(installment.id, input, key) },
+        )
+    }
+
+    paymentInvoiceTarget?.let { invoice ->
+        PaymentAmountDialog(
+            title = "سداد الفاتورة ${invoice.invoiceNumber}",
+            remaining = invoice.remainingAmount,
+            onDismiss = { paymentInvoiceTarget = null },
+            onPay = { input, key -> storeViewModel.payInvoice(invoice.id, input, key) },
+        )
+    }
+
+    if (maintenanceDialogOpen) {
+        MaintenanceEditDialog(
+            record = maintenanceEditTarget,
+            onDismiss = { maintenanceDialogOpen = false },
+            onSave = { input, key ->
+                val record = maintenanceEditTarget
+                if (record == null) storeViewModel.createMaintenance(input, key)
+                else storeViewModel.updateMaintenance(record.id, input)
+            },
+        )
+    }
+
+    maintenanceDeleteTarget?.let { record ->
+        AlertDialog(
+            onDismissRequest = { maintenanceDeleteTarget = null },
+            title = { Text("حذف طلب الصيانة") },
+            text = { DialogForm(maxHeight = 320.dp) { Text("هل تريد حذف طلب ${record.name}؟") } },
+            confirmButton = {
+                Button(enabled = !LocalIsSaving.current, onClick = { storeViewModel.deleteMaintenance(record.id) }) { Text("حذف") }
+            },
+            dismissButton = { TextButton(onClick = { maintenanceDeleteTarget = null }) { Text("إلغاء") } },
+        )
+    }
+
+    if (walletCashierDialogOpen) {
+        WalletCashierCreateDialog(
+            wallets = walletCashierState.data?.wallets.orEmpty(),
+            onDismiss = { walletCashierDialogOpen = false },
+            onCreate = storeViewModel::createWalletTransaction,
+        )
+    }
+
+    val actionTransaction = cashierActionTarget
+    val actionType = cashierAction
+    if (actionTransaction != null && actionType != null) {
+        WalletCashierActionDialog(
+            transaction = actionTransaction,
+            action = actionType,
+            onDismiss = { cashierActionTarget = null; cashierAction = null },
+            onSettle = { input, key -> storeViewModel.settleWalletTransaction(actionTransaction.uuid, input, key) },
+            onReverse = { input, key -> storeViewModel.reverseWalletTransaction(actionTransaction.uuid, input, key) },
         )
     }
 
@@ -686,66 +1501,6 @@ private fun StoreHomeScreen(
 }
 
 @Composable
-private fun DashboardScreen(
-    user: UserDto,
-    productsCount: Int,
-    categoriesCount: Int,
-    customersCount: Int,
-    invoicesCount: Int,
-    isDarkTheme: Boolean,
-    onDarkThemeChange: (Boolean) -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    Column(
-        modifier = modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(20.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp),
-    ) {
-        Text("مرحباً، ${user.name}", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
-        Text("ملخص البيانات المتاحة لحسابك", color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            StatTile("منتجات محملة", productsCount, Icons.Filled.Inventory2, Modifier.weight(1f))
-            StatTile("تصنيفات", categoriesCount, Icons.Filled.Category, Modifier.weight(1f))
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            StatTile("عملاء", customersCount, Icons.Filled.People, Modifier.weight(1f))
-            StatTile("فواتير", invoicesCount, Icons.AutoMirrored.Filled.ReceiptLong, Modifier.weight(1f))
-        }
-        Card(shape = RoundedCornerShape(8.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween,
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Icon(if (isDarkTheme) Icons.Filled.DarkMode else Icons.Filled.LightMode, contentDescription = null)
-                    Text("المظهر الداكن")
-                }
-                Switch(checked = isDarkTheme, onCheckedChange = onDarkThemeChange)
-            }
-        }
-        Text("عدد الأدوار: ${user.roles.size}", color = MaterialTheme.colorScheme.onSurfaceVariant)
-    }
-}
-
-@Composable
-private fun StatTile(label: String, count: Int, icon: ImageVector, modifier: Modifier = Modifier) {
-    Card(
-        modifier = modifier,
-        shape = RoundedCornerShape(8.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-    ) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-            Text(count.toString(), style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-            Text(label, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
-    }
-}
-
-@Composable
 private fun ProductListScreen(
     products: List<CachedProduct>,
     categories: List<CachedCategory>,
@@ -755,12 +1510,15 @@ private fun ProductListScreen(
     query: String,
     selectedCategoryId: Long?,
     inStockFilter: Boolean?,
+    canManage: Boolean,
     onQueryChange: (String) -> Unit,
     onCategoryChange: (Long?) -> Unit,
     onStockFilterChange: (Boolean?) -> Unit,
     onRefresh: () -> Unit,
     onLoadMore: () -> Unit,
     onProductClick: (CachedProduct) -> Unit,
+    onEdit: (CachedProduct) -> Unit,
+    onDelete: (CachedProduct) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val visible = remember(products, page.items, query, selectedCategoryId, inStockFilter) {
@@ -790,7 +1548,9 @@ private fun ProductListScreen(
             EmptyState(if (error != null) "تعذر تحميل المنتجات" else "لا توجد منتجات مطابقة")
         } else {
             LazyColumn(contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                items(visible, key = CachedProduct::id) { product -> ProductRow(product, onClick = { onProductClick(product) }) }
+                items(visible, key = CachedProduct::id) {
+                    ProductRow(product = it, canManage = canManage, onClick = { onProductClick(it) }, onEdit = { onEdit(it) }, onDelete = { onDelete(it) })
+                }
                 item { LoadMoreButton(page, onLoadMore) }
             }
         }
@@ -835,13 +1595,21 @@ private fun ProductFilters(
 }
 
 @Composable
-private fun ProductRow(product: CachedProduct, onClick: () -> Unit) {
+private fun ProductRow(
+    product: CachedProduct,
+    canManage: Boolean,
+    onClick: () -> Unit,
+    onEdit: () -> Unit,
+    onDelete: () -> Unit,
+) {
     Card(
         onClick = onClick,
         shape = RoundedCornerShape(8.dp),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
     ) {
-        Row(Modifier.fillMaxWidth().padding(12.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             AsyncImage(
                 model = product.imageUrl,
                 contentDescription = product.name,
@@ -867,6 +1635,13 @@ private fun ProductRow(product: CachedProduct, onClick: () -> Unit) {
                 }
             }
         }
+        if (canManage) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                CardActionButton("تعديل", Icons.Filled.Edit, onEdit, Modifier.weight(1f), ActionStyle.Tonal)
+                CardActionButton("حذف", Icons.Filled.Delete, onDelete, Modifier.weight(1f), ActionStyle.Danger)
+            }
+        }
+        }
     }
 }
 
@@ -874,7 +1649,7 @@ private fun ProductDto.toCachedProduct() = CachedProduct(
     id = id,
     name = name,
     price = price,
-    description = description,
+    description = description.orEmpty(),
     barcode = barcode,
     stock = stock,
     categoryId = category?.id,
@@ -1070,12 +1845,12 @@ private fun CustomerDetailsSheet(cached: CustomerDto, state: CustomerDetailUiSta
             state.customer != null -> Text("بيانات العميل من الخادم", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
         }
         DetailLine("الهاتف", customer.phone.orEmpty().ifBlank { "غير متوفر" })
-        DetailLine("العنوان", customer.address.ifBlank { "غير متوفر" })
+        DetailLine("العنوان", customer.address.orEmpty().ifBlank { "غير متوفر" })
     }
 }
 
 @Composable
-private fun DetailLine(label: String, value: String) {
+internal fun DetailLine(label: String, value: String) {
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
         Text(label, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Text(value, fontWeight = FontWeight.Medium)
@@ -1083,7 +1858,12 @@ private fun DetailLine(label: String, value: String) {
 }
 
 @Composable
-private fun ProfileScreen(user: UserDto, modifier: Modifier = Modifier) {
+private fun ProfileScreen(
+    user: UserDto,
+    state: ProfileUiState,
+    onEdit: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
     val permissionLabels = remember(user.permissions) {
         user.permissions.mapNotNull(String::toArabicPermissionLabel).distinct().sorted()
     }
@@ -1092,9 +1872,13 @@ private fun ProfileScreen(user: UserDto, modifier: Modifier = Modifier) {
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
         Text("حسابي", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
-        DetailLine("الاسم", user.name)
+        state.error?.let { ErrorBanner(it) }
+        if (state.isLoading && state.profile == null) LoadingRow()
+        DetailLine("الاسم", state.profile?.name ?: user.name)
         DetailLine("اسم المستخدم", user.username?.ifBlank { null } ?: "غير محدد")
+        DetailLine("البريد الإلكتروني", state.profile?.email?.ifBlank { null } ?: "غير محدد")
         DetailLine("عدد الأدوار", user.roles.size.toString())
+        CardActionButton("تعديل الحساب وكلمة المرور", Icons.Filled.Edit, onEdit, Modifier.fillMaxWidth(), ActionStyle.Filled)
         Text("الصلاحيات", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
         if (permissionLabels.isEmpty()) {
             Text("لا توجد صلاحيات إضافية", color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -1109,77 +1893,627 @@ private fun MoreHubScreen(
     canViewCategories: Boolean,
     canViewSuppliers: Boolean,
     canViewInstallments: Boolean,
+    canViewWallets: Boolean,
+    canViewWalletCashier: Boolean,
+    canViewProductCashier: Boolean,
+    canViewSales: Boolean,
+    canViewNotifications: Boolean,
+    canViewMaintenance: Boolean,
+    canViewDamaged: Boolean,
     onOpenProfile: () -> Unit,
-    isDarkTheme: Boolean,
-    onDarkThemeChange: (Boolean) -> Unit,
     onOpenCategories: () -> Unit,
     onOpenSuppliers: () -> Unit,
     onOpenInstallments: () -> Unit,
+    onOpenWallets: () -> Unit,
+    onOpenWalletCashier: () -> Unit,
+    onOpenProductCashier: () -> Unit,
+    onOpenSales: () -> Unit,
+    onOpenNotifications: () -> Unit,
+    onOpenMaintenance: () -> Unit,
+    onOpenDamaged: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Column(
         modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(18.dp),
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text("المزيد", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+            Text("الوصول إلى وحدات حسابك", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("إدارة المتجر", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
+            if (canViewCategories) MoreActionRow("التصنيفات", "تصنيفات المنتجات", Icons.Filled.Category, onOpenCategories)
+            if (canViewSales) MoreActionRow("المبيعات", "المنتجات المباعة حسب إجمالي الفواتير", Icons.Filled.BarChart, onOpenSales)
+            if (canViewSuppliers) MoreActionRow("الموردون", "الأرصدة والحسابات الدائنة", Icons.Filled.People, onOpenSuppliers)
+            if (canViewInstallments) MoreActionRow("الأقساط والديون", "الأرصدة ومواعيد السداد", Icons.AutoMirrored.Filled.ReceiptLong, onOpenInstallments)
+            if (canViewWallets) MoreActionRow("المحافظ", "الأرصدة والنقدية والحدود", Icons.Filled.AccountBalanceWallet, onOpenWallets)
+            if (canViewWalletCashier) MoreActionRow("كاشير المحافظ", "تسجيل التحويلات والتحصيلات", Icons.Filled.AccountBalanceWallet, onOpenWalletCashier)
+            if (canViewProductCashier) MoreActionRow("نقطة البيع", "بحث المنتجات والسلة والتحصيل", Icons.Filled.Store, onOpenProductCashier)
+            if (canViewDamaged) MoreActionRow("الهالك", "تسجيل التالف وعكس القيود بالسبب", Icons.Filled.Delete, onOpenDamaged)
+            if (canViewMaintenance) MoreActionRow("الصيانة", "طلبات الصيانة وحالتها", Icons.Filled.Build, onOpenMaintenance)
+        }
+        if (canViewNotifications) {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("التنبيهات", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
+                MoreActionRow("الإشعارات", "التنبيهات النشطة وحالة القراءة", Icons.Filled.Notifications, onOpenNotifications)
+            }
+        }
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("الحساب", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
+            MoreActionRow("حسابي", "الملف الشخصي والصلاحيات", Icons.Filled.AccountCircle, onOpenProfile)
+        }
+    }
+}
+
+@Composable
+private fun MoreActionRow(label: String, description: String, icon: ImageVector, onClick: () -> Unit) {
+    Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(8.dp),
+        color = MaterialTheme.colorScheme.surface,
+        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+    ) {
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Surface(
+                modifier = Modifier.size(40.dp),
+                shape = RoundedCornerShape(8.dp),
+                color = MaterialTheme.colorScheme.primaryContainer,
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.onPrimaryContainer)
+                }
+            }
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(label, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                Text(description, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+}
+
+@Composable
+private fun NotificationListScreen(
+    state: RemotePage<NotificationDto>,
+    onRefresh: () -> Unit,
+    onLoadMore: () -> Unit,
+    onMarkRead: (Long) -> Unit,
+    onMarkAllRead: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val unreadCount = state.items.count { !it.isRead }
+    Column(modifier.fillMaxSize()) {
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Text("$unreadCount غير مقروء", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (unreadCount > 0) TextButton(onClick = onMarkAllRead) { Text("تحديد الكل كمقروء") }
+                IconButton(onClick = onRefresh, enabled = !state.isLoading) {
+                    Icon(Icons.Filled.Refresh, contentDescription = "تحديث الإشعارات")
+                }
+            }
+        }
+        when {
+            state.items.isEmpty() && state.isLoading -> LoadingRow()
+            state.items.isEmpty() -> EmptyState(state.error ?: "لا توجد إشعارات جديدة")
+            else -> {
+                state.error?.let { ErrorBanner(it) }
+                LazyColumn(
+                    contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 16.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    items(state.items, key = NotificationDto::id) { notification ->
+                        Card(
+                            onClick = { if (!notification.isRead) onMarkRead(notification.id) },
+                            shape = RoundedCornerShape(8.dp),
+                            colors = CardDefaults.cardColors(
+                                containerColor = if (notification.isRead) MaterialTheme.colorScheme.surface else MaterialTheme.colorScheme.secondaryContainer,
+                            ),
+                        ) {
+                            Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                                Row(horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                                    Text(notification.title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                                    if (!notification.isRead) Text("جديد", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                                }
+                                Text(notification.message, style = MaterialTheme.typography.bodyMedium)
+                                notification.createdAt?.let { timestamp ->
+                                    Text(timestamp.substringBefore('T'), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                            }
+                        }
+                    }
+                    item { LoadMoreButton(state, onLoadMore) }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun WalletCashierScreen(
+    state: WalletCashierUiState,
+    canManage: Boolean,
+    canReverse: Boolean,
+    onRefresh: () -> Unit,
+    onSettle: (WalletCashierTransactionDto) -> Unit,
+    onReverse: (WalletCashierTransactionDto) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(modifier.fillMaxSize()) {
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column {
+                Text("المبالغ الآجلة", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("${state.data?.outstanding ?: "0.00"} ج.م", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+            }
+            IconButton(onClick = onRefresh, enabled = !state.isLoading) {
+                Icon(Icons.Filled.Refresh, contentDescription = "تحديث الكاشير")
+            }
+        }
+        state.error?.let { ErrorBanner(it) }
+        when {
+            state.isLoading && state.data == null -> LoadingRow()
+            state.data == null -> EmptyState("تعذر تحميل كاشير المحافظ")
+            else -> LazyColumn(
+                contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                item {
+                    Text("المحافظ النشطة", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                }
+                if (state.data.wallets.isEmpty()) {
+                    item { EmptyState("أضف محفظة نشطة من صفحة المحافظ أولاً") }
+                } else {
+                    items(state.data.wallets, key = { it.id }) { wallet ->
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = MaterialTheme.colorScheme.surface,
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                        ) {
+                            Row(
+                                Modifier.fillMaxWidth().padding(12.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Column(Modifier.weight(1f)) {
+                                    Text(wallet.name, fontWeight = FontWeight.SemiBold)
+                                    Text(wallet.provider, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                                Text("${wallet.balance} ج.م", fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    }
+                }
+                item { Text("آخر المعاملات", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold) }
+                if (state.data.transactions.isEmpty()) {
+                    item { EmptyState("لا توجد معاملات مسجلة") }
+                } else {
+                    items(state.data.transactions, key = WalletCashierTransactionDto::uuid) { transaction ->
+                        Card(
+                            shape = RoundedCornerShape(8.dp),
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                        ) {
+                            Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                    Text(if (transaction.type == "send") "تحويل صادر" else "استلام", fontWeight = FontWeight.SemiBold)
+                                    Text("${transaction.amount} ج.م", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                                }
+                                Text("${transaction.walletName.orEmpty()} · ${transaction.counterparty.orEmpty()}", style = MaterialTheme.typography.bodySmall)
+                                Text(
+                                    if (transaction.paymentMethod == "deferred") "آجل · المتبقي ${transaction.receivable} ج.م" else "نقدي",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                                Text("${transaction.status} · ${transaction.occurredAt.orEmpty()}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                if ((canManage && transaction.canSettle) || (canReverse && transaction.canReverse)) {
+                                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                        if (canManage && transaction.canSettle) TextButton(onClick = { onSettle(transaction) }) { Text("تحصيل") }
+                                        if (canReverse && transaction.canReverse) TextButton(onClick = { onReverse(transaction) }) { Text("عكس") }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+private data class PosCartLine(val product: CashierProductDto, val quantity: Int)
+
+@Composable
+private fun ProductCashierScreen(
+    state: CashierPosUiState,
+    isSaving: Boolean,
+    onSearch: (String) -> Unit,
+    onCheckout: (CashierCheckoutInputDto, String, (CashierCheckoutResponseDto) -> Unit) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    var searchText by rememberSaveable { mutableStateOf("") }
+    var customer by rememberSaveable { mutableStateOf("") }
+    var received by rememberSaveable { mutableStateOf("") }
+    var cart by remember { mutableStateOf(emptyMap<Long, PosCartLine>()) }
+    var formError by remember { mutableStateOf<String?>(null) }
+    var receipt by remember { mutableStateOf<CashierCheckoutResponseDto?>(null) }
+    var checkoutKey by remember { mutableStateOf(UUID.randomUUID().toString()) }
+    var attemptedCheckoutPayload by remember { mutableStateOf<String?>(null) }
+
+    fun checkoutPayload(
+        nextCart: Map<Long, PosCartLine> = cart,
+        nextCustomer: String = customer,
+        nextReceived: String = received,
+    ) = listOf(
+        nextCart.toSortedMap().entries.joinToString(",") { "${it.key}:${it.value.quantity}" },
+        nextCustomer,
+        nextReceived,
+    ).joinToString("\u0000")
+
+    fun updateCheckoutKey(nextPayload: String) {
+        if (attemptedCheckoutPayload != null && attemptedCheckoutPayload != nextPayload) {
+            checkoutKey = UUID.randomUUID().toString()
+            attemptedCheckoutPayload = null
+        }
+    }
+
+    val total = cart.values.fold(java.math.BigDecimal.ZERO) { sum, line ->
+        sum + ((line.product.price.toBigDecimalOrNull() ?: java.math.BigDecimal.ZERO) * java.math.BigDecimal(line.quantity))
+    }.setScale(2, java.math.RoundingMode.HALF_UP)
+    val enteredReceived = received.normalizeArabicDigits().toBigDecimalOrNull()
+    val changeDue = if (enteredReceived != null && enteredReceived > total) enteredReceived - total else java.math.BigDecimal.ZERO
+
+    Column(modifier.fillMaxSize()) {
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            OutlinedTextField(
+                searchText,
+                { searchText = it },
+                label = { Text("اسم المنتج أو الباركود") },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii, imeAction = ImeAction.Search),
+                keyboardActions = KeyboardActions(onSearch = { onSearch(searchText) }),
+                modifier = Modifier.weight(1f),
+            )
+            IconButton(onClick = { onSearch(searchText) }, enabled = !state.isLoading) {
+                Icon(Icons.Filled.Search, contentDescription = "بحث عن منتج")
+            }
+        }
+        state.error?.let { ErrorBanner(it) }
+        if (state.isLoading && state.products.isEmpty()) LoadingRow()
+        else if (state.products.isNotEmpty()) {
+            LazyColumn(
+                Modifier.weight(0.9f),
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                items(state.products, key = CashierProductDto::id) { product ->
+                    Card(
+                        shape = RoundedCornerShape(8.dp),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    ) {
+                        Row(
+                            Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Column(Modifier.weight(1f)) {
+                                Text(product.name, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                Text("${product.price} ج.م · متوفر ${product.stock}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                product.barcode?.takeIf(String::isNotBlank)?.let { Text(it, style = MaterialTheme.typography.labelSmall) }
+                            }
+                            Button(
+                                enabled = product.stock > 0,
+                                onClick = {
+                                    val current = cart[product.id]?.quantity ?: 0
+                                    if (current < product.stock) {
+                                        val updated = cart + (product.id to PosCartLine(product, current + 1))
+                                        updateCheckoutKey(checkoutPayload(nextCart = updated))
+                                        cart = updated
+                                        formError = null
+                                    } else formError = "الكمية تتجاوز المخزون المتاح."
+                                },
+                            ) { Text("إضافة") }
+                        }
+                    }
+                }
+            }
+        } else {
+            EmptyState(if (state.error == null) "ابحث عن منتج أو أضف منتجاً إلى قائمة الأكثر مبيعاً" else "تعذر تحميل المنتجات")
+        }
+
+        Column(
+            Modifier.fillMaxWidth().weight(1.1f).verticalScroll(rememberScrollState()).padding(horizontal = 12.dp, vertical = 6.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text("السلة (${cart.values.sumOf { it.quantity }})", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            if (cart.isEmpty()) Text("السلة فارغة", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            cart.values.forEach { line ->
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text(line.product.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text("${line.product.price} × ${line.quantity}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    IconButton(onClick = {
+                        val updated = if (line.quantity <= 1) cart - line.product.id
+                        else cart + (line.product.id to line.copy(quantity = line.quantity - 1))
+                        updateCheckoutKey(checkoutPayload(nextCart = updated))
+                        cart = updated
+                    }) { Icon(Icons.Filled.Remove, contentDescription = "تقليل ${line.product.name}") }
+                    Text(line.quantity.toString())
+                    IconButton(onClick = {
+                        if (line.quantity < line.product.stock) {
+                            val updated = cart + (line.product.id to line.copy(quantity = line.quantity + 1))
+                            updateCheckoutKey(checkoutPayload(nextCart = updated))
+                            cart = updated
+                        } else formError = "الكمية تتجاوز المخزون المتاح."
+                    }) { Icon(Icons.Filled.Add, contentDescription = "زيادة ${line.product.name}") }
+                    IconButton(onClick = {
+                        val updated = cart - line.product.id
+                        updateCheckoutKey(checkoutPayload(nextCart = updated))
+                        cart = updated
+                    }) { Icon(Icons.Filled.Delete, contentDescription = "إزالة ${line.product.name}") }
+                }
+            }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text("الإجمالي", fontWeight = FontWeight.SemiBold)
+                Text("${total.toPlainString()} ج.م", fontWeight = FontWeight.Bold)
+            }
+            OutlinedTextField(
+                customer,
+                { updateCheckoutKey(checkoutPayload(nextCustomer = it)); customer = it },
+                label = { Text("اسم العميل (مطلوب للدفع الجزئي)") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            OutlinedTextField(
+                received,
+                { value -> val normalized = value.normalizeArabicDigits(); updateCheckoutKey(checkoutPayload(nextReceived = normalized)); received = normalized },
+                label = { Text("المبلغ المستلم (فارغ = دفع كامل)") },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            if (changeDue > java.math.BigDecimal.ZERO) {
+                Text("الباقي للعميل: ${changeDue.setScale(2, java.math.RoundingMode.HALF_UP).toPlainString()} ج.م")
+            }
+            formError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+            Button(
+                onClick = {
+                    if (cart.isEmpty()) formError = "أضف منتجاً واحداً على الأقل."
+                    else if (received.isNotBlank() && !received.isValidPaidAmount()) formError = "أدخل مبلغاً مستلماً صحيحاً."
+                    else if (enteredReceived != null && enteredReceived < total && customer.isBlank()) formError = "اسم العميل مطلوب عند الدفع الجزئي."
+                    else {
+                        formError = null
+                        attemptedCheckoutPayload = checkoutPayload()
+                        onCheckout(
+                            CashierCheckoutInputDto(
+                                customer = customer.trim().ifBlank { null },
+                                items = cart.values.map { CashierCheckoutItemDto(it.product.id, it.quantity) },
+                                received = received.normalizeArabicDigits().ifBlank { null },
+                            ),
+                            checkoutKey,
+                        ) { result ->
+                            receipt = result
+                            cart = emptyMap()
+                            customer = ""
+                            received = ""
+                            checkoutKey = UUID.randomUUID().toString()
+                            attemptedCheckoutPayload = null
+                        }
+                    }
+                },
+                enabled = cart.isNotEmpty() && !isSaving,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                if (isSaving) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                else Text("إتمام البيع")
+            }
+        }
+    }
+
+    receipt?.let { result ->
+        AlertDialog(
+            onDismissRequest = { receipt = null },
+            title = { Text("تمت عملية البيع") },
+            text = {
+                DialogForm(maxHeight = 360.dp) {
+                    Text("الفاتورة ${result.invoiceNumber}")
+                    Text("الإجمالي ${result.total} ج.م")
+                    Text("المدفوع ${result.paid} ج.م")
+                    if (result.remaining != "0.00") Text("المتبقي ${result.remaining} ج.م")
+                    if (result.change != "0.00") Text("الباقي للعميل ${result.change} ج.م")
+                }
+            },
+            confirmButton = { Button(enabled = !LocalIsSaving.current, onClick = { receipt = null }) { Text("تم") } },
+        )
+    }
+}
+
+@Composable
+private fun SalesListScreen(
+    state: RemotePage<SoldProductDto>,
+    query: String,
+    onQueryChange: (String) -> Unit,
+    onRefresh: () -> Unit,
+    onLoadMore: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(modifier.fillMaxSize()) {
+        SearchAndRefresh(query, onQueryChange, onRefresh)
+        if (state.items.isEmpty() && state.isLoading) {
+            LoadingRow()
+        } else if (state.items.isEmpty()) {
+            EmptyState(if (state.error != null) "تعذر تحميل تقرير المبيعات" else "لا توجد منتجات مباعة")
+        } else {
+            LazyColumn(
+                contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                items(state.items, key = SoldProductDto::id) { product ->
+                    Card(
+                        shape = RoundedCornerShape(8.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    ) {
+                        Row(
+                            Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                        ) {
+                            Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                                Text(product.name, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                                Text("إجمالي المبيعات", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                            Text(product.soldQuantity.toString(), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                        }
+                    }
+                }
+                item { LoadMoreButton(state, onLoadMore) }
+            }
+        }
+    }
+}
+
+@Composable
+private fun WalletOverviewScreen(
+    state: WalletOverviewUiState,
+    canManage: Boolean,
+    canUseCashier: Boolean,
+    onRefresh: () -> Unit,
+    onOpenCashier: () -> Unit,
+    onAdjustWallet: (WalletDto) -> Unit,
+    onToggleWallet: (Long) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(modifier.fillMaxSize()) {
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Text("ملخص الأرصدة", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (canUseCashier) {
+                    TextButton(onClick = onOpenCashier) { Text("المعاملات") }
+                }
+                IconButton(onClick = onRefresh, enabled = !state.isLoading) {
+                    Icon(Icons.Filled.Refresh, contentDescription = "تحديث الأرصدة")
+                }
+            }
+        }
+        when {
+            state.isLoading && state.overview == null -> LoadingRow()
+            state.overview == null -> EmptyState(state.error ?: "لا توجد بيانات محافظ متاحة")
+            else -> {
+                state.error?.let { ErrorBanner(it) }
+                WalletOverviewContent(state.overview, canManage, onAdjustWallet, onToggleWallet)
+            }
+        }
+    }
+}
+
+@Composable
+private fun WalletOverviewContent(
+    overview: WalletOverviewDto,
+    canManage: Boolean,
+    onAdjustWallet: (WalletDto) -> Unit,
+    onToggleWallet: (Long) -> Unit,
+) {
+    LazyColumn(
+        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 20.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        Text("إدارة البيانات", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
-        Card(
-            onClick = onOpenProfile,
-            shape = RoundedCornerShape(8.dp),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        item {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                WalletSummaryLine("إجمالي المحافظ", overview.summary.walletsTotal)
+                WalletSummaryLine("النقدية بالصندوق", overview.summary.cash)
+                WalletSummaryLine("ربح اليوم", overview.summary.profitToday)
+                WalletSummaryLine("المستحق من العملاء", overview.summary.receivables)
+                WalletSummaryLine("الربح المتاح", overview.summary.profitAvailable)
+                WalletSummaryLine("رأس المال العامل", overview.summary.capital)
+            }
+        }
+        item {
+            Text("المحافظ (${overview.wallets.size})", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+        }
+        if (overview.wallets.isEmpty()) {
+            item { EmptyState("لا توجد محافظ مسجلة") }
+        } else {
+            items(overview.wallets, key = WalletDto::id) { wallet ->
+                WalletOverviewRow(wallet, canManage, onAdjustWallet, onToggleWallet)
+            }
+        }
+    }
+}
+
+@Composable
+private fun WalletSummaryLine(label: String, amount: String) {
+    Surface(
+        shape = RoundedCornerShape(8.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant,
+    ) {
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 11.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                Icon(Icons.Filled.AccountCircle, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-                Text("حسابي", style = MaterialTheme.typography.titleMedium)
-            }
+            Text(label, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("$amount ج.م", fontWeight = FontWeight.SemiBold)
         }
-        if (canViewCategories) {
-            Card(
-                onClick = onOpenCategories,
-                shape = RoundedCornerShape(8.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-            ) {
-                Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Icon(Icons.Filled.Category, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-                    Text("التصنيفات", style = MaterialTheme.typography.titleMedium)
-                }
+    }
+}
+
+@Composable
+private fun WalletOverviewRow(
+    wallet: WalletDto,
+    canManage: Boolean,
+    onAdjustWallet: (WalletDto) -> Unit,
+    onToggleWallet: (Long) -> Unit,
+) {
+    Card(
+        shape = RoundedCornerShape(8.dp),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+    ) {
+        Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Row(horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Text(wallet.name, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                Text("${wallet.balance} ج.م", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
             }
-        }
-        if (canViewSuppliers) {
-            Card(
-                onClick = onOpenSuppliers,
-                shape = RoundedCornerShape(8.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-            ) {
-                Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Icon(Icons.Filled.People, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-                    Text("الموردون والحسابات الدائنة", style = MaterialTheme.typography.titleMedium)
-                }
+            Text(
+                listOfNotNull(wallet.provider.takeIf(String::isNotBlank), wallet.identifier?.takeIf(String::isNotBlank)).joinToString(" · ")
+                    .ifBlank { "محفظة بلا بيانات تعريف" },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(if (wallet.isActive) "نشطة" else "موقوفة", style = MaterialTheme.typography.labelSmall,
+                color = if (wallet.isActive) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error)
+            wallet.limits.filter { it.limit != null }.forEach { limit ->
+                Text("${limit.label}: ${limit.used} / ${limit.limit} ج.م", style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-        }
-        if (canViewInstallments) {
-            Card(
-                onClick = onOpenInstallments,
-                shape = RoundedCornerShape(8.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-            ) {
-                Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Icon(Icons.AutoMirrored.Filled.ReceiptLong, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-                    Text("الأقساط والديون", style = MaterialTheme.typography.titleMedium)
+            if (canManage) {
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    TextButton(onClick = { onAdjustWallet(wallet) }) { Text("تسوية الرصيد") }
+                    TextButton(onClick = { onToggleWallet(wallet.id) }) {
+                        Text(if (wallet.isActive) "إيقاف" else "تفعيل")
+                    }
                 }
-            }
-        }
-        Text("المظهر", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-        Card(shape = RoundedCornerShape(8.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
-            Row(
-                Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween,
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Icon(if (isDarkTheme) Icons.Filled.DarkMode else Icons.Filled.LightMode, contentDescription = null)
-                    Text("المظهر الداكن")
-                }
-                Switch(checked = isDarkTheme, onCheckedChange = onDarkThemeChange)
             }
         }
     }
@@ -1213,6 +2547,7 @@ private fun CategoryListScreen(
                 Card(
                     onClick = { onCategoryClick(category) },
                     shape = RoundedCornerShape(8.dp),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
                 ) {
                     Row(Modifier.fillMaxWidth().padding(16.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
@@ -1255,63 +2590,19 @@ private fun CustomerListScreen(
                 Card(
                     onClick = { onCustomerClick(customer) },
                     shape = RoundedCornerShape(8.dp),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
                 ) {
                     Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
                         Text(customer.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                         Text(customer.phone.orEmpty().ifBlank { "لا يوجد رقم هاتف" }, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        if (customer.address.isNotBlank()) Text(customer.address, style = MaterialTheme.typography.bodySmall)
+                        if (!customer.address.isNullOrBlank()) Text(customer.address, style = MaterialTheme.typography.bodySmall)
                         if (canManage) {
                             Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                                 TextButton(onClick = { onEdit(customer) }) { Icon(Icons.Filled.Edit, contentDescription = null); Spacer(Modifier.width(6.dp)); Text("تعديل") }
                                 TextButton(onClick = { onDelete(customer) }) { Icon(Icons.Filled.Delete, contentDescription = null); Spacer(Modifier.width(6.dp)); Text("حذف") }
                             }
                         }
-                    }
-                }
-            }
-            item { LoadMoreButton(state, onLoadMore) }
-        }
-    }
-}
-
-@Composable
-private fun InstallmentListScreen(
-    state: RemotePage<InstallmentDto>,
-    query: String,
-    onQueryChange: (String) -> Unit,
-    onRefresh: () -> Unit,
-    onLoadMore: () -> Unit,
-    onInstallmentClick: (InstallmentDto) -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    Column(modifier.fillMaxSize()) {
-        SearchAndRefresh(query, onQueryChange, onRefresh)
-        if (state.error != null) ErrorBanner(state.error)
-        if (state.isLoading && state.items.isEmpty()) LoadingRow()
-        else if (state.items.isEmpty()) EmptyState(if (state.error != null) "تعذر تحميل الأقساط" else "لا توجد أقساط")
-        else LazyColumn(contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            items(state.items, key = InstallmentDto::id) { installment ->
-                Card(
-                    onClick = { onInstallmentClick(installment) },
-                    shape = RoundedCornerShape(8.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                ) {
-                    Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text(installment.customer, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                            Text(installment.status.toArabicInstallmentStatus(), color = MaterialTheme.colorScheme.primary)
-                        }
-                        Text(installment.productName, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text("المتبقي", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            Text(installment.remaining, fontWeight = FontWeight.SemiBold)
-                        }
-                        Text(
-                            "موعد السداد: ${installment.nextPaymentDate?.toArabicDateDisplay() ?: "غير محدد"}",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
                     }
                 }
             }
@@ -1362,47 +2653,8 @@ private fun SupplierListScreen(
 }
 
 @Composable
-private fun InvoiceListScreen(
-    state: RemotePage<InvoiceDto>,
-    query: String,
-    onQueryChange: (String) -> Unit,
-    onRefresh: () -> Unit,
-    onLoadMore: () -> Unit,
-    onInvoiceClick: (InvoiceDto) -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    Column(modifier.fillMaxSize()) {
-        SearchAndRefresh(query, onQueryChange, onRefresh)
-        if (state.error != null) ErrorBanner(state.error)
-        if (state.isLoading && state.items.isEmpty()) LoadingRow()
-        else if (state.items.isEmpty()) EmptyState(if (state.error != null) "تعذر تحميل الفواتير" else "لا توجد فواتير")
-        else LazyColumn(contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            items(state.items, key = InvoiceDto::id) { invoice ->
-                Card(
-                    onClick = { onInvoiceClick(invoice) },
-                    shape = RoundedCornerShape(8.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                ) {
-                    Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text("فاتورة ${invoice.invoiceNumber}", fontWeight = FontWeight.SemiBold)
-                            Text(invoice.status.toArabicInvoiceStatus(), color = MaterialTheme.colorScheme.primary)
-                        }
-                        Text(invoice.customer, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text(invoice.invoiceDate.toArabicDateDisplay())
-                            Text("الإجمالي  ${invoice.totalAmount}", fontWeight = FontWeight.Medium)
-                        }
-                    }
-                }
-            }
-            item { LoadMoreButton(state, onLoadMore) }
-        }
-    }
-}
-
-@Composable
-private fun SearchAndRefresh(query: String, onQueryChange: (String) -> Unit, onRefresh: () -> Unit) {
+internal fun SearchAndRefresh(query: String, onQueryChange: (String) -> Unit, onRefresh: () -> Unit) {
+    val keyboardController = LocalSoftwareKeyboardController.current
     Row(
         modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp, top = 8.dp, bottom = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -1412,8 +2664,18 @@ private fun SearchAndRefresh(query: String, onQueryChange: (String) -> Unit, onR
             onValueChange = onQueryChange,
             modifier = Modifier.weight(1f),
             singleLine = true,
+            shape = RoundedCornerShape(14.dp),
             placeholder = { Text("بحث") },
             leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
+            trailingIcon = {
+                if (query.isNotEmpty()) {
+                    IconButton(onClick = { onQueryChange("") }) {
+                        Icon(Icons.Filled.Close, contentDescription = "مسح البحث")
+                    }
+                }
+            },
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+            keyboardActions = KeyboardActions(onSearch = { keyboardController?.hide() }),
         )
         IconButton(onClick = onRefresh) {
             Icon(Icons.Filled.Refresh, contentDescription = "تحديث القائمة")
@@ -1432,26 +2694,50 @@ private fun CacheStatus(cacheTime: Long?, error: String?) {
 }
 
 @Composable
-private fun ErrorBanner(message: String) {
-    Text(message, Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), color = MaterialTheme.colorScheme.error)
-}
-
-@Composable
-private fun EmptyState(message: String) {
-    Box(Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
-        Text(message, color = MaterialTheme.colorScheme.onSurfaceVariant)
+internal fun ErrorBanner(message: String) {
+    Surface(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.errorContainer,
+        contentColor = MaterialTheme.colorScheme.onErrorContainer,
+    ) {
+        Row(
+            Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Icon(Icons.Filled.Warning, contentDescription = null, modifier = Modifier.size(20.dp))
+            Text(message, style = MaterialTheme.typography.bodyMedium)
+        }
     }
 }
 
 @Composable
-private fun LoadingRow() {
+internal fun EmptyState(message: String) {
+    Column(
+        Modifier.fillMaxSize().padding(24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        Surface(shape = CircleShape, color = MaterialTheme.colorScheme.surfaceVariant, modifier = Modifier.size(72.dp)) {
+            Box(contentAlignment = Alignment.Center) {
+                Icon(Icons.Filled.Inbox, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(34.dp))
+            }
+        }
+        Spacer(Modifier.height(14.dp))
+        Text(message, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+    }
+}
+
+@Composable
+internal fun LoadingRow() {
     Box(Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) {
         CircularProgressIndicator()
     }
 }
 
 @Composable
-private fun LoadMoreButton(page: RemotePage<*>, onClick: () -> Unit) {
+internal fun LoadMoreButton(page: RemotePage<*>, onClick: () -> Unit) {
     if (page.isLoading) {
         Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) {
             CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
@@ -1463,7 +2749,7 @@ private fun LoadMoreButton(page: RemotePage<*>, onClick: () -> Unit) {
     }
 }
 
-private enum class EditKind { Category, Customer }
+private enum class EditKind { Category, Customer, Installment }
 
 private data class EditTarget(
     val kind: EditKind,
@@ -1500,7 +2786,10 @@ private fun StoreEditDialog(
         onDismissRequest = onDismiss,
         title = { Text(if (target.id == null) "إضافة ${if (target.kind == EditKind.Category) "تصنيف" else "عميل"}" else "تعديل ${if (target.kind == EditKind.Category) "التصنيف" else "العميل"}") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Column(
+                modifier = Modifier.fillMaxWidth().heightIn(max = 520.dp).verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
                 OutlinedTextField(
                     value = name,
                     onValueChange = { updatePayload(nextName = it); name = it },
@@ -1512,7 +2801,7 @@ private fun StoreEditDialog(
                     OutlinedTextField(
                         value = phone,
                         onValueChange = { updatePayload(nextPhone = it); phone = it },
-                        label = { Text("رقم الهاتف") },
+                        label = { Text("رقم الهاتف (اختياري)") },
                         singleLine = true,
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
                         modifier = Modifier.fillMaxWidth(),
@@ -1520,7 +2809,7 @@ private fun StoreEditDialog(
                     OutlinedTextField(
                         value = address,
                         onValueChange = { updatePayload(nextAddress = it); address = it },
-                        label = { Text("العنوان") },
+                        label = { Text("العنوان (اختياري)") },
                         modifier = Modifier.fillMaxWidth(),
                     )
                 }
@@ -1528,10 +2817,10 @@ private fun StoreEditDialog(
             }
         },
         confirmButton = {
-            Button(onClick = {
-                val valid = name.isNotBlank() && (target.kind == EditKind.Category || (phone.isNotBlank() && address.isNotBlank()))
+            Button(enabled = !LocalIsSaving.current, onClick = {
+                val valid = name.isNotBlank()
                 if (!valid) {
-                    validationError = if (target.kind == EditKind.Customer) "أكمل الاسم والهاتف والعنوان." else "أدخل اسم التصنيف."
+                    validationError = "أدخل الاسم."
                 } else {
                     validationError = null
                     attemptedPayload = "$name\u0000$phone\u0000$address"
@@ -1549,18 +2838,41 @@ private fun InvoiceCreateDialog(
     onDismiss: () -> Unit,
     onCreate: (InvoiceInputDto, String) -> Unit,
     onBarcodeLookup: suspend (String) -> ApiResult<ProductDto?>,
+    initial: InvoiceDto? = null,
 ) {
-    var customer by remember { mutableStateOf("") }
-    var date by remember { mutableStateOf(SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())) }
-    var paidAmount by remember { mutableStateOf("0") }
-    var notes by remember { mutableStateOf("") }
-    var selectedIds by remember { mutableStateOf(emptySet<Long>()) }
-    var quantities by remember { mutableStateOf(emptyMap<Long, String>()) }
+    val initialItems = remember(initial?.id) { initial?.items.orEmpty().filter { it.productId != null && (it.quantity ?: 0) > 0 } }
+    var customer by remember(initial?.id) { mutableStateOf(initial?.customer.orEmpty()) }
+    var date by remember(initial?.id) { mutableStateOf(initial?.invoiceDate?.take(10) ?: SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())) }
+    var paidAmount by remember(initial?.id) { mutableStateOf(initial?.paidAmount ?: "0") }
+    var notes by remember(initial?.id) { mutableStateOf(initial?.notes.orEmpty()) }
+    var selectedIds by remember(initial?.id) { mutableStateOf(initialItems.mapNotNull { it.productId }.toSet()) }
+    var quantities by remember(initial?.id) {
+        mutableStateOf(initialItems.associate { (it.productId ?: 0L) to (it.quantity ?: 1).toString() })
+    }
     var requestKey by remember { mutableStateOf(UUID.randomUUID().toString()) }
     var attemptedPayload by remember { mutableStateOf<String?>(null) }
     var validationError by remember { mutableStateOf<String?>(null) }
     var productFilter by rememberSaveable { mutableStateOf("") }
-    var scannedProducts by remember { mutableStateOf(emptyMap<Long, CachedProduct>()) }
+    var scannedProducts by remember(initial?.id) {
+        mutableStateOf(
+            initialItems.associate { item ->
+                val id = item.productId ?: 0L
+                id to CachedProduct(
+                    id = id,
+                    name = item.name ?: "منتج #$id",
+                    price = item.price ?: "0",
+                    description = "",
+                    barcode = null,
+                    stock = 0,
+                    categoryId = null,
+                    categoryName = null,
+                    imageUrl = null,
+                    serverUpdatedAt = null,
+                    cachedAtEpochMillis = 0L,
+                )
+            },
+        )
+    }
     var barcodeStatus by remember { mutableStateOf<String?>(null) }
     var isBarcodeBusy by remember { mutableStateOf(false) }
     val context = LocalContext.current
@@ -1652,7 +2964,7 @@ private fun InvoiceCreateDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("إنشاء فاتورة") },
+        title = { Text(if (initial == null) "إنشاء فاتورة" else "تعديل الفاتورة ${initial.invoiceNumber}") },
         text = {
             Column(
                 modifier = Modifier
@@ -1787,7 +3099,7 @@ private fun InvoiceCreateDialog(
             }
         },
         confirmButton = {
-            Button(onClick = {
+            Button(enabled = !LocalIsSaving.current, onClick = {
                 val validQuantities = selectedIds.mapNotNull { quantities[it]?.toIntOrNull() }
                 val validPaidAmount = paidAmount.isValidPaidAmount()
                 if (
@@ -1815,7 +3127,7 @@ private fun InvoiceCreateDialog(
                         requestKey,
                     )
                 }
-            }) { Text("إرسال الفاتورة") }
+            }) { Text(if (initial == null) "إرسال الفاتورة" else "حفظ التعديلات") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("إلغاء") } },
     )

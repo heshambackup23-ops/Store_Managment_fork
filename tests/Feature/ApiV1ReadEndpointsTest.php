@@ -156,15 +156,17 @@ class ApiV1ReadEndpointsTest extends TestCase
         $key = (string) \Illuminate\Support\Str::uuid();
         $payload = [
             'name' => 'New Customer',
-            'phone' => '01012345678',
-            'address' => 'Cairo',
+            'phone' => null,
+            'address' => null,
         ];
 
         $created = $this->withToken($token)
             ->withHeader('Idempotency-Key', $key)
             ->postJson('/api/v1/customers', $payload)
             ->assertCreated()
-            ->assertJsonPath('data.name', 'New Customer');
+            ->assertJsonPath('data.name', 'New Customer')
+            ->assertJsonPath('data.phone', null)
+            ->assertJsonPath('data.address', null);
         $customerId = $created->json('data.id');
 
         $this->withToken($token)
@@ -177,11 +179,12 @@ class ApiV1ReadEndpointsTest extends TestCase
         $this->withToken($token)
             ->putJson('/api/v1/customers/'.$customerId, [
                 'name' => 'Updated Customer',
-                'phone' => '01099999999',
-                'address' => 'Alexandria',
+                'phone' => null,
+                'address' => null,
             ])
             ->assertOk()
-            ->assertJsonPath('data.name', 'Updated Customer');
+            ->assertJsonPath('data.name', 'Updated Customer')
+            ->assertJsonPath('data.address', null);
 
         $this->withToken($token)
             ->deleteJson('/api/v1/customers/'.$customerId)

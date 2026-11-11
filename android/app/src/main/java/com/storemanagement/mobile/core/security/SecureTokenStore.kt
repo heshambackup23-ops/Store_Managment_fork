@@ -20,8 +20,13 @@ class SecureTokenStore @Inject constructor(
 ) {
     private val preferences = context.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
 
+    // Decrypting through the Android Keystore on every request is slow; keep the token in memory.
+    @Volatile
+    private var cachedToken: String? = null
+
     @Synchronized
     fun readToken(): String? {
+        cachedToken?.let { return it }
         val encrypted = preferences.getString(TOKEN_VALUE_KEY, null) ?: return null
         val iv = preferences.getString(TOKEN_IV_KEY, null) ?: return clearAndReturnNull()
 
@@ -33,6 +38,7 @@ class SecureTokenStore @Inject constructor(
                 GCMParameterSpec(GCM_TAG_LENGTH_BITS, Base64.decode(iv, Base64.NO_WRAP)),
             )
             String(Base64.decode(encrypted, Base64.NO_WRAP).let(cipher::doFinal), StandardCharsets.UTF_8)
+                .also { cachedToken = it }
         } catch (_: Exception) {
             clearAndReturnNull()
         }
@@ -43,16 +49,19 @@ class SecureTokenStore @Inject constructor(
         val cipher = Cipher.getInstance(TRANSFORMATION)
         cipher.init(Cipher.ENCRYPT_MODE, getOrCreateKey())
         val encrypted = cipher.doFinal(token.toByteArray(StandardCharsets.UTF_8))
+        cachedToken = null
         check(
             preferences.edit()
                 .putString(TOKEN_IV_KEY, Base64.encodeToString(cipher.iv, Base64.NO_WRAP))
                 .putString(TOKEN_VALUE_KEY, Base64.encodeToString(encrypted, Base64.NO_WRAP))
                 .commit(),
         ) { "Unable to persist the encrypted session token." }
+        cachedToken = token
     }
 
     @Synchronized
     fun clear() {
+        cachedToken = null
         check(preferences.edit().clear().commit()) { "Unable to clear the encrypted session token." }
     }
 
@@ -76,6 +85,7 @@ class SecureTokenStore @Inject constructor(
     }
 
     private fun clearAndReturnNull(): String? {
+        cachedToken = null
         preferences.edit().clear().commit()
         return null
     }
