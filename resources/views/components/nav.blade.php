@@ -1,16 +1,16 @@
 <nav class="navbar navbar-expand-lg bg-body-tertiary border-bottom shadow-sm">
-  <div class="container-fluid d-flex align-items-center justify-content-between">
-    <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav" aria-label="Toggle navigation">
-      <span class="navbar-toggler-icon"></span>
+  <div class="container-fluid d-flex align-items-center gap-2">
+    <button class="btn btn-outline-secondary d-lg-none flex-shrink-0" type="button" data-bs-toggle="offcanvas" data-bs-target="#appSidebar" aria-controls="appSidebar" aria-label="فتح القائمة">
+      <i class="fa-solid fa-bars" aria-hidden="true"></i>
     </button>
 
-    <a class="navbar-brand d-flex align-items-center gap-2 ms-auto" href="{{ route('home') }}">
+    <a class="navbar-brand d-flex align-items-center gap-2 me-auto ms-0 text-truncate" href="{{ route('home') }}">
       <i class="fa-solid fa-mobile"></i>
       <span>{{ config('app.name', 'PhoneStore') }}</span>
     </a>
 
-    <div class="collapse navbar-collapse m-1" id="navbarNav">
-      <div class="navbar-nav align-items-center gap-3 me-auto">
+    <div class="collapse navbar-collapse flex-grow-0" id="navbarNav">
+      <div id="navbarActions" class="navbar-nav align-items-center gap-3">
         @guest
           <div class="d-flex gap-2">
             <a class="btn btn-outline-primary btn-sm" href="{{ route('showLogin') }}">تسجيل الدخول</a>
@@ -18,7 +18,7 @@
         @endguest
 
         @auth
-          <div class="dropdown me-3" dir="rtl">
+          <div id="notificationDropdown" class="dropdown me-3" dir="rtl">
             <a class="nav-link position-relative d-flex align-items-center gap-2 py-2" href="#" data-bs-toggle="dropdown" role="button" aria-expanded="false">
               <i class="fas fa-bell fa-lg"></i>
               @if(isset($appNotifications) && $appNotifications->count())
@@ -98,7 +98,7 @@
     </div>
 
 
-    <button id="theme-toggle" class="btn btn-outline-secondary btn-sm rounded-pill d-flex align-items-center gap-2 ms-2" type="button" aria-label="Toggle theme">
+    <button id="theme-toggle" class="btn btn-outline-secondary btn-sm rounded-pill d-flex align-items-center gap-2 flex-shrink-0" type="button" aria-label="Toggle theme">
       <i class="fas fa-moon fa-lg" id="theme-icon"></i>
       <span class="d-none d-sm-inline theme-label">الوضع الداكن</span>
     </button>
@@ -106,6 +106,55 @@
 </nav>
 @push('scripts')
 <script>
+(() => {
+  const actions = document.getElementById('navbarActions');
+  const sidebar = document.getElementById('appSidebar');
+  const navbar = document.getElementById('navbarNav');
+  const notification = document.getElementById('notificationDropdown');
+  if (!actions || !sidebar || !navbar) return;
+
+  const desktop = window.matchMedia('(min-width: 992px)');
+  const placeActions = () => {
+    if (desktop.matches) {
+      if (notification) actions.prepend(notification);
+      navbar.append(actions);
+      actions.classList.remove('mobile-sidebar-actions');
+    } else {
+      sidebar.append(actions);
+      actions.classList.add('mobile-sidebar-actions');
+      if (notification) actions.prepend(notification);
+    }
+  };
+
+  placeActions();
+  desktop.addEventListener('change', placeActions);
+
+  actions.querySelectorAll('.dropdown').forEach((dropdown) => {
+    const menu = dropdown.querySelector('.dropdown-menu');
+    const toggle = dropdown.querySelector('[data-bs-toggle="dropdown"]');
+    if (!menu || !toggle) return;
+
+    dropdown.addEventListener('shown.bs.dropdown', () => {
+      if (desktop.matches || !actions.classList.contains('mobile-sidebar-actions')) return;
+      menu.classList.add('mobile-dropdown-overlay');
+
+      const rect = toggle.getBoundingClientRect();
+      const maxHeight = Math.min(window.innerHeight * 0.6, 416);
+      const menuHeight = Math.min(menu.scrollHeight, maxHeight);
+      let top = rect.bottom + 8;
+      if (top + menuHeight > window.innerHeight - 8) {
+        top = Math.max(8, rect.top - menuHeight - 8);
+      }
+      menu.style.setProperty('top', `${top}px`, 'important');
+    });
+
+    dropdown.addEventListener('hidden.bs.dropdown', () => {
+      menu.classList.remove('mobile-dropdown-overlay');
+      menu.removeAttribute('style');
+    });
+  });
+})();
+
 document.querySelectorAll('[data-notification-read]').forEach((notificationButton) => {
   notificationButton.addEventListener('click', async () => {
     if (notificationButton.getAttribute('aria-pressed') === 'true') return;

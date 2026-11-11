@@ -18,8 +18,12 @@ class InstallmentOperationsController extends Controller
 {
     public function index(Request $request)
     {
-        $request->validate(['search' => ['nullable', 'string', 'max:80']]);
-        $installments = Installment::with('product')
+        $filters = $request->validate([
+            'search' => ['nullable', 'string', 'max:80'],
+            'type' => ['nullable', 'in:all,customer,personal'],
+        ]);
+        $type = $filters['type'] ?? 'all';
+        $installments = $type === 'personal' ? null : Installment::with('product')
             ->when($request->filled('search'), function ($query) use ($request): void {
                 $search = '%'.$request->string('search')->toString().'%';
                 $query->where(fn ($query) => $query
@@ -27,7 +31,7 @@ class InstallmentOperationsController extends Controller
                     ->orWhere('product_name', 'like', $search));
             })
             ->orderByDesc('id')->paginate(20)->withQueryString();
-        $personalDebts = PersonalDebt::query()
+        $personalDebts = $type === 'customer' ? null : PersonalDebt::query()
             ->when($request->filled('search'), function ($query) use ($request): void {
                 $search = '%'.$request->string('search')->toString().'%';
                 $query->where(fn ($builder) => $builder
@@ -38,7 +42,7 @@ class InstallmentOperationsController extends Controller
             ->paginate(20, ['*'], 'debts_page')
             ->withQueryString();
 
-        return view('installments.index', compact('installments', 'personalDebts'));
+        return view('installments.index', compact('installments', 'personalDebts', 'type'));
     }
 
     public function create()

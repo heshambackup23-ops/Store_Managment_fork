@@ -17,7 +17,11 @@
     ];
 @endphp
 
-<aside class="sidebar bg-body-tertiary border-start p-3 flex-shrink-0">
+<aside id="appSidebar" class="sidebar offcanvas-lg offcanvas-start bg-body-tertiary border-start p-3 flex-shrink-0" tabindex="-1" aria-labelledby="appSidebarLabel">
+    <div class="offcanvas-header d-lg-none px-0 pt-0">
+        <h2 class="offcanvas-title fs-5" id="appSidebarLabel">القائمة</h2>
+        <button type="button" class="btn-close" data-bs-dismiss="offcanvas" aria-label="Close"></button>
+    </div>
     <nav class="nav flex-column gap-1" aria-label="القائمة الرئيسية">
 
         @foreach ($sidebarLinks as $link)

@@ -19,6 +19,7 @@
 </div>
 
 <div class="row gx-3 gy-3 mb-4">
+    @isset($installments)
     <div class="col-12 col-md-6 col-xl-4">
         <div class="card border-0 shadow-sm bg-body p-3">
             <div class="d-flex align-items-center justify-content-between mb-2">
@@ -29,6 +30,7 @@
             <p class="text-secondary mb-0">عرض {{ $installments->count() }} من أصل {{ $installments->total() }} دين عميل.</p>
         </div>
     </div>
+    @endisset
     @isset($personalDebts)
     <div class="col-12 col-md-6 col-xl-4">
         <div class="card border-0 shadow-sm bg-body p-3">
@@ -43,12 +45,21 @@
     @endisset
 </div>
 
+<div class="d-flex flex-wrap align-items-center gap-2 mb-3" role="group" aria-label="نوع الأقساط">
+    <span class="fw-semibold me-1">عرض النوع:</span>
+    <a class="btn btn-sm {{ $type === 'all' ? 'btn-primary' : 'btn-outline-primary' }}" href="{{ route('installments.index', array_filter(['type' => 'all', 'search' => request('search')])) }}">الكل</a>
+    <a class="btn btn-sm {{ $type === 'customer' ? 'btn-primary' : 'btn-outline-primary' }}" href="{{ route('installments.index', array_filter(['type' => 'customer', 'search' => request('search')])) }}">أقساط العملاء</a>
+    <a class="btn btn-sm {{ $type === 'personal' ? 'btn-primary' : 'btn-outline-primary' }}" href="{{ route('installments.index', array_filter(['type' => 'personal', 'search' => request('search')])) }}">الديون الشخصية</a>
+</div>
+
+@isset($installments)
 <h2 class="h5 mb-3">أقساط العملاء</h2>
 <div class="table-wrapper table-responsive mb-5">
     <table class="table table-hover table-striped align-middle mb-0">
       <thead class="table-dark">
         <tr>
           <th scope="col">#</th>
+          <th scope="col">النوع</th>
           <th scope="col">الاسم</th>
           <th scope="col">المنتج</th>
           <th scope="col">المبلغ</th>
@@ -66,6 +77,7 @@
           @forelse($installments as $installment)
         <tr>
           <th scope="row">{{ $installment->id }}</th>
+          <td><span class="badge text-bg-primary">قسط عميل</span></td>
           <td>{{ $installment->customer }}</td>
           <td>{{ $installment->item_names ?: ($installment->product?->name ?? 'لا يوجد اسم') }}</td>
           <td>{{ $installment->product?->price ?? $installment->product_price ?? 'لا يوجد سعر' }}</td>
@@ -102,7 +114,7 @@
         </tr>
         @empty
         <tr>
-            <td colspan="12" class="text-center">لا توجد ديون عملاء.</td>
+            <td colspan="13" class="text-center">لا توجد ديون عملاء.</td>
         </tr>
         @endforelse
       </tbody>
@@ -110,6 +122,7 @@
 
     @include('components.pagination', ['collection' => $installments])
 </div>
+@endisset
 
 @isset($personalDebts)
 <h2 class="h5 mb-3">ديون عليّ</h2>
@@ -118,6 +131,7 @@
       <thead class="table-dark">
         <tr>
           <th scope="col">#</th>
+          <th scope="col">النوع</th>
           <th scope="col">الدائن</th>
           <th scope="col">الوصف</th>
           <th scope="col">الإجمالي</th>
@@ -132,6 +146,7 @@
           @forelse($personalDebts as $debt)
         <tr>
           <th scope="row">{{ $debt->id }}</th>
+          <td><span class="badge text-bg-warning">دين شخصي</span></td>
           <td>{{ $debt->creditor }}</td>
           <td>{{ $debt->description ?: '—' }}</td>
           <td>{{ $debt->total_amount }}</td>
@@ -153,7 +168,7 @@
         </tr>
         @empty
         <tr>
-            <td colspan="9" class="text-center">لا توجد ديون شخصية مسجلة.</td>
+            <td colspan="10" class="text-center">لا توجد ديون شخصية مسجلة.</td>
         </tr>
         @endforelse
       </tbody>
