@@ -19,6 +19,7 @@ use App\Http\Controllers\RoleController;
 use App\Http\Controllers\MaintenanceController;
 use App\Http\Controllers\AppNotificationController;
 use App\Http\Controllers\SupplierController;
+use App\Http\Controllers\ProductImageController;
 
 Route::get('/', [HomeController::class, 'index'])->middleware(['auth:sanctum', 'page.access'])->name('home');
 
@@ -26,6 +27,11 @@ Route::get('/login', [AuthController::class, 'showLogin'])->name('login');
 Route::get('/showLogin', [AuthController::class, 'showLogin'])->name('showLogin');
 Route::post('/login', [AuthController::class, 'login'])->middleware('throttle:login');
 Route::post('/logout', [AuthController::class, 'logout'])->middleware('auth:sanctum')->name('logout');
+
+// Product pictures are public catalog assets and must also load in the native app.
+Route::get('/media/products/{product}/image', ProductImageController::class)
+    ->whereNumber('product')
+    ->name('media.products.image');
 
 Route::middleware(['auth:sanctum', 'page.access'])->group(function () {
 

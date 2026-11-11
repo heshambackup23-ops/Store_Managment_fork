@@ -7,6 +7,7 @@ use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use RuntimeException;
+use Symfony\Component\HttpFoundation\Response;
 
 class PictureStorageService
 {
@@ -20,6 +21,56 @@ class PictureStorageService
 
     /** Never raise PHP's memory limit above this for a single upload. */
     private const MEMORY_CEILING_BYTES = 512 * 1024 * 1024;
+
+    public function productUrl(\App\Models\products $product, bool $thumbnail = true): ?string
+    {
+        if (! $product->image) {
+            return null;
+        }
+
+        return route('media.products.image', [
+            'product' => $product->getKey(),
+            'thumbnail' => $thumbnail ? 1 : 0,
+            'v' => substr(hash('sha256', (string) $product->image), 0, 12),
+        ]);
+    }
+
+    public function productResponse(?string $storedPath, string $legacyFolder, bool $thumbnail): Response
+    {
+        abort_if(! $storedPath, 404);
+
+        $path = ltrim(str_replace('\\', '/', $storedPath), '/');
+        abort_if(str_contains($path, "\0") || in_array('..', explode('/', $path), true), 404);
+
+        $isLegacyPublicPath = str_starts_with($path, 'uploads/');
+        if (! str_contains($path, '/') && ! $isLegacyPublicPath) {
+            $path = 'uploads/'.$legacyFolder.'/'.basename($path);
+            $isLegacyPublicPath = true;
+        }
+
+        if ($thumbnail && ! $isLegacyPublicPath) {
+            $thumbnailPath = dirname($path).'/thumbnails/'.basename($path);
+            if (Storage::disk('public')->exists($thumbnailPath)) {
+                $path = $thumbnailPath;
+            }
+        }
+
+        $headers = [
+            'Cache-Control' => 'public, max-age=86400, stale-while-revalidate=604800',
+            'X-Content-Type-Options' => 'nosniff',
+        ];
+
+        if ($isLegacyPublicPath) {
+            $filePath = public_path($path);
+            abort_unless(File::exists($filePath), 404);
+
+            return response()->file($filePath, $headers);
+        }
+
+        abort_unless(Storage::disk('public')->exists($path), 404);
+
+        return Storage::disk('public')->response($path, basename($path), $headers);
+    }
 
     public function store(UploadedFile $file, string $folder): string
     {

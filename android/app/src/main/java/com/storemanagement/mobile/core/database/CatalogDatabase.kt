@@ -17,6 +17,7 @@ data class CachedProduct(
     val name: String,
     val price: String,
     val description: String,
+    val notes: String? = null,
     val barcode: String?,
     val stock: Int,
     val categoryId: Long?,
@@ -73,7 +74,7 @@ abstract class CatalogDao {
 
 @Database(
     entities = [CachedProduct::class, CachedCategory::class],
-    version = 1,
+    version = 2,
     exportSchema = true,
 )
 abstract class CatalogDatabase : RoomDatabase() {

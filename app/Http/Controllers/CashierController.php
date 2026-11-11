@@ -206,7 +206,7 @@ class CashierController extends Controller
                 'price' => $this->money((int) round(((float) $product->price) * 100)),
                 'barcode' => $product->barcode,
                 'stock' => (int) $product->stock,
-                'image_url' => $this->pictures->url($product->image, self::PRODUCT_PICTURE_FOLDER, true),
+                'image_url' => $this->pictures->productUrl($product, true),
             ])->values(),
         ]);
     }

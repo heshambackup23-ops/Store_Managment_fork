@@ -25,6 +25,7 @@ class UpdateProductRequest extends ApiFormRequest
             'name' => ['required', 'string', 'max:255'],
             'price' => ['required', 'numeric', 'decimal:0,2', 'min:0.01', 'max:999999.99'],
             'description' => ['nullable', 'string', 'max:2000'],
+            'notes' => ['nullable', 'string', 'max:2000'],
             'barcode' => ['nullable', 'string', 'max:255', Rule::unique('products', 'barcode')->ignore($product?->id)],
             'stock' => ['required', 'integer', 'min:0', 'max:1000000'],
             'category_id' => ['nullable', 'exists:categories,id'],

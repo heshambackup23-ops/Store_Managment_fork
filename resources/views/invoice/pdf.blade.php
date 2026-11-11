@@ -32,7 +32,7 @@
     $remaining = max(0, (float) $invoice->total_amount - (float) $invoice->paid_amount);
 @endphp
 <div class="header">
-    <h1>{{ config('app.name') }}</h1>
+    <h1>Bebo</h1>
     <div class="muted">فاتورة بيع رقم {{ $invoice->invoice_number }}</div>
 </div>
 <table class="grid"><tr>

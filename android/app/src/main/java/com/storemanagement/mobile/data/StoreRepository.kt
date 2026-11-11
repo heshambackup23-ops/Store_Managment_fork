@@ -381,6 +381,7 @@ class StoreRepository @Inject constructor(
         name = name,
         price = price,
         description = description.orEmpty(),
+        notes = notes,
         barcode = barcode,
         stock = stock,
         categoryId = category?.id,

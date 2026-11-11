@@ -317,6 +317,7 @@ private enum class StoreTab(val label: String, val permission: String?, val icon
     Products("المنتجات", "page.products.view", Icons.Filled.Inventory2),
     Customers("العملاء", "page.customers.view", Icons.Filled.People),
     Invoices("الفواتير", "page.invoices.view", Icons.AutoMirrored.Filled.ReceiptLong),
+    Installments("الأقساط والديون", "page.installments.view", Icons.Filled.Payments),
     More("المزيد", null, Icons.Filled.MoreHoriz),
 }
 
@@ -599,6 +600,10 @@ private fun StoreHomeScreen(
             )
             StoreTab.Customers -> storeViewModel.refreshCustomers(query)
             StoreTab.Invoices -> storeViewModel.refreshInvoices(query)
+            StoreTab.Installments -> {
+                storeViewModel.refreshInstallments(query)
+                storeViewModel.refreshPersonalDebts(query)
+            }
             StoreTab.More -> when (moreSection) {
                 MoreSection.Suppliers -> storeViewModel.refreshSuppliers(query)
                 MoreSection.Installments -> {
@@ -815,7 +820,7 @@ private fun StoreHomeScreen(
         },
         bottomBar = {
             NavigationBar {
-                availableTabs.forEach { tab ->
+                availableTabs.filterNot { it == StoreTab.Customers }.forEach { tab ->
                     NavigationBarItem(
                         selected = activeTab == tab,
                         onClick = {
@@ -915,6 +920,34 @@ private fun StoreHomeScreen(
                     storeViewModel.refreshProducts(null)
                     invoiceEditTarget = it
                 },
+                modifier = Modifier.padding(padding),
+            )
+            StoreTab.Installments -> InstallmentsHubScreen(
+                section = debtsSection,
+                onSectionChange = { debtsSection = it },
+                installments = installments,
+                personalDebts = personalDebts,
+                query = searchQuery,
+                onQueryChange = { searchQuery = it },
+                onRefresh = {
+                    storeViewModel.refreshInstallments(searchQuery.ifBlank { null })
+                    storeViewModel.refreshPersonalDebts(searchQuery.ifBlank { null })
+                },
+                canManage = "page.installments.manage" in user.permissions,
+                onInstallmentClick = {
+                    selectedInstallment = it
+                    storeViewModel.loadInstallmentDetails(it.id)
+                },
+                onInstallmentPay = { paymentInstallmentTarget = it },
+                onInstallmentStatus = { installmentStatusTarget = it },
+                onInstallmentEdit = { installmentEditTarget = it; installmentDialogOpen = true },
+                onInstallmentDelete = { deleteTarget = DeleteTarget(EditKind.Installment, it.id, it.customer) },
+                onLoadMoreInstallments = storeViewModel::loadMoreInstallments,
+                onDebtClick = { selectedPersonalDebt = it },
+                onDebtPay = { paymentPersonalDebtTarget = it },
+                onDebtEdit = { personalDebtEditTarget = it; personalDebtDialogOpen = true },
+                onDebtDelete = { personalDebtDeleteTarget = it },
+                onLoadMoreDebts = storeViewModel::loadMorePersonalDebts,
                 modifier = Modifier.padding(padding),
             )
             StoreTab.More -> when (moreSection) {
@@ -1716,6 +1749,7 @@ private fun ProductDto.toCachedProduct() = CachedProduct(
     name = name,
     price = price,
     description = description.orEmpty(),
+    notes = notes,
     barcode = barcode,
     stock = stock,
     categoryId = category?.id,
@@ -2328,6 +2362,14 @@ private fun ProductCashierScreen(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
+                            AsyncImage(
+                                model = product.imageUrl,
+                                contentDescription = product.name,
+                                placeholder = painterResource(android.R.drawable.ic_menu_gallery),
+                                error = painterResource(android.R.drawable.ic_menu_gallery),
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier.size(44.dp).clip(RoundedCornerShape(6.dp)),
+                            )
                             Column(Modifier.weight(1f)) {
                                 Text(product.name, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                 Text("${product.price} ج.م · متوفر ${product.stock}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -2991,6 +3033,7 @@ private fun InvoiceCreateDialog(
                     name = item.name ?: "منتج #$id",
                     price = item.price ?: "0",
                     description = "",
+                    notes = null,
                     barcode = null,
                     stock = 0,
                     categoryId = null,

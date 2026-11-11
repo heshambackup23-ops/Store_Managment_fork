@@ -15,7 +15,7 @@ class products extends Model
 
     public function getImageUrlAttribute(): ?string
     {
-        return app(PictureStorageService::class)->url($this->image, 'products', true);
+        return app(PictureStorageService::class)->productUrl($this, true);
     }
 
     public function category()

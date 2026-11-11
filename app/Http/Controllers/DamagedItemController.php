@@ -186,7 +186,7 @@ class DamagedItemController extends Controller
                 'barcode' => $product->barcode,
                 'stock' => (int) $product->stock,
                 'price' => number_format((float) $product->price, 2, '.', ''),
-                'image_url' => $pictures->url($product->image, 'products', true),
+                'image_url' => $pictures->productUrl($product, true),
             ])->values();
 
         return response()->json(['data' => $data]);

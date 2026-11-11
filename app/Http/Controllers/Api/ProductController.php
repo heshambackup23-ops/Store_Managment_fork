@@ -24,7 +24,7 @@ class ProductController
     {
         $filters = $request->validated();
         $query = products::query()
-            ->select(['id', 'name', 'price', 'description', 'barcode', 'stock', 'category_id', 'image', 'updated_at'])
+            ->select(['id', 'name', 'price', 'description', 'notes', 'barcode', 'stock', 'category_id', 'image', 'updated_at'])
             ->with('category:id,name')
             ->when(isset($filters['category_id']), fn ($query) => $query->where('category_id', $filters['category_id']))
             ->when(isset($filters['in_stock']), function ($query) use ($filters): void {

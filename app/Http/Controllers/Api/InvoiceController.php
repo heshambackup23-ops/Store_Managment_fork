@@ -49,14 +49,21 @@ class InvoiceController
 
     public function pdf(invoice $invoice): Response
     {
-        abort_unless(class_exists(\Dompdf\Dompdf::class), 501, 'PDF generation is unavailable.');
+        abort_unless(class_exists(\Mpdf\Mpdf::class), 501, 'PDF generation is unavailable.');
         $invoice->loadMissing('product');
         $html = view('invoice.pdf', compact('invoice'))->render();
-        $pdf = new \Dompdf\Dompdf(['isRemoteEnabled' => false]);
-        $pdf->loadHtml($html, 'UTF-8');
-        $pdf->setPaper('A4', 'portrait');
-        $pdf->render();
-        $contents = $pdf->output();
+        $temporaryDirectory = storage_path('app/mpdf-temp');
+        \Illuminate\Support\Facades\File::ensureDirectoryExists($temporaryDirectory);
+        $pdf = new \Mpdf\Mpdf([
+            'mode' => 'utf-8',
+            'format' => 'A4',
+            'tempDir' => $temporaryDirectory,
+            'autoScriptToLang' => true,
+            'autoLangToFont' => true,
+            'default_font' => 'dejavusans',
+        ]);
+        $pdf->WriteHTML($html);
+        $contents = $pdf->Output('', \Mpdf\Output\Destination::STRING_RETURN);
 
         return response($contents, 200, [
             'Content-Type' => 'application/pdf',

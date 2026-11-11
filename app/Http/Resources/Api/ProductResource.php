@@ -14,6 +14,7 @@ class ProductResource extends JsonResource
             'name' => $this->name,
             'price' => number_format((int) round((float) $this->price * 100) / 100, 2, '.', ''),
             'description' => $this->description,
+            'notes' => $this->notes,
             'barcode' => $this->barcode,
             'stock' => (int) $this->stock,
             'category' => $this->whenLoaded('category', fn () => $this->category ? [

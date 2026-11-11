@@ -92,6 +92,7 @@ internal fun ProductEditDialog(
     var name by rememberSaveable(product?.id) { mutableStateOf(product?.name.orEmpty()) }
     var price by rememberSaveable(product?.id) { mutableStateOf(product?.price.orEmpty()) }
     var description by rememberSaveable(product?.id) { mutableStateOf(product?.description.orEmpty()) }
+    var notes by rememberSaveable(product?.id) { mutableStateOf(product?.notes.orEmpty()) }
     var barcode by rememberSaveable(product?.id) { mutableStateOf(product?.barcode.orEmpty()) }
     var stock by rememberSaveable(product?.id) { mutableStateOf(product?.stock?.toString() ?: "0") }
     var categoryId by rememberSaveable(product?.id) { mutableStateOf(product?.categoryId) }
@@ -104,10 +105,11 @@ internal fun ProductEditDialog(
         nextName: String = name,
         nextPrice: String = price,
         nextDescription: String = description,
+        nextNotes: String = notes,
         nextBarcode: String = barcode,
         nextStock: String = stock,
         nextCategoryId: Long? = categoryId,
-    ) = listOf(nextName, nextPrice, nextDescription, nextBarcode, nextStock, nextCategoryId).joinToString("\u0000")
+    ) = listOf(nextName, nextPrice, nextDescription, nextNotes, nextBarcode, nextStock, nextCategoryId).joinToString("\u0000")
 
     fun updatePayload(nextPayload: String) {
         if (attemptedPayload != null && attemptedPayload != nextPayload) {
@@ -149,6 +151,7 @@ internal fun ProductEditDialog(
                     modifier = Modifier.fillMaxWidth(),
                 )
                 OutlinedTextField(description, { updatePayload(payload(nextDescription = it)); description = it }, label = { Text("الوصف (اختياري)") }, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(notes, { updatePayload(payload(nextNotes = it)); notes = it }, label = { Text("ملاحظات (اختياري)") }, modifier = Modifier.fillMaxWidth())
                 OutlinedTextField(
                     barcode,
                     { updatePayload(payload(nextBarcode = it)); barcode = it },
@@ -188,7 +191,7 @@ internal fun ProductEditDialog(
                 } else {
                     validationError = null
                     attemptedPayload = payload()
-                    onSave(product?.id, ProductInputDto(name.trim(), normalizedPrice, description.trim().ifBlank { null }, barcode.trim().ifBlank { null }, stock.toInt(), categoryId), requestKey, selectedImage)
+                    onSave(product?.id, ProductInputDto(name = name.trim(), price = normalizedPrice, description = description.trim().ifBlank { null }, notes = notes.trim().ifBlank { null }, barcode = barcode.trim().ifBlank { null }, stock = stock.toInt(), categoryId = categoryId), requestKey, selectedImage)
                 }
             }) { Text(if (product == null) "حفظ المنتج" else "حفظ التعديلات") }
         },
