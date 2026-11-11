@@ -56,6 +56,15 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import java.util.UUID
+import android.content.ContentResolver
+import android.net.Uri
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.MultipartBody
+import okhttp3.RequestBody.Companion.asRequestBody
+import okhttp3.RequestBody.Companion.toRequestBody
+import java.io.File
 import javax.inject.Inject
 
 data class SessionUiState(
@@ -63,6 +72,12 @@ data class SessionUiState(
     val isSubmitting: Boolean = false,
     val user: UserDto? = null,
     val error: String? = null,
+)
+
+data class InvoicePdfUiState(
+    val isDownloading: Boolean = false,
+    val message: String? = null,
+    val isError: Boolean = false,
 )
 
 @HiltViewModel
@@ -206,6 +221,50 @@ class StoreViewModel @Inject constructor(
     private val storeRepository: StoreRepository,
     private val sessionRepository: SessionRepository,
 ) : ViewModel() {
+    private val mutableInvoicePdfState = MutableStateFlow(InvoicePdfUiState())
+    val invoicePdfState = mutableInvoicePdfState
+    private val mutableBackupMessage = MutableSharedFlow<String>(extraBufferCapacity = 1)
+    val backupMessage = mutableBackupMessage.asSharedFlow()
+    private val mutableBackupBusy = MutableStateFlow(false)
+    val backupBusy = mutableBackupBusy
+
+    fun downloadBackup(pages: List<String>, uri: Uri, resolver: ContentResolver) {
+        viewModelScope.launch {
+            if (mutableBackupBusy.value) return@launch
+            mutableBackupBusy.value = true
+            try {
+                withContext(Dispatchers.IO) {
+                    val body = storeRepository.downloadBackup(pages)
+                    resolver.openOutputStream(uri)?.use { output -> body.byteStream().use { it.copyTo(output) } }
+                        ?: error("Unable to open destination")
+                    body.close()
+                }
+                mutableBackupMessage.emit("تم حفظ النسخة الاحتياطية على الجهاز")
+            } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+            catch (_: Exception) { mutableBackupMessage.emit("تعذر تنزيل النسخة الاحتياطية") }
+            finally { mutableBackupBusy.value = false }
+        }
+    }
+
+    fun importBackup(pages: List<String>, uri: Uri, resolver: ContentResolver, cacheDir: File) {
+        viewModelScope.launch {
+            if (mutableBackupBusy.value) return@launch
+            mutableBackupBusy.value = true
+            var temp: File? = null
+            try {
+                withContext(Dispatchers.IO) {
+                    temp = File.createTempFile("store-backup-", ".json", cacheDir)
+                    resolver.openInputStream(uri)?.use { input -> temp!!.outputStream().use(input::copyTo) }
+                        ?: error("Unable to read selected file")
+                    storeRepository.importBackup(pages, temp!!)
+                }
+                mutableBackupMessage.emit("تم استيراد بيانات النسخة بنجاح")
+            } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+            catch (_: Exception) { mutableBackupMessage.emit("تعذر استيراد الملف. تحقق من نوعه والصفحات المحددة") }
+            finally { temp?.delete(); mutableBackupBusy.value = false }
+        }
+    }
+
     val products = storeRepository.observeProducts().stateIn(
         viewModelScope,
         SharingStarted.WhileSubscribed(5_000),
@@ -780,6 +839,64 @@ class StoreViewModel @Inject constructor(
         }
     }
 
+    fun saveProduct(
+        id: Long?, input: ProductInputDto, key: String, imageUri: Uri?,
+        resolver: ContentResolver, cacheDir: File,
+    ) {
+        viewModelScope.launch {
+            var imageFile: File? = null
+            try {
+                if (imageUri != null) imageFile = withContext(Dispatchers.IO) {
+                    val file = File.createTempFile("product-image-", ".upload", cacheDir)
+                    try {
+                        resolver.openInputStream(imageUri)?.use { source -> file.outputStream().use(source::copyTo) }
+                            ?: error("Unable to read selected image")
+                        file
+                    } catch (failure: Throwable) {
+                        file.delete()
+                        throw failure
+                    }
+                }
+
+                val saved = reportOperation(
+                    if (imageFile == null) "تم حفظ المنتج." else "تم حفظ المنتج وصورته.",
+                ) {
+                    val product = storeRepository.saveProduct(id, key, input)
+                    if (product is ApiResult.Success && imageFile != null) {
+                        storeRepository.updateProductImage(product.value.id, imageFile)
+                    } else product
+                }
+                if (saved) refreshProducts(null)
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                mutableEvents.emit(StoreEvent.Failed("تعذر قراءة الصورة المحددة."))
+            } finally {
+                imageFile?.delete()
+            }
+        }
+    }
+
+    fun downloadInvoicePdf(id: Long, uri: Uri, resolver: ContentResolver) {
+        viewModelScope.launch {
+            mutableInvoicePdfState.value = InvoicePdfUiState(isDownloading = true, message = "جارٍ تنزيل الفاتورة PDF…")
+            try {
+                withContext(Dispatchers.IO) {
+                    val body = storeRepository.invoicePdf(id)
+                    try {
+                        resolver.openOutputStream(uri)?.use { output -> body.byteStream().use { it.copyTo(output) } }
+                            ?: error("Unable to open destination")
+                    } finally { body.close() }
+                }
+                mutableInvoicePdfState.value = InvoicePdfUiState(message = "تم حفظ ملف الفاتورة PDF على الجهاز.")
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                mutableInvoicePdfState.value = InvoicePdfUiState(message = failure.message ?: "تعذر تنزيل ملف الفاتورة.", isError = true)
+            }
+        }
+    }
+
     fun updateProduct(id: Long, input: ProductInputDto, key: String) {
         viewModelScope.launch {
             if (reportOperation("تم تحديث المنتج.") { storeRepository.updateProduct(id, key, input) }) {
@@ -992,6 +1109,24 @@ class StoreViewModel @Inject constructor(
         viewModelScope.launch {
             if (reportOperation("تمت إضافة المورد.") { storeRepository.createSupplier(key, input) }) {
                 refreshSuppliers(null)
+                refreshWalletOverview()
+            }
+        }
+    }
+
+    fun updateSupplier(id: Long, input: SupplierInputDto, key: String) {
+        viewModelScope.launch {
+            if (reportOperation("تم تحديث بيانات المورد.") { storeRepository.updateSupplier(id, key, input) }) {
+                refreshSuppliers(supplierQuery)
+                refreshWalletOverview()
+            }
+        }
+    }
+
+    fun deleteSupplier(id: Long, key: String) {
+        viewModelScope.launch {
+            if (reportOperation("تم حذف المورد وسجل مشترياته ومدفوعاته.") { storeRepository.deleteSupplier(id, key) }) {
+                refreshSuppliers(supplierQuery)
                 refreshWalletOverview()
             }
         }

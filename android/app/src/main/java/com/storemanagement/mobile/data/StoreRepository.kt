@@ -48,6 +48,12 @@ import kotlinx.coroutines.flow.Flow
 import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
+import java.io.File
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.MultipartBody
+import okhttp3.RequestBody.Companion.asRequestBody
+import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.ResponseBody
 
 @Singleton
 class StoreRepository @Inject constructor(
@@ -55,6 +61,17 @@ class StoreRepository @Inject constructor(
     private val calls: ApiCallExecutor,
     private val catalogDao: CatalogDao,
 ) {
+    suspend fun downloadBackup(pages: List<String>): ResponseBody = api.downloadBackup(pages)
+
+    suspend fun importBackup(pages: List<String>, file: File) {
+        val part = MultipartBody.Part.createFormData(
+            "file", file.name, file.asRequestBody("application/json".toMediaType()),
+        )
+        val response = api.importBackup(part, org.json.JSONArray(pages).toString().toRequestBody("text/plain".toMediaType()))
+        if (!response.isSuccessful) throw retrofit2.HttpException(response)
+        response.body()?.close()
+    }
+
     /** A failed cache write (full disk, closed DB) must never turn a successful server call into an error. */
     private suspend fun cacheQuietly(block: suspend () -> Unit) {
         try {
@@ -125,6 +142,17 @@ class StoreRepository @Inject constructor(
 
     suspend fun createProduct(key: String, input: ProductInputDto) = calls.execute {
         api.createProduct(key, input)
+    }
+
+    suspend fun saveProduct(id: Long?, key: String, input: ProductInputDto): ApiResult<ProductDto> = calls.execute {
+        if (id == null) api.createProduct(key, input).data else api.updateProduct(id, key, input).data
+    }
+
+    suspend fun updateProductImage(id: Long, file: File): ApiResult<ProductDto> = calls.execute {
+        val image = MultipartBody.Part.createFormData(
+            "image", file.name, file.asRequestBody("image/*".toMediaType()),
+        )
+        api.updateProductImage(id, image).data
     }
 
     suspend fun updateProduct(id: Long, key: String, input: ProductInputDto) = calls.execute {
@@ -225,6 +253,14 @@ class StoreRepository @Inject constructor(
         api.createSupplier(key, input)
     }
 
+    suspend fun updateSupplier(id: Long, key: String, input: SupplierInputDto) = calls.execute {
+        api.updateSupplier(id, key, input)
+    }
+
+    suspend fun deleteSupplier(id: Long, key: String) = calls.execute {
+        api.deleteSupplier(id, key).requireSuccess()
+    }
+
     suspend fun supplierDetails(id: Long): ApiResult<SupplierDto> =
         calls.execute { api.supplier(id).data }
 
@@ -294,6 +330,8 @@ class StoreRepository @Inject constructor(
 
     suspend fun invoiceDetails(id: Long): ApiResult<InvoiceDto> =
         calls.execute { api.invoice(id).data }
+
+    suspend fun invoicePdf(id: Long): ResponseBody = api.invoicePdf(id)
 
     suspend fun payInvoice(id: Long, key: String, input: PayAmountInputDto) = calls.execute {
         api.payInvoice(id, key, input)

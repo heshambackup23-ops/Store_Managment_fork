@@ -1,6 +1,9 @@
 package com.storemanagement.mobile.core.network
 
 import retrofit2.Response
+import okhttp3.MultipartBody
+import okhttp3.RequestBody
+import okhttp3.ResponseBody
 import retrofit2.http.Body
 import retrofit2.http.DELETE
 import retrofit2.http.GET
@@ -9,8 +12,22 @@ import retrofit2.http.POST
 import retrofit2.http.PUT
 import retrofit2.http.Path
 import retrofit2.http.Query
+import retrofit2.http.Part
+import retrofit2.http.Multipart
+import retrofit2.http.Streaming
 
 interface StoreApi {
+    @Streaming
+    @GET("v1/backup")
+    suspend fun downloadBackup(@Query("pages[]") pages: List<String>): ResponseBody
+
+    @Multipart
+    @POST("v1/backup/import")
+    suspend fun importBackup(
+        @Part file: MultipartBody.Part,
+        @Part("pages") pages: RequestBody,
+    ): Response<ResponseBody>
+
     @POST("v1/auth/token")
     suspend fun issueToken(@Body body: LoginRequestDto): TokenResponse
 
@@ -83,6 +100,13 @@ interface StoreApi {
         @Path("product") id: Long,
         @Header("Idempotency-Key") key: String,
         @Body body: ProductInputDto,
+    ): ApiEnvelope<ProductDto>
+
+    @Multipart
+    @POST("v1/products/{product}/image")
+    suspend fun updateProductImage(
+        @Path("product") id: Long,
+        @Part image: MultipartBody.Part,
     ): ApiEnvelope<ProductDto>
 
     @DELETE("v1/products/{product}")
@@ -200,6 +224,16 @@ interface StoreApi {
         @Body body: SupplierInputDto,
     ): ApiEnvelope<SupplierDto>
 
+    @PUT("v1/suppliers/{supplier}")
+    suspend fun updateSupplier(
+        @Path("supplier") id: Long,
+        @Header("Idempotency-Key") key: String,
+        @Body body: SupplierInputDto,
+    ): ApiEnvelope<SupplierDto>
+
+    @DELETE("v1/suppliers/{supplier}")
+    suspend fun deleteSupplier(@Path("supplier") id: Long, @Header("Idempotency-Key") key: String): Response<Unit>
+
     @GET("v1/suppliers/{supplier}")
     suspend fun supplier(@Path("supplier") id: Long): ApiEnvelope<SupplierDto>
 
@@ -288,6 +322,10 @@ interface StoreApi {
 
     @GET("v1/invoices/{invoice}")
     suspend fun invoice(@Path("invoice") id: Long): ApiEnvelope<InvoiceDto>
+
+    @Streaming
+    @GET("v1/invoices/{invoice}/pdf")
+    suspend fun invoicePdf(@Path("invoice") id: Long): ResponseBody
 
     @PUT("v1/invoices/{invoice}")
     suspend fun updateInvoice(

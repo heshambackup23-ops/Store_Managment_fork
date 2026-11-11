@@ -11,6 +11,10 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
+use Illuminate\Support\Facades\Validator;
+use Illuminate\Validation\ValidationException;
+use Illuminate\Http\JsonResponse;
+use Symfony\Component\HttpFoundation\StreamedResponse;
 use Symfony\Component\HttpKernel\Exception\HttpException;
 use Throwable;
 use ZipArchive;
@@ -28,13 +32,121 @@ use ZipArchive;
  */
 class BackupController extends Controller
 {
+    /** Stable backup page keys mapped to real database tables. System queues, sessions,
+     * tokens, and migration bookkeeping are deliberately excluded. */
+    private const BACKUP_GROUPS = [
+        'catalog' => ['categories', 'products'],
+        'customers' => ['customers'],
+        'sales' => ['sales', 'sales_items', 'payments'],
+        'invoices' => ['invoices'],
+        'installments' => ['installments', 'debts', 'personal_debts', 'personal_debt_payments'],
+        'suppliers' => ['suppliers', 'supplier_payments', 'purchases'],
+        'maintenance' => ['maintenances'],
+        'wallets' => ['wallets', 'wallet_transactions', 'wallet_expenses', 'wallet_cash_adjustments', 'wallet_audit_logs'],
+        'damaged' => ['damaged_items'],
+        'notifications' => ['app_notifications', 'notification_reads'],
+        'team' => ['users', 'profiles', 'settings', 'roles', 'permissions', 'model_has_permissions', 'model_has_roles', 'role_has_permissions'],
+    ];
+
+    /** Stream a versioned, restorable NDJSON snapshot. Rows are emitted in bounded chunks. */
+    public function apiExport(Request $request): StreamedResponse
+    {
+        $validated = $request->validate(['pages' => ['nullable', 'array', 'min:1'], 'pages.*' => ['required', 'string', 'in:'.implode(',', array_keys(self::BACKUP_GROUPS))]]);
+        $pages = array_values(array_unique($validated['pages'] ?? array_keys(self::BACKUP_GROUPS)));
+        $tables = $this->tablesForPages($pages);
+        $filename = 'store-backup-'.now()->format('Ymd-His').'.json';
+
+        return response()->streamDownload(function () use ($pages, $tables): void {
+            $out = fopen('php://output', 'w');
+            fwrite($out, json_encode(['format' => 'store-management-backup-ndjson', 'version' => 1, 'created_at' => now()->toIso8601String(), 'pages' => $pages], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR)."\n");
+            foreach ($tables as $table) {
+                DB::table($table)->orderBy(Schema::getColumnListing($table)[0] ?? 'id')->chunk(500, function ($rows) use ($out, $table): void {
+                    foreach ($rows as $row) {
+                        fwrite($out, json_encode(['table' => $table, 'row' => (array) $row], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR)."\n");
+                    }
+                });
+            }
+            fclose($out);
+        }, str_replace('.json', '.jsonl', $filename), ['Content-Type' => 'application/x-ndjson; charset=utf-8', 'Cache-Control' => 'no-store']);
+    }
+
+    /** Read rows incrementally; any invalid row rolls the complete transaction back. */
+    public function apiImport(Request $request): JsonResponse
+    {
+        $validated = $request->validate(['file' => ['required', 'file', 'max:512000', 'mimetypes:application/json,text/plain'], 'pages' => ['required', 'string', 'max:1000']]);
+        $pages = $this->decodeBackupLine($validated['pages']);
+        Validator::make(['pages' => $pages], ['pages' => ['required', 'array', 'min:1'], 'pages.*' => ['required', 'string', 'in:'.implode(',', array_keys(self::BACKUP_GROUPS))]])->validate();
+        $pages = array_values(array_unique($pages));
+        $allowed = $this->tablesForPages($pages);
+        $handle = fopen($validated['file']->getRealPath(), 'r');
+        abort_if($handle === false, 422, 'Unable to read backup file.');
+        $importedTables = [];
+        try {
+            $header = $this->decodeBackupLine((string) fgets($handle));
+            abort_unless(is_array($header) && ($header['format'] ?? null) === 'store-management-backup-ndjson' && ($header['version'] ?? null) === 1, 422, 'Unsupported or invalid backup file.');
+            DB::transaction(function () use ($handle, $allowed, &$importedTables): void {
+                $columnsByTable = [];
+                while (($line = fgets($handle)) !== false) {
+                    if (trim($line) === '') continue;
+                    $record = $this->decodeBackupLine($line);
+                    $table = $record['table'] ?? null;
+                    $row = $record['row'] ?? null;
+                    abort_unless(is_string($table) && in_array($table, $allowed, true) && is_array($row), 422, 'Invalid backup row.');
+                    $columns = $columnsByTable[$table] ??= Schema::getColumnListing($table);
+                    abort_unless(count(array_intersect(array_keys($row), $columns)) === count($row), 422, 'Invalid row data in backup.');
+                    $row = array_intersect_key($row, array_flip($columns));
+                    $keys = array_intersect(['id', 'uuid'], array_keys($row));
+                    if ($keys !== []) {
+                        $key = reset($keys);
+                        DB::table($table)->updateOrInsert([$key => $row[$key]], $row);
+                    } else {
+                        DB::table($table)->insertOrIgnore($row);
+                    }
+                    $importedTables[$table] = true;
+                }
+            }, 3);
+        } finally { fclose($handle); }
+
+        return response()->json(['data' => ['imported_tables' => array_keys($importedTables), 'message' => 'Backup data merged successfully.']]);
+    }
+
+    /** @param list<string> $pages @return list<string> */
+    private function tablesForPages(array $pages): array
+    {
+        $tables = [];
+        foreach ($pages as $page) foreach (self::BACKUP_GROUPS[$page] ?? [] as $table) {
+            if (Schema::hasTable($table)) $tables[] = $table;
+        }
+        return array_values(array_unique($tables));
+    }
+
+    private function decodeBackupLine(string $line): mixed
+    {
+        try {
+            return json_decode($line, true, 64, JSON_THROW_ON_ERROR);
+        } catch (\JsonException) {
+            throw ValidationException::withMessages(['file' => 'The selected backup file contains invalid JSON.']);
+        }
+    }
+
+    public function webImport(Request $request): JsonResponse
+    {
+        abort_unless($request->user()?->can('page.backup.manage'), 403);
+        $request->merge(['pages' => json_encode($request->input('pages', []), JSON_THROW_ON_ERROR)]);
+        return $this->apiImport($request);
+    }
+
     public function export(Request $request)
     {
         $user = $request->user();
         abort_unless($user?->can('page.backup.view') || $user?->can('page.backup.manage'), 403);
 
-        $validated = $request->validate(['format' => ['nullable', 'in:zip,pdf,xlsx,excel,csv']]);
+        $validated = $request->validate(['format' => ['nullable', 'in:zip,pdf,xlsx,excel,csv,jsonl']]);
         $format = $validated['format'] ?? 'zip';
+        if ($format === 'jsonl') {
+            abort_unless($request->user()?->can('page.backup.manage'), 403);
+            return $this->apiExport($request);
+        }
         $name = 'backup-'.now()->format('YmdHis');
 
         try {

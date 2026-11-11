@@ -17,6 +17,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
+use Symfony\Component\HttpFoundation\Response;
 
 class InvoiceController
 {
@@ -44,6 +45,25 @@ class InvoiceController
     public function show(invoice $invoice): InvoiceResource
     {
         return new InvoiceResource($invoice);
+    }
+
+    public function pdf(invoice $invoice): Response
+    {
+        abort_unless(class_exists(\Dompdf\Dompdf::class), 501, 'PDF generation is unavailable.');
+        $invoice->loadMissing('product');
+        $html = view('invoice.pdf', compact('invoice'))->render();
+        $pdf = new \Dompdf\Dompdf(['isRemoteEnabled' => false]);
+        $pdf->loadHtml($html, 'UTF-8');
+        $pdf->setPaper('A4', 'portrait');
+        $pdf->render();
+        $contents = $pdf->output();
+
+        return response($contents, 200, [
+            'Content-Type' => 'application/pdf',
+            'Content-Disposition' => 'attachment; filename="invoice-'.$invoice->id.'.pdf"',
+            'Content-Length' => (string) strlen($contents),
+            'Cache-Control' => 'private, no-store',
+        ]);
     }
 
     public function store(

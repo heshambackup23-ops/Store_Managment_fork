@@ -104,6 +104,7 @@ Route::middleware(['auth:sanctum', 'page.access'])->group(function () {
     Route::put('/profile/users/{user}/role', [RoleController::class, 'updateLegacyAssignment'])
         ->middleware('superadmin')->name('profile.users.role.update');
         Route::get('/backup', [BackupController::class, 'export'])->name('backup.export');
+        Route::post('/backup/import', [BackupController::class, 'webImport'])->name('backup.import');
         Route::get('/notifications', [AppNotificationController::class, 'list'])->name('notifications.list');
         Route::post('/notifications/mark-all-read', [AppNotificationController::class, 'markAllRead'])->name('notifications.markAllRead');
         Route::post('/notifications/{id}/mark-read', [AppNotificationController::class, 'markRead'])->name('notifications.markRead');

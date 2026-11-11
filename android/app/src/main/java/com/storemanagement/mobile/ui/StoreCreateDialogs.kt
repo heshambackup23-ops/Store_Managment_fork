@@ -1,14 +1,20 @@
 package com.storemanagement.mobile.ui
 
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
@@ -19,6 +25,9 @@ import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilterChip
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Image
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedButton
@@ -37,6 +46,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import coil3.compose.AsyncImage
 import com.storemanagement.mobile.core.database.CachedProduct
 import com.storemanagement.mobile.core.network.DamagedItemDto
 import com.storemanagement.mobile.core.network.InstallmentInputDto
@@ -44,6 +54,7 @@ import com.storemanagement.mobile.core.network.InstallmentDto
 import com.storemanagement.mobile.core.database.CachedCategory
 import com.storemanagement.mobile.core.network.ProductInputDto
 import com.storemanagement.mobile.core.network.SupplierInputDto
+import com.storemanagement.mobile.core.network.SupplierDto
 import com.storemanagement.mobile.core.network.WalletAdjustmentInputDto
 import com.storemanagement.mobile.core.network.WalletDto
 import com.storemanagement.mobile.core.network.WalletInputDto
@@ -72,8 +83,12 @@ internal fun ProductEditDialog(
     product: CachedProduct?,
     categories: List<CachedCategory>,
     onDismiss: () -> Unit,
-    onSave: (Long?, ProductInputDto, String) -> Unit,
+    onSave: (Long?, ProductInputDto, String, Uri?) -> Unit,
 ) {
+    var selectedImage by rememberSaveable(product?.id) { mutableStateOf<Uri?>(null) }
+    val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        if (uri != null) selectedImage = uri
+    }
     var name by rememberSaveable(product?.id) { mutableStateOf(product?.name.orEmpty()) }
     var price by rememberSaveable(product?.id) { mutableStateOf(product?.price.orEmpty()) }
     var description by rememberSaveable(product?.id) { mutableStateOf(product?.description.orEmpty()) }
@@ -106,9 +121,24 @@ internal fun ProductEditDialog(
         title = { Text(if (product == null) "إضافة منتج" else "تعديل المنتج") },
         text = {
             Column(
-                Modifier.fillMaxWidth().heightIn(max = 520.dp).verticalScroll(rememberScrollState()),
+                Modifier.fillMaxWidth().imePadding().heightIn(max = 520.dp).verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    AsyncImage(
+                        model = selectedImage ?: product?.imageUrl,
+                        contentDescription = "صورة المنتج",
+                        modifier = Modifier.size(88.dp).clip(RoundedCornerShape(12.dp)),
+                    )
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(if (selectedImage != null) "الصورة الجديدة" else if (product?.imageUrl != null) "الصورة الحالية" else "لا توجد صورة")
+                        OutlinedButton(onClick = { imagePicker.launch("image/*") }) {
+                            Icon(Icons.Filled.Image, contentDescription = null)
+                            Text("اختيار صورة", modifier = Modifier.padding(start = 6.dp))
+                        }
+                        if (selectedImage != null) TextButton(onClick = { selectedImage = null }) { Text("إلغاء اختيار الصورة") }
+                    }
+                }
                 OutlinedTextField(name, { updatePayload(payload(nextName = it)); name = it }, label = { Text("اسم المنتج") }, singleLine = true, modifier = Modifier.fillMaxWidth())
                 OutlinedTextField(
                     price,
@@ -158,7 +188,7 @@ internal fun ProductEditDialog(
                 } else {
                     validationError = null
                     attemptedPayload = payload()
-                    onSave(product?.id, ProductInputDto(name.trim(), normalizedPrice, description.trim().ifBlank { null }, barcode.trim().ifBlank { null }, stock.toInt(), categoryId), requestKey)
+                    onSave(product?.id, ProductInputDto(name.trim(), normalizedPrice, description.trim().ifBlank { null }, barcode.trim().ifBlank { null }, stock.toInt(), categoryId), requestKey, selectedImage)
                 }
             }) { Text(if (product == null) "حفظ المنتج" else "حفظ التعديلات") }
         },
@@ -203,7 +233,7 @@ internal fun WalletCreateDialog(
         title = { Text("إضافة محفظة") },
         text = {
             Column(
-                Modifier.fillMaxWidth().heightIn(max = 520.dp).verticalScroll(rememberScrollState()),
+                Modifier.fillMaxWidth().imePadding().heightIn(max = 520.dp).verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 OutlinedTextField(name, { updatePayload(payload(nextName = it)); name = it }, label = { Text("اسم المحفظة") }, singleLine = true, modifier = Modifier.fillMaxWidth())
@@ -266,7 +296,7 @@ internal fun WalletAdjustmentDialog(
         title = { Text("تسوية ${wallet.name}") },
         text = {
             Column(
-                Modifier.fillMaxWidth().heightIn(max = 480.dp).verticalScroll(rememberScrollState()),
+                Modifier.fillMaxWidth().imePadding().heightIn(max = 480.dp).verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 Text("استخدم قيمة موجبة للإضافة أو سالبة للخصم من الرصيد.", style = MaterialTheme.typography.bodySmall)
@@ -298,14 +328,15 @@ internal fun WalletAdjustmentDialog(
 
 @Composable
 internal fun SupplierCreateDialog(
+    supplier: SupplierDto? = null,
     onDismiss: () -> Unit,
-    onCreate: (SupplierInputDto, String) -> Unit,
+    onSave: (Long?, SupplierInputDto, String) -> Unit,
 ) {
-    var name by rememberSaveable { mutableStateOf("") }
-    var phone by rememberSaveable { mutableStateOf("") }
-    var email by rememberSaveable { mutableStateOf("") }
-    var address by rememberSaveable { mutableStateOf("") }
-    var openingBalance by rememberSaveable { mutableStateOf("0.00") }
+    var name by rememberSaveable(supplier?.id) { mutableStateOf(supplier?.name.orEmpty()) }
+    var phone by rememberSaveable(supplier?.id) { mutableStateOf(supplier?.phone.orEmpty()) }
+    var email by rememberSaveable(supplier?.id) { mutableStateOf(supplier?.email.orEmpty()) }
+    var address by rememberSaveable(supplier?.id) { mutableStateOf(supplier?.address.orEmpty()) }
+    var openingBalance by rememberSaveable(supplier?.id) { mutableStateOf(supplier?.openingBalance ?: "0.00") }
     var requestKey by remember { mutableStateOf(UUID.randomUUID().toString()) }
     var attemptedPayload by remember { mutableStateOf<String?>(null) }
     var validationError by remember { mutableStateOf<String?>(null) }
@@ -327,10 +358,10 @@ internal fun SupplierCreateDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("إضافة مورد") },
+        title = { Text(if (supplier == null) "إضافة مورد" else "تعديل بيانات المورد") },
         text = {
             Column(
-                Modifier.fillMaxWidth().heightIn(max = 520.dp).verticalScroll(rememberScrollState()),
+                Modifier.fillMaxWidth().imePadding().heightIn(max = 520.dp).verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 OutlinedTextField(
@@ -395,7 +426,8 @@ internal fun SupplierCreateDialog(
                 } else {
                     validationError = null
                     attemptedPayload = payload()
-                    onCreate(
+                    onSave(
+                        supplier?.id,
                         SupplierInputDto(
                             name = name.trim(),
                             phone = phone.trim().ifBlank { null },
@@ -406,7 +438,7 @@ internal fun SupplierCreateDialog(
                         requestKey,
                     )
                 }
-            }) { Text("حفظ المورد") }
+            }) { Text(if (supplier == null) "حفظ المورد" else "حفظ التعديلات") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("إلغاء") } },
     )
@@ -488,7 +520,7 @@ internal fun InstallmentCreateDialog(
         title = { Text(if (record == null) "إضافة دين" else "تعديل الدين") },
         text = {
             Column(
-                Modifier.fillMaxWidth().heightIn(max = 560.dp).verticalScroll(rememberScrollState()),
+                Modifier.fillMaxWidth().imePadding().heightIn(max = 560.dp).verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 OutlinedTextField(
@@ -498,28 +530,8 @@ internal fun InstallmentCreateDialog(
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                 )
-                OutlinedTextField(
-                    paymentDate,
-                    { value ->
-                        val normalized = value.normalizeArabicDigits()
-                        rotateKeyIfChanged(payload(nextPaymentDate = normalized))
-                        paymentDate = normalized
-                    },
-                    label = { Text("تاريخ الدفع (اختياري، سنة-شهر-يوم)") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                OutlinedTextField(
-                    nextPaymentDate,
-                    { value ->
-                        val normalized = value.normalizeArabicDigits()
-                        rotateKeyIfChanged(payload(nextNextPaymentDate = normalized))
-                        nextPaymentDate = normalized
-                    },
-                    label = { Text("موعد الدفعة التالية") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                )
+                DatePickerField(paymentDate, "تاريخ الدفع (اختياري)", { value -> rotateKeyIfChanged(payload(nextPaymentDate = value)); paymentDate = value }, Modifier.fillMaxWidth(), nullable = true)
+                DatePickerField(nextPaymentDate, "موعد الدفعة التالية (اختياري)", { value -> rotateKeyIfChanged(payload(nextNextPaymentDate = value)); nextPaymentDate = value }, Modifier.fillMaxWidth(), nullable = true)
                 OutlinedTextField(
                     paidAmount,
                     { value ->
@@ -728,7 +740,7 @@ internal fun MaintenanceEditDialog(
         title = { Text(if (record == null) "إضافة طلب صيانة" else "تعديل طلب الصيانة") },
         text = {
             Column(
-                Modifier.fillMaxWidth().heightIn(max = 560.dp).verticalScroll(rememberScrollState()),
+                Modifier.fillMaxWidth().imePadding().heightIn(max = 560.dp).verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 OutlinedTextField(name, { updatePayload(payload(nextName = it)); name = it }, label = { Text("نوع الجهاز أو الخدمة") }, singleLine = true, modifier = Modifier.fillMaxWidth())
@@ -736,13 +748,7 @@ internal fun MaintenanceEditDialog(
                 OutlinedTextField(phone, { updatePayload(payload(nextPhone = it)); phone = it }, label = { Text("الهاتف (اختياري)") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone), singleLine = true, modifier = Modifier.fillMaxWidth())
                 OutlinedTextField(address, { updatePayload(payload(nextAddress = it)); address = it }, label = { Text("العنوان (اختياري)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
                 OutlinedTextField(description, { updatePayload(payload(nextDescription = it)); description = it }, label = { Text("الوصف (اختياري)") }, modifier = Modifier.fillMaxWidth())
-                OutlinedTextField(
-                    requestedDate,
-                    { value -> val normalized = value.normalizeArabicDigits(); updatePayload(payload(nextDate = normalized)); requestedDate = normalized },
-                    label = { Text("تاريخ الاستلام") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                )
+                DatePickerField(requestedDate, "تاريخ الاستلام", { value -> updatePayload(payload(nextDate = value)); requestedDate = value }, Modifier.fillMaxWidth())
                 androidx.compose.foundation.layout.Box {
                     OutlinedButton(onClick = { statusMenuOpen = true }, modifier = Modifier.fillMaxWidth()) { Text(status) }
                     DropdownMenu(expanded = statusMenuOpen, onDismissRequest = { statusMenuOpen = false }) {
@@ -839,7 +845,7 @@ internal fun WalletCashierCreateDialog(
         title = { Text("تسجيل معاملة محفظة") },
         text = {
             Column(
-                Modifier.fillMaxWidth().heightIn(max = 560.dp).verticalScroll(rememberScrollState()),
+                Modifier.fillMaxWidth().imePadding().heightIn(max = 560.dp).verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 if (wallets.isEmpty()) Text("لا توجد محفظة نشطة متاحة. فعّل أو أضف محفظة أولاً.", color = MaterialTheme.colorScheme.error)
@@ -999,7 +1005,7 @@ internal fun WalletCashierActionDialog(
         title = { Text(if (action == CashierAction.Settle) "تحصيل المبلغ الآجل" else "عكس المعاملة") },
         text = {
             Column(
-                Modifier.fillMaxWidth().heightIn(max = 420.dp).verticalScroll(rememberScrollState()),
+                Modifier.fillMaxWidth().imePadding().heightIn(max = 420.dp).verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 Text("${transaction.amount} ج.م · ${transaction.customerName.orEmpty()}")
@@ -1119,7 +1125,7 @@ internal fun ProfileEditDialog(
         title = { Text("تعديل الحساب") },
         text = {
             Column(
-                Modifier.fillMaxWidth().heightIn(max = 420.dp).verticalScroll(rememberScrollState()),
+                Modifier.fillMaxWidth().imePadding().heightIn(max = 420.dp).verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 OutlinedTextField(name, { name = it }, label = { Text("الاسم") }, singleLine = true, modifier = Modifier.fillMaxWidth())
@@ -1215,7 +1221,7 @@ internal fun DamagedItemCreateDialog(
         title = { Text("تسجيل هالك") },
         text = {
             Column(
-                Modifier.fillMaxWidth().heightIn(max = 560.dp).verticalScroll(rememberScrollState()),
+                Modifier.fillMaxWidth().imePadding().heightIn(max = 560.dp).verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 OutlinedTextField(
@@ -1272,13 +1278,7 @@ internal fun DamagedItemCreateDialog(
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                 )
-                OutlinedTextField(
-                    damagedOn,
-                    { value -> val normalized = value.normalizeArabicDigits(); updatePayload(payload(nextDamagedOn = normalized)); damagedOn = normalized },
-                    label = { Text("تاريخ الهالك") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                )
+                DatePickerField(damagedOn, "تاريخ الهالك", { value -> updatePayload(payload(nextDamagedOn = value)); damagedOn = value }, Modifier.fillMaxWidth())
                 OutlinedTextField(notes, { updatePayload(payload(nextNotes = it)); notes = it }, label = { Text("ملاحظات (اختياري)") }, modifier = Modifier.fillMaxWidth())
                 validationError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
             }
@@ -1388,7 +1388,7 @@ internal fun PersonalDebtEditDialog(
         title = { Text(if (debt == null) "دين عليّ" else "تعديل الدين الشخصي") },
         text = {
             Column(
-                Modifier.fillMaxWidth().heightIn(max = 520.dp).verticalScroll(rememberScrollState()),
+                Modifier.fillMaxWidth().imePadding().heightIn(max = 520.dp).verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 Text("للمبالغ المستحقة عليك لشخص أو جهة خارج مبيعات المتجر.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -1412,13 +1412,7 @@ internal fun PersonalDebtEditDialog(
                         modifier = Modifier.fillMaxWidth(),
                     )
                 }
-                OutlinedTextField(
-                    dueDate,
-                    { value -> val normalized = value.normalizeArabicDigits(); updatePayload(payload(nextDue = normalized)); dueDate = normalized },
-                    label = { Text("تاريخ الاستحقاق (سنة-شهر-يوم)") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                )
+                DatePickerField(dueDate, "تاريخ الاستحقاق (اختياري)", { value -> updatePayload(payload(nextDue = value)); dueDate = value }, Modifier.fillMaxWidth(), nullable = true)
                 OutlinedTextField(notes, { updatePayload(payload(nextNotes = it)); notes = it }, label = { Text("ملاحظات") }, modifier = Modifier.fillMaxWidth())
                 validationError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
             }

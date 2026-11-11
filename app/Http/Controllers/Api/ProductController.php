@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Http\Requests\Api\ProductIndexRequest;
 use App\Http\Requests\Api\CreateProductRequest;
 use App\Http\Requests\Api\UpdateProductRequest;
+use App\Http\Requests\Api\UpdateProductImageRequest;
 use App\Http\Requests\Api\DeleteProductRequest;
 use App\Http\Resources\Api\ProductResource;
 use App\Models\products;
@@ -99,6 +100,26 @@ class ProductController
                 return ['status' => 200, 'body' => ['data' => (new ProductResource($updated))->resolve($request)]];
             }
         );
+    }
+
+    public function updateImage(UpdateProductImageRequest $request, products $product, PictureStorageService $pictures): JsonResponse
+    {
+        $newPath = $pictures->store($request->file('image'), 'products');
+        $oldPath = $product->image;
+
+        try {
+            $updated = DB::transaction(function () use ($product, $newPath): products {
+                $locked = products::query()->lockForUpdate()->findOrFail($product->id);
+                $locked->update(['image' => $newPath]);
+                return $locked->refresh()->load('category');
+            }, 3);
+        } catch (\Throwable $exception) {
+            $pictures->delete($newPath, 'products');
+            throw $exception;
+        }
+
+        if ($oldPath !== $newPath) $pictures->delete($oldPath, 'products');
+        return response()->json(['data' => (new ProductResource($updated))->resolve($request)]);
     }
 
     public function destroy(

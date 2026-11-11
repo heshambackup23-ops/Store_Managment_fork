@@ -17,12 +17,15 @@ use App\Http\Controllers\Api\CashierController;
 use App\Http\Controllers\Api\ProfileController;
 use App\Http\Controllers\Api\DamagedItemController;
 use App\Http\Controllers\Api\PersonalDebtController;
+use App\Http\Controllers\BackupController;
 use App\Http\Middleware\EnsureUserIsActive;
 use App\Http\Requests\Api\CreateCustomerRequest;
 use App\Http\Requests\Api\CreateCategoryRequest;
 use App\Http\Requests\Api\UpdateCategoryRequest;
 use App\Http\Requests\Api\UpdateCustomerRequest;
 use App\Http\Requests\Api\CreateSupplierRequest;
+use App\Http\Requests\Api\UpdateSupplierRequest;
+use App\Http\Requests\Api\DeleteSupplierRequest;
 use App\Http\Requests\Api\CreateInstallmentRequest;
 use App\Http\Requests\Api\CreateMaintenanceRequest;
 use App\Http\Requests\Api\UpdateMaintenanceRequest;
@@ -35,6 +38,7 @@ use App\Http\Requests\Api\DeleteInstallmentRequest;
 use App\Http\Requests\Api\PayInvoiceRequest;
 use App\Http\Requests\Api\CashierCheckoutRequest;
 use App\Http\Requests\Api\UpdateProductRequest;
+use App\Http\Requests\Api\UpdateProductImageRequest;
 use App\Http\Requests\Api\DeleteProductRequest;
 use App\Http\Requests\Api\UpdateProfileRequest;
 use App\Http\Requests\Api\RecordDamagedItemRequest;
@@ -60,6 +64,12 @@ Route::prefix('v1')->name('api.v1.')->group(function (): void {
 		Route::get('/profile', [ProfileController::class, 'show'])
 			->middleware('abilities:api:me')
 			->name('profile.show');
+		Route::get('/backup', [BackupController::class, 'apiExport'])
+			->middleware(['abilities:page.backup.manage', 'can:page.backup.manage'])
+			->name('backup.export');
+		Route::post('/backup/import', [BackupController::class, 'apiImport'])
+			->middleware(['abilities:page.backup.manage', 'can:page.backup.manage', 'throttle:api'])
+			->name('backup.import');
 		Route::get('/damaged/products', [DamagedItemController::class, 'products'])
 			->middleware(['abilities:page.damaged.view', 'can:page.damaged.view'])
 			->name('damaged.products');
@@ -94,6 +104,10 @@ Route::prefix('v1')->name('api.v1.')->group(function (): void {
 			->whereNumber('product')
 			->middleware(['abilities:page.products.manage', 'can:update-products,product'])
 			->name('products.update');
+		Route::post('/products/{product}/image', [ProductController::class, 'updateImage'])
+			->whereNumber('product')
+			->middleware(['abilities:page.products.manage', 'can:update-products,product'])
+			->name('products.image.update');
 		Route::delete('/products/{product}', [ProductController::class, 'destroy'])
 			->whereNumber('product')
 			->middleware(['abilities:page.products.manage', 'can:delete-products,product'])
@@ -141,6 +155,10 @@ Route::prefix('v1')->name('api.v1.')->group(function (): void {
 		Route::get('/invoices', [InvoiceController::class, 'index'])
 			->middleware(['abilities:page.invoices.view', 'can:view-invoice'])
 			->name('invoices.index');
+		Route::get('/invoices/{invoice}/pdf', [InvoiceController::class, 'pdf'])
+			->whereNumber('invoice')
+			->middleware(['abilities:page.invoices.view', 'can:view-invoice'])
+			->name('invoices.pdf');
 		Route::get('/cashier/products', [CashierController::class, 'products'])
 			->middleware(['abilities:page.invoices.manage', 'can:create-invoice'])
 			->name('cashier.products');
@@ -221,6 +239,14 @@ Route::prefix('v1')->name('api.v1.')->group(function (): void {
 		Route::post('/suppliers', [SupplierController::class, 'store'])
 			->middleware(['abilities:page.suppliers.manage', 'can:page.suppliers.manage'])
 			->name('suppliers.store');
+		Route::put('/suppliers/{supplier}', [SupplierController::class, 'update'])
+			->whereNumber('supplier')
+			->middleware(['abilities:page.suppliers.manage', 'can:page.suppliers.manage'])
+			->name('suppliers.update');
+		Route::delete('/suppliers/{supplier}', [SupplierController::class, 'destroy'])
+			->whereNumber('supplier')
+			->middleware(['abilities:page.suppliers.manage', 'can:page.suppliers.manage'])
+			->name('suppliers.destroy');
 		Route::post('/invoices', [InvoiceController::class, 'store'])
 			->middleware(['abilities:page.invoices.manage', 'can:create-invoice'])
 			->name('invoices.store');

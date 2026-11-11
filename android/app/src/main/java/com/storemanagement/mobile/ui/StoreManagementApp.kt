@@ -1,6 +1,8 @@
 package com.storemanagement.mobile.ui
 
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
@@ -318,7 +320,7 @@ private enum class StoreTab(val label: String, val permission: String?, val icon
     More("المزيد", null, Icons.Filled.MoreHoriz),
 }
 
-private enum class MoreSection { Home, Categories, Sales, Suppliers, Installments, Wallets, WalletCashier, ProductCashier, Damaged, Notifications, Maintenance, Profile }
+private enum class MoreSection { Home, Categories, Sales, Suppliers, Installments, Wallets, WalletCashier, ProductCashier, Damaged, Notifications, Maintenance, Profile, Backup }
 internal enum class CashierAction { Settle, Reverse }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -352,6 +354,7 @@ private fun StoreHomeScreen(
     val productPage by storeViewModel.productPage.collectAsStateWithLifecycle()
     val productDetails by storeViewModel.productDetails.collectAsStateWithLifecycle()
     val invoiceDetails by storeViewModel.invoiceDetails.collectAsStateWithLifecycle()
+    val invoicePdfState by storeViewModel.invoicePdfState.collectAsStateWithLifecycle()
     val supplierDetails by storeViewModel.supplierDetails.collectAsStateWithLifecycle()
     val installmentDetails by storeViewModel.installmentDetails.collectAsStateWithLifecycle()
     val categoryPage by storeViewModel.categoryPage.collectAsStateWithLifecycle()
@@ -370,6 +373,8 @@ private fun StoreHomeScreen(
     var damagedVoidTarget by remember { mutableStateOf<DamagedItemDto?>(null) }
     var profileEditOpen by remember { mutableStateOf(false) }
     var supplierDialogOpen by remember { mutableStateOf(false) }
+    var supplierEditTarget by remember { mutableStateOf<SupplierDto?>(null) }
+    var supplierDeleteTarget by remember { mutableStateOf<SupplierDto?>(null) }
     var installmentDialogOpen by remember { mutableStateOf(false) }
     var installmentEditTarget by remember { mutableStateOf<InstallmentDto?>(null) }
     var paymentInstallmentTarget by remember { mutableStateOf<InstallmentDto?>(null) }
@@ -407,6 +412,22 @@ private fun StoreHomeScreen(
     }
     var selectedTab by rememberSaveable(user.id) { mutableStateOf(StoreTab.Dashboard.name) }
     var searchQuery by rememberSaveable { mutableStateOf("") }
+    var backupPages by rememberSaveable { mutableStateOf(setOf("catalog", "customers", "sales", "invoices", "installments", "suppliers", "maintenance", "wallets", "damaged", "notifications", "team")) }
+    val context = LocalContext.current
+    var invoicePdfPendingId by remember { mutableStateOf<Long?>(null) }
+    val invoicePdfPicker = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/pdf")) { uri ->
+        val invoiceId = invoicePdfPendingId
+        invoicePdfPendingId = null
+        if (uri != null && invoiceId != null) storeViewModel.downloadInvoicePdf(invoiceId, uri, context.contentResolver)
+    }
+    val backupExportPicker = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/x-ndjson")) { uri ->
+        if (uri != null) storeViewModel.downloadBackup(backupPages.toList(), uri, context.contentResolver)
+    }
+    val backupImportPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) storeViewModel.importBackup(backupPages.toList(), uri, context.contentResolver, context.cacheDir)
+    }
+    val backupMessageHost = remember { SnackbarHostState() }
+    LaunchedEffect(storeViewModel) { storeViewModel.backupMessage.collect { backupMessageHost.showSnackbar(it) } }
     var moreSectionName by rememberSaveable { mutableStateOf(MoreSection.Home.name) }
     val moreSection = MoreSection.entries.firstOrNull { it.name == moreSectionName } ?: MoreSection.Home
     var selectedProductCategoryId by rememberSaveable { mutableStateOf<Long?>(null) }
@@ -426,6 +447,7 @@ private fun StoreHomeScreen(
             MoreSection.Notifications -> "الإشعارات"
             MoreSection.Maintenance -> "الصيانة"
             MoreSection.Profile -> "حسابي"
+            MoreSection.Backup -> "النسخ الاحتياطي"
             MoreSection.Home -> "المزيد"
         }
     } else {
@@ -684,6 +706,7 @@ private fun StoreHomeScreen(
     }
 
     Scaffold(
+        modifier = Modifier.fillMaxSize().imePadding(),
         topBar = {
             Column {
                 TopAppBar(
@@ -728,7 +751,7 @@ private fun StoreHomeScreen(
                     }
                 }
                 activeTab == StoreTab.More && moreSection == MoreSection.Suppliers && "page.suppliers.manage" in user.permissions -> {
-                    FloatingActionButton(onClick = { supplierDialogOpen = true }) {
+                    FloatingActionButton(onClick = { supplierEditTarget = null; supplierDialogOpen = true }) {
                         Icon(Icons.Filled.Add, contentDescription = "إضافة مورد")
                     }
                 }
@@ -906,6 +929,7 @@ private fun StoreHomeScreen(
                     canViewNotifications = "page.notifications.view" in user.permissions,
                     canViewMaintenance = "page.maintenance.view" in user.permissions,
                     canViewDamaged = "page.damaged.view" in user.permissions,
+                    canViewBackup = "page.backup.manage" in user.permissions,
                     onOpenProfile = {
                         moreSectionName = MoreSection.Profile.name
                         searchQuery = ""
@@ -955,6 +979,7 @@ private fun StoreHomeScreen(
                         searchQuery = ""
                         storeViewModel.refreshDamagedItems(null)
                     },
+                    onOpenBackup = { moreSectionName = MoreSection.Backup.name; searchQuery = "" },
                     modifier = Modifier.padding(padding),
                 )
                 MoreSection.Categories -> CategoryListScreen(
@@ -976,6 +1001,7 @@ private fun StoreHomeScreen(
                 )
                 MoreSection.Suppliers -> SupplierListScreen(
                     state = suppliers,
+                    canManage = "page.suppliers.manage" in user.permissions,
                     query = searchQuery,
                     onQueryChange = { searchQuery = it },
                     onRefresh = { storeViewModel.refreshSuppliers(searchQuery.ifBlank { null }) },
@@ -984,12 +1010,24 @@ private fun StoreHomeScreen(
                         selectedSupplier = it
                         storeViewModel.loadSupplierDetails(it.id)
                     },
+                    onEdit = { supplierEditTarget = it },
+                    onDelete = { supplierDeleteTarget = it },
                     modifier = Modifier.padding(padding),
                 )
                 MoreSection.Profile -> ProfileScreen(
                     user = user,
                     state = profileState,
                     onEdit = { profileEditOpen = true },
+                    modifier = Modifier.padding(padding),
+                )
+                MoreSection.Backup -> BackupScreen(
+                    pages = backupPages,
+                    isBusy = storeViewModel.backupBusy.collectAsStateWithLifecycle().value,
+                    canImport = "page.backup.manage" in user.permissions,
+                    onToggle = { page -> backupPages = if (page in backupPages) backupPages - page else backupPages + page },
+                    onExport = { backupExportPicker.launch("store-backup.jsonl") },
+                    onImport = { backupImportPicker.launch(arrayOf("application/x-ndjson", "application/json", "text/plain", "application/octet-stream")) },
+                    snackbarHost = backupMessageHost,
                     modifier = Modifier.padding(padding),
                 )
                 MoreSection.Installments -> InstallmentsHubScreen(
@@ -1159,9 +1197,8 @@ private fun StoreHomeScreen(
             product = productEditTarget,
             categories = categories,
             onDismiss = { productDialogOpen = false },
-            onSave = { id, input, key ->
-                if (id == null) storeViewModel.createProduct(input, key)
-                else storeViewModel.updateProduct(id, input, key)
+            onSave = { id, input, key, imageUri ->
+                storeViewModel.saveProduct(id, input, key, imageUri, context.contentResolver, context.cacheDir)
             },
         )
     }
@@ -1354,7 +1391,33 @@ private fun StoreHomeScreen(
     if (supplierDialogOpen) {
         SupplierCreateDialog(
             onDismiss = { supplierDialogOpen = false },
-            onCreate = storeViewModel::createSupplier,
+            onSave = { _, input, key -> storeViewModel.createSupplier(input, key); supplierDialogOpen = false },
+        )
+    }
+
+    supplierEditTarget?.let { supplier ->
+        SupplierCreateDialog(
+            supplier = supplier,
+            onDismiss = { supplierEditTarget = null },
+            onSave = { id, input, key ->
+                if (id != null) storeViewModel.updateSupplier(id, input, key)
+                supplierEditTarget = null
+            },
+        )
+    }
+
+    supplierDeleteTarget?.let { supplier ->
+        AlertDialog(
+            onDismissRequest = { supplierDeleteTarget = null },
+            title = { Text("حذف المورد") },
+            text = { DialogForm(maxHeight = 300.dp) { Text("سيؤدي حذف ${supplier.name} إلى حذف سجل مشترياته ومدفوعاته. هل تريد المتابعة؟") } },
+            confirmButton = {
+                Button(enabled = !LocalIsSaving.current, onClick = {
+                    storeViewModel.deleteSupplier(supplier.id, UUID.randomUUID().toString())
+                    supplierDeleteTarget = null
+                }) { Text("حذف المورد") }
+            },
+            dismissButton = { TextButton(onClick = { supplierDeleteTarget = null }) { Text("إلغاء") } },
         )
     }
 
@@ -1451,7 +1514,10 @@ private fun StoreHomeScreen(
                 storeViewModel.clearInvoiceDetails()
             },
         ) {
-            InvoiceDetailsSheet(cached, invoiceDetails)
+            InvoiceDetailsSheet(cached, invoiceDetails, invoicePdfState) { invoiceId ->
+                invoicePdfPendingId = invoiceId
+                invoicePdfPicker.launch("invoice-${cached.invoiceNumber}.pdf")
+            }
         }
     }
 
@@ -1533,7 +1599,7 @@ private fun ProductListScreen(
                 (inStockFilter == null || (product.stock > 0) == inStockFilter)
         }
     }
-    Column(modifier.fillMaxSize()) {
+    Column(modifier.fillMaxSize().imePadding()) {
         SearchAndRefresh(query, onQueryChange, onRefresh)
         ProductFilters(
             categories = categories,
@@ -1699,7 +1765,7 @@ private fun ProductDetailsSheet(cached: CachedProduct, state: ProductDetailUiSta
 }
 
 @Composable
-private fun InvoiceDetailsSheet(cached: InvoiceDto, state: InvoiceDetailUiState) {
+private fun InvoiceDetailsSheet(cached: InvoiceDto, state: InvoiceDetailUiState, pdfState: InvoicePdfUiState, onDownloadPdf: (Long) -> Unit) {
     val invoice = state.invoice ?: cached
     Column(
         Modifier.fillMaxWidth().padding(start = 24.dp, end = 24.dp, bottom = 32.dp),
@@ -1741,6 +1807,18 @@ private fun InvoiceDetailsSheet(cached: InvoiceDto, state: InvoiceDetailUiState)
         invoice.notes?.takeIf(String::isNotBlank)?.let {
             Text("ملاحظات", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
             Text(it, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        if (pdfState.isDownloading) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                Text(pdfState.message ?: "جارٍ تنزيل الفاتورة PDF…", style = MaterialTheme.typography.bodySmall)
+            }
+        } else if (pdfState.message != null) {
+            Text(pdfState.message, color = if (pdfState.isError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.bodySmall)
+        }
+        OutlinedButton(onClick = { onDownloadPdf(invoice.id) }, enabled = !pdfState.isDownloading, modifier = Modifier.fillMaxWidth()) {
+            Icon(Icons.AutoMirrored.Filled.ReceiptLong, contentDescription = null)
+            Text("تنزيل الفاتورة PDF", modifier = Modifier.padding(start = 8.dp))
         }
     }
 }
@@ -1900,6 +1978,7 @@ private fun MoreHubScreen(
     canViewNotifications: Boolean,
     canViewMaintenance: Boolean,
     canViewDamaged: Boolean,
+    canViewBackup: Boolean,
     onOpenProfile: () -> Unit,
     onOpenCategories: () -> Unit,
     onOpenSuppliers: () -> Unit,
@@ -1911,6 +1990,7 @@ private fun MoreHubScreen(
     onOpenNotifications: () -> Unit,
     onOpenMaintenance: () -> Unit,
     onOpenDamaged: () -> Unit,
+    onOpenBackup: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Column(
@@ -1942,7 +2022,43 @@ private fun MoreHubScreen(
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("الحساب", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
             MoreActionRow("حسابي", "الملف الشخصي والصلاحيات", Icons.Filled.AccountCircle, onOpenProfile)
+            if (canViewBackup) MoreActionRow("النسخ الاحتياطي", "تصدير أو استيراد نسخة من بيانات المتجر", Icons.Filled.Inventory2, onOpenBackup)
         }
+    }
+}
+
+@Composable
+private fun BackupScreen(
+    pages: Set<String>,
+    isBusy: Boolean,
+    canImport: Boolean,
+    onToggle: (String) -> Unit,
+    onExport: () -> Unit,
+    onImport: () -> Unit,
+    snackbarHost: SnackbarHostState,
+    modifier: Modifier = Modifier,
+) {
+    val options = listOf(
+        "catalog" to "المنتجات والتصنيفات", "customers" to "العملاء", "sales" to "المبيعات",
+        "invoices" to "الفواتير", "installments" to "الأقساط والديون", "suppliers" to "الموردون",
+        "maintenance" to "الصيانة", "wallets" to "المحافظ", "damaged" to "الهالك",
+        "notifications" to "الإشعارات", "team" to "المستخدمون والصلاحيات",
+    )
+    Column(modifier.fillMaxSize().imePadding().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Text("اختر الصفحات التي تريد تضمينها. يمكن تحديد أكثر من صفحة.", style = MaterialTheme.typography.bodyMedium)
+        if (isBusy) LinearProgressIndicator(Modifier.fillMaxWidth())
+        options.forEach { (key, label) ->
+            Card(onClick = { onToggle(key) }, colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+                Row(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(checked = key in pages, onCheckedChange = { onToggle(key) })
+                    Text(label, modifier = Modifier.padding(start = 8.dp))
+                }
+            }
+        }
+        Button(onClick = onExport, enabled = pages.isNotEmpty() && !isBusy, modifier = Modifier.fillMaxWidth()) { Text("تنزيل النسخة إلى الجهاز") }
+        if (canImport) OutlinedButton(onClick = onImport, enabled = pages.isNotEmpty() && !isBusy, modifier = Modifier.fillMaxWidth()) { Text("استيراد من ملفات الجهاز") }
+        Text("الاستيراد يدمج السجلات بحسب المعرّف، ولا يحذف السجلات الموجودة.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        SnackbarHost(snackbarHost)
     }
 }
 
@@ -2174,7 +2290,7 @@ private fun ProductCashierScreen(
     val enteredReceived = received.normalizeArabicDigits().toBigDecimalOrNull()
     val changeDue = if (enteredReceived != null && enteredReceived > total) enteredReceived - total else java.math.BigDecimal.ZERO
 
-    Column(modifier.fillMaxSize()) {
+    Column(modifier.fillMaxSize().imePadding()) {
         Row(
             Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -2614,11 +2730,14 @@ private fun CustomerListScreen(
 @Composable
 private fun SupplierListScreen(
     state: RemotePage<SupplierDto>,
+    canManage: Boolean,
     query: String,
     onQueryChange: (String) -> Unit,
     onRefresh: () -> Unit,
     onLoadMore: () -> Unit,
     onSupplierClick: (SupplierDto) -> Unit,
+    onEdit: (SupplierDto) -> Unit,
+    onDelete: (SupplierDto) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Column(modifier.fillMaxSize()) {
@@ -2643,6 +2762,16 @@ private fun SupplierListScreen(
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                             Text("الرصيد المستحق", color = MaterialTheme.colorScheme.onSurfaceVariant)
                             Text(supplier.balance, fontWeight = FontWeight.SemiBold)
+                        }
+                        if (canManage) Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedButton(onClick = { onEdit(supplier) }, modifier = Modifier.weight(1f)) {
+                                Icon(Icons.Filled.Edit, contentDescription = null)
+                                Text("تعديل", modifier = Modifier.padding(start = 6.dp))
+                            }
+                            OutlinedButton(onClick = { onDelete(supplier) }, modifier = Modifier.weight(1f), colors = androidx.compose.material3.ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error)) {
+                                Icon(Icons.Filled.Delete, contentDescription = null)
+                                Text("حذف", modifier = Modifier.padding(start = 6.dp))
+                            }
                         }
                     }
                 }
@@ -2787,7 +2916,7 @@ private fun StoreEditDialog(
         title = { Text(if (target.id == null) "إضافة ${if (target.kind == EditKind.Category) "تصنيف" else "عميل"}" else "تعديل ${if (target.kind == EditKind.Category) "التصنيف" else "العميل"}") },
         text = {
             Column(
-                modifier = Modifier.fillMaxWidth().heightIn(max = 520.dp).verticalScroll(rememberScrollState()),
+                modifier = Modifier.fillMaxWidth().imePadding().heightIn(max = 520.dp).verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 OutlinedTextField(
@@ -2969,6 +3098,7 @@ private fun InvoiceCreateDialog(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .imePadding()
                     .heightIn(max = 560.dp)
                     .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
@@ -2980,17 +3110,7 @@ private fun InvoiceCreateDialog(
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                 )
-                OutlinedTextField(
-                    value = date,
-                    onValueChange = { value ->
-                        val normalized = value.normalizeArabicDigits()
-                        rotateKeyIfChanged(payload(nextDate = normalized))
-                        date = normalized
-                    },
-                    label = { Text("تاريخ الفاتورة (سنة-شهر-يوم)") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                )
+                DatePickerField(date, "تاريخ الفاتورة", { value -> rotateKeyIfChanged(payload(nextDate = value)); date = value }, Modifier.fillMaxWidth())
                 OutlinedTextField(
                     value = paidAmount,
                     onValueChange = { value ->

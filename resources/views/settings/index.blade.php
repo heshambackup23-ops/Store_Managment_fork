@@ -23,9 +23,23 @@
                                 <i class="fas fa-database me-2" style="color: #667eea;"></i> النسخ الاحتياطية
                             </h5>
                             <p class="text-muted mb-3">قم بتنزيل نسخة احتياطية من جميع بيانات التطبيق</p>
-                            <button id="backupBtn" type="button" class="btn btn-primary w-100" data-format="zip">
+                            <button id="backupBtn" type="button" class="btn btn-primary w-100" data-format="{{ Auth::user()->can('page.backup.manage') ? 'jsonl' : 'zip' }}">
                                 <i class="fas fa-download me-2"></i> تحميل نسخة احتياطية
                             </button>
+                            @can('page.backup.manage')
+                            <div class="mt-3" id="backupPages">
+                                <strong class="d-block mb-2">Backup pages</strong>
+                                <div class="row g-2">
+                                    @foreach(['catalog' => 'Products and categories', 'customers' => 'Customers', 'sales' => 'Sales', 'invoices' => 'Invoices', 'installments' => 'Installments and debts', 'suppliers' => 'Suppliers', 'maintenance' => 'Maintenance', 'wallets' => 'Wallets', 'damaged' => 'Damaged items', 'notifications' => 'Notifications', 'team' => 'Users and permissions'] as $key => $label)
+                                        <div class="col-6"><label class="form-check"><input class="form-check-input backup-page" type="checkbox" value="{{ $key }}" checked><span class="form-check-label">{{ $label }}</span></label></div>
+                                    @endforeach
+                                </div>
+                            </div>
+                                <hr>
+                                <label for="backupFile" class="form-label">Import backup file</label>
+                                <input id="backupFile" class="form-control mb-2" type="file" accept=".jsonl,.json,application/json,application/x-ndjson,text/plain">
+                                <button id="restoreBtn" type="button" class="btn btn-outline-primary w-100">Import selected pages</button>
+                            @endcan
                         </div>
                     </div>
                 </div>
@@ -55,9 +69,13 @@
     (function () {
         const btn = document.getElementById('backupBtn');
         if (!btn) return;
+        const selectedPages = () => Array.from(document.querySelectorAll('.backup-page:checked')).map(input => input.value);
         btn.addEventListener('click', async function () {
             const format = btn.getAttribute('data-format') || 'zip';
-            const url = `{{ route('backup.export') }}?format=${format}`;
+            const params = new URLSearchParams({ format });
+            if (format === 'jsonl') selectedPages().forEach(page => params.append('pages[]', page));
+            if (format === 'jsonl' && selectedPages().length === 0) { window.showBootstrapAlert('Select at least one page', 'warning'); return; }
+            const url = `{{ route('backup.export') }}?${params.toString()}`;
             try {
                 const res = await fetch(url, { headers: { 'Accept': 'application/json' } });
                 if (!res.ok) {
@@ -95,6 +113,20 @@
             } catch (err) {
                 window.showBootstrapAlert('خطأ أثناء تنزيل النسخة الاحتياطية: ' + err.message, 'danger');
             }
+        });
+        document.getElementById('restoreBtn')?.addEventListener('click', async function () {
+            const file = document.getElementById('backupFile').files[0];
+            const pages = selectedPages();
+            if (!file || pages.length === 0) { window.showBootstrapAlert('Choose a backup file and at least one page', 'warning'); return; }
+            const body = new FormData();
+            body.append('file', file);
+            pages.forEach(page => body.append('pages[]', page));
+            try {
+                const response = await fetch('{{ route('backup.import') }}', { method: 'POST', body, headers: { 'Accept': 'application/json', 'X-CSRF-TOKEN': '{{ csrf_token() }}' } });
+                const result = await response.json();
+                if (!response.ok) throw new Error(result.message || 'Import failed');
+                window.showBootstrapAlert(result.data?.message || 'Import completed', 'success');
+            } catch (error) { window.showBootstrapAlert(error.message || 'Import failed', 'danger'); }
         });
     })();
 </script>
