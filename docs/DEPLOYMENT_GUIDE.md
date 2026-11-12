@@ -1,0 +1,28 @@
+# تشغيل Cloud Edition محليًا ونشر التجربة
+
+## التشغيل المحلي
+
+المتطلبات هي Node.js 22 وnpm. على Windows استخدم `npm.cmd` إذا منعت سياسة PowerShell تشغيل `npm.ps1`.
+
+1. في `cloud/api` نفّذ `npm ci` ثم `npm run migrate:local`.
+2. انسخ `.dev.vars.example` إلى `.dev.vars` وأدخل قيمة عشوائية خاصة لـ`AUTH_PEPPER` من 32 حرفًا أو أكثر. اضبط `WEB_ORIGIN` على عنوان Vite الذي ستفتحه في المتصفح.
+3. عيّن `AUTH_PEPPER` بالقيمة نفسها و`STORE_USER_EMAIL` و`STORE_USER_PASSWORD` في بيئة العملية محليًا. اختر كلمة مرور خاصة لا تقل عن 12 حرفًا. يتيح `STORE_USER_USERNAME` تهيئة اسم الدخول لتجربة Kotlin.
+4. نفّذ `npm run provision:sql -- admin.generated.sql` ثم `npx wrangler d1 execute DB --local --file admin.generated.sql`. احذف ملف التهيئة بعد تطبيقه.
+5. نفّذ `npm run dev` في `cloud/api`. تحقق من `http://localhost:8787/health`.
+6. في نافذة ثانية افتح `cloud/web`، ثم نفّذ `npm ci` و`npm run dev`. افتح العنوان الذي يطبعه Vite. تستقبل الواجهة `/api/v1` عبر وكيل Vite.
+7. لتحميل عينات الكتالوج راجع [دليل ترحيل البيانات](DATABASE_MIGRATION.md).
+
+## نشر النسخة التجريبية
+
+تأكد في الحساب من خطة Workers Free والحصص المتاحة ومن أن الأسماء التالية مخصصة لهذا المشروع. تحقّق من تفعيل نطاق `workers.dev`. تتم خطوات النشر على بيانات اصطناعية.
+
+1. أنشئ D1 باسم `henra-store-demo-db` ومشروع Pages باسم `henra-store-demo-ui`. استخدم `cloudflare-full-migration` فرع النشر لمشروع العرض.
+2. اضبط `HENRA_STORE_D1_ID` محليًا على UUID القاعدة التي تحققت من اسمها وحسابها. من `cloud/api` نفّذ `node scripts/demo-config.mjs`. ينشئ إعداد `.wrangler-demo.json` المتجاهل في Git.
+3. طبّق `npx wrangler d1 migrations apply DB --config .wrangler-demo.json --remote` على قاعدة التجربة ثم `npx wrangler deploy --config .wrangler-demo.json`.
+4. عيّن `AUTH_PEPPER` باستخدام `wrangler secret put` للتطبيق `henra-store-demo-api`. ضع عنوان Pages الفعلي في `WEB_ORIGIN` عند استخدام مصدر متصفح آخر مصرح به. هيّئ حساب عرض خاصًا بواسطة أداة التهيئة وقاعدة التجربة.
+5. من `cloud/web` نفّذ `npm ci` و`npm run build`، ثم `node ../api/node_modules/wrangler/bin/wrangler.js pages deploy ./dist --project-name henra-store-demo-ui --branch cloudflare-full-migration`. يقرأ Pages تعريف Service Binding من `cloud/web/wrangler.jsonc`.
+6. تحقق من `/health` على Worker ومن تسجيل الدخول وCookies والصلاحيات عبر عنوان Pages. أجرِ اختبارًا قصيرًا لبيع واسترجاع اصطناعي وراجع CPU وD1 analytics. استخدم [سجل الاختبار](TESTING_REPORT.md) لتسجيل النتيجة.
+
+يتحقق GitHub Actions من البناء والترحيلات واختبارات Worker. يتيح مسار النشر نشر Worker ثم Pages من نفس الفرع عند ضبط متغير المستودع `HENRA_STORE_DEPLOY_ENABLED=true`، ومتغيري بيئة GitHub `HENRA_STORE_CF_ACCOUNT_ID` و`HENRA_STORE_D1_ID`، وسر `HENRA_STORE_CF_API_TOKEN` لحساب العرض. هيّئ `AUTH_PEPPER` وبيانات العرض خارج GitHub. خيار Cloudflare Pages Git integration ممكن بوضع `cloud/web` جذرًا وتشغيل `npm run build` ونشر `dist`، مع استخدام مسار نشر واحد للواجهة.
+
+المراجع [Pages bindings](https://developers.cloudflare.com/pages/functions/bindings/#service-bindings) و[Pages Git integration](https://developers.cloudflare.com/pages/configuration/git-integration/) و[Wrangler commands](https://developers.cloudflare.com/workers/wrangler/commands/).
