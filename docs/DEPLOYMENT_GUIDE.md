@@ -14,6 +14,8 @@
 
 ## نشر النسخة التجريبية
 
+البيئة الحالية [Pages](https://henra-store-demo-ui.pages.dev) و[Worker health](https://henra-store-demo-api.heshambackup23.workers.dev/health). تم الرفع الأول للواجهة عبر Direct Upload لملفات Vite ونسخة Pages Function المجمعة، مع ربط `STORE_API` بالـWorker. المسار أدناه يتيح إعادة نشر الإصدار من المصدر باستخدام Wrangler.
+
 تأكد في الحساب من خطة Workers Free والحصص المتاحة ومن أن الأسماء التالية مخصصة لهذا المشروع. تحقّق من تفعيل نطاق `workers.dev`. تتم خطوات النشر على بيانات اصطناعية.
 
 1. أنشئ D1 باسم `henra-store-demo-db` ومشروع Pages باسم `henra-store-demo-ui`. استخدم `cloudflare-full-migration` فرع النشر لمشروع العرض.

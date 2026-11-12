@@ -9,4 +9,6 @@
 
 احسب أثر الفهارس والـtriggers على صفوف D1 المكتوبة. القوائم تُقسّم إلى صفحات، والتصدير داخل Worker محدود، والعمليات الحساسة تحمل `no-store`. تمنع مفاتيح المحاولة إعادة تنفيذ الكتابة المالية نفسها عند نتيجة اتصال غير مؤكدة. أرقام وقت الاستجابة المحلي لا تقيس وقت CPU في Cloudflare. سجّل CPU و`rows_read` و`rows_written` من الطلبات المحدودة عند توفر النشر.
 
+تحققت لوحة الحساب من Workers Free. في تجربة النشر سجّل Worker وسيطًا قدره 4 ms من CPU على 20 استدعاءً ناجحًا، وحدًا أقصى قدره 33 ms في الدخول. سجّل البيع 6 ms والاسترجاع 5 ms. تجاوز حد 10 ms في بعض الطلبات يظل قيدًا تشغيليًا حتى مع نجاح تلك الطلبات في العينة.
+
 المصادر [Workers limits](https://developers.cloudflare.com/workers/platform/limits/) و[D1 limits](https://developers.cloudflare.com/d1/platform/limits/) و[D1 pricing](https://developers.cloudflare.com/d1/platform/pricing/) و[Pages limits](https://developers.cloudflare.com/pages/platform/limits/) و[R2 pricing](https://developers.cloudflare.com/r2/pricing/).
