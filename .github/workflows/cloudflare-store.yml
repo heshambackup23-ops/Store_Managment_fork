@@ -1,0 +1,74 @@
+name: HENRA Store Cloud Edition
+
+on:
+  push:
+    branches: [cloudflare-full-migration]
+  pull_request:
+    paths:
+      - 'cloud/**'
+      - '.github/workflows/cloudflare-store.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            cloud/api/package-lock.json
+            cloud/web/package-lock.json
+      - run: npm ci
+        working-directory: cloud/api
+      - run: npm run check
+        working-directory: cloud/api
+      - run: npm test
+        working-directory: cloud/api
+      - run: npm run migrate:local
+        working-directory: cloud/api
+        env:
+          WRANGLER_SEND_METRICS: 'false'
+      - run: node scripts/import-laravel-catalog.mjs fixtures/mysql-catalog.synthetic.json
+        working-directory: cloud/api
+      - run: npm ci
+        working-directory: cloud/web
+      - run: npm run build
+        working-directory: cloud/web
+
+  deploy-demo:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/cloudflare-full-migration' && vars.HENRA_STORE_DEPLOY_ENABLED == 'true'
+    needs: verify
+    concurrency:
+      group: henra-store-demo-cloudflare
+      cancel-in-progress: false
+    environment: henra-store-demo
+    runs-on: ubuntu-latest
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.HENRA_STORE_CF_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.HENRA_STORE_CF_API_TOKEN }}
+      HENRA_STORE_D1_ID: ${{ vars.HENRA_STORE_D1_ID }}
+      WRANGLER_SEND_METRICS: 'false'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+        working-directory: cloud/api
+      - run: npm ci
+        working-directory: cloud/web
+      - run: npm run build
+        working-directory: cloud/web
+      - run: node scripts/demo-config.mjs
+        working-directory: cloud/api
+      - run: npx --no-install wrangler d1 migrations apply DB --config .wrangler-demo.json --remote
+        working-directory: cloud/api
+      - run: npx --no-install wrangler deploy --config .wrangler-demo.json
+        working-directory: cloud/api
+      - run: node ../api/node_modules/wrangler/bin/wrangler.js pages deploy ./dist --project-name henra-store-demo-ui --branch cloudflare-full-migration
+        working-directory: cloud/web

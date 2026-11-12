@@ -1,0 +1,11 @@
+{
+  "name": "henra-store-demo-ui",
+  "compatibility_date": "2026-05-01",
+  "pages_build_output_dir": "./dist",
+  "services": [
+    {
+      "binding": "STORE_API",
+      "service": "henra-store-demo-api"
+    }
+  ]
+}

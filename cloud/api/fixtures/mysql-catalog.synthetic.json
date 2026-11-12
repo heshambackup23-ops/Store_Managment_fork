@@ -1,0 +1,15 @@
+{
+  "format": "henra-mysql-catalog-v1",
+  "tables": {
+    "categories": [
+      { "id": 9001, "name": "أدوات مكتبية", "created_at": "2026-05-07T09:00:00+03:00" }
+    ],
+    "products": [
+      { "id": 9001, "name": "دفتر ملاحظات", "description": "ورق مسطّر", "price": "42.35", "stock": 12, "barcode": "0900000012345", "category_id": 9001, "total_sold": 0 },
+      { "id": 9002, "name": "قلم حبر", "price": "15.00", "stock": 8, "barcode": "0900000012346", "category_id": 9001, "total_sold": 0 }
+    ],
+    "customers": [
+      { "id": 9001, "name": "عميل تجريبي", "phone": null, "address": null }
+    ]
+  }
+}
