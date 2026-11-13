@@ -94,7 +94,7 @@ internal fun ProductEditDialog(
     var description by rememberSaveable(product?.id) { mutableStateOf(product?.description.orEmpty()) }
     var notes by rememberSaveable(product?.id) { mutableStateOf(product?.notes.orEmpty()) }
     var barcode by rememberSaveable(product?.id) { mutableStateOf(product?.barcode.orEmpty()) }
-    val expectedStock = rememberSaveable(product?.id) { product?.stock }
+    val expectedStock by rememberSaveable(product?.id) { mutableStateOf<Int?>(product?.stock) }
     var stock by rememberSaveable(product?.id) { mutableStateOf(expectedStock?.toString() ?: "0") }
     var categoryId by rememberSaveable(product?.id) { mutableStateOf(product?.categoryId) }
     var categoryMenuOpen by remember { mutableStateOf(false) }
