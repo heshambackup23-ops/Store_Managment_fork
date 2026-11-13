@@ -114,7 +114,14 @@ internal val DamagedReasonOptions = listOf(
     "other" to "أخرى",
 )
 
-internal val MaintenanceStatusOptions = listOf("قيد الانتظار", "قيد الصيانة", "مكتمل", "مرفوض")
+internal fun maintenanceStatusOptions(record: MaintenanceDto?, hilal: Boolean): List<String> =
+    if (!hilal) listOf("قيد الانتظار", "قيد الصيانة", "مكتمل", "مرفوض") else when (val status = record?.status) {
+        null -> listOf("قيد الانتظار", "قيد الصيانة")
+        "قيد الانتظار" -> listOf("قيد الانتظار", "قيد الصيانة", "مرفوض")
+        "قيد الصيانة" -> listOf("قيد الصيانة", "مكتمل", "مرفوض")
+        "مكتمل" -> listOf("مكتمل", "تم التسليم", "مرفوض")
+        else -> listOf(status)
+    }
 
 private fun String.moneyOrZero(): BigDecimal = trim().toBigDecimalOrNull() ?: BigDecimal.ZERO
 
@@ -753,14 +760,14 @@ internal fun PersonalDebtDetailsSheet(debt: PersonalDebtDto) {
 // Invoices
 // ---------------------------------------------------------------------------
 
-internal fun invoiceStatusOptions(invoice: InvoiceDto): List<ChoiceOption> {
+internal fun invoiceStatusOptions(invoice: InvoiceDto, canPay: Boolean = true, canRefund: Boolean = true): List<ChoiceOption> {
     val remaining = invoice.remainingAmount.moneyOrZero()
     val refunded = invoice.status == "refunded"
     return listOf(
         ChoiceOption(
             value = "paid",
             label = "مدفوعة بالكامل",
-            enabled = !refunded && remaining.signum() > 0,
+            enabled = canPay && !refunded && remaining.signum() > 0,
             hint = when {
                 refunded -> "الفاتورة مستردة"
                 remaining.signum() <= 0 -> "الفاتورة مدفوعة بالفعل"
@@ -770,7 +777,7 @@ internal fun invoiceStatusOptions(invoice: InvoiceDto): List<ChoiceOption> {
         ChoiceOption(
             value = "refunded",
             label = "مستردة",
-            enabled = !refunded,
+            enabled = canRefund && !refunded,
             hint = if (refunded) "تم الاسترداد من قبل" else "إرجاع المنتجات للمخزون وإغلاق أقساطها",
         ),
     )
@@ -780,7 +787,8 @@ internal fun invoiceStatusOptions(invoice: InvoiceDto): List<ChoiceOption> {
 internal fun InvoicesScreen(
     state: RemotePage<InvoiceDto>,
     query: String,
-    canManage: Boolean,
+    canPay: Boolean,
+    canRefund: Boolean,
     canEdit: Boolean,
     onQueryChange: (String) -> Unit,
     onRefresh: () -> Unit,
@@ -802,7 +810,7 @@ internal fun InvoicesScreen(
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 items(state.items, key = InvoiceDto::id) { invoice ->
-                    InvoiceCard(invoice, canManage, canEdit, onInvoiceClick, onPay, onChangeStatus, onEdit)
+                    InvoiceCard(invoice, canPay, canRefund, canEdit, onInvoiceClick, onPay, onChangeStatus, onEdit)
                 }
                 item { LoadMoreButton(state, onLoadMore) }
             }
@@ -839,12 +847,14 @@ private fun InvoiceCard(
             InfoStat("الإجمالي", invoice.totalAmount, Modifier.weight(1f))
             InfoStat("المتبقي", remaining.display(), Modifier.weight(1f), emphasize = remaining.signum() > 0)
         }
-        if (canManage && !refunded) {
+        if ((canPay || canRefund || canEdit) && !refunded) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                if (remaining.signum() > 0) {
+                if (canPay && remaining.signum() > 0) {
                     CardActionButton("دفعة", Icons.Filled.Payments, { onPay(invoice) }, Modifier.weight(1f), ActionStyle.Filled)
                 }
-                CardActionButton("الحالة", Icons.Filled.SwapHoriz, { onChangeStatus(invoice) }, Modifier.weight(1f), ActionStyle.Tonal)
+                if (canPay || canRefund) {
+                    CardActionButton("الحالة", Icons.Filled.SwapHoriz, { onChangeStatus(invoice) }, Modifier.weight(1f), ActionStyle.Tonal)
+                }
                 if (canEdit) {
                     CardActionButton("تعديل", Icons.Filled.Edit, { onEdit(invoice) }, Modifier.weight(1f))
                 }

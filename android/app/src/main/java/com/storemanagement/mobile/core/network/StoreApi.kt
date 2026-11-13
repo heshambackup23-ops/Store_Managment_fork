@@ -163,6 +163,7 @@ interface StoreApi {
     @PUT("v1/maintenance/{maintenance}")
     suspend fun updateMaintenance(
         @Path("maintenance") id: Long,
+        @Header("Idempotency-Key") key: String,
         @Body body: MaintenanceInputDto,
     ): ApiEnvelope<MaintenanceDto>
 

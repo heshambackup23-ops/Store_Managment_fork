@@ -921,9 +921,9 @@ class StoreViewModel @Inject constructor(
         }
     }
 
-    fun updateMaintenance(id: Long, input: MaintenanceInputDto) {
+    fun updateMaintenance(id: Long, input: MaintenanceInputDto, key: String) {
         viewModelScope.launch {
-            if (reportOperation("تم تحديث طلب الصيانة.") { storeRepository.updateMaintenance(id, input) }) {
+            if (reportOperation("تم تحديث طلب الصيانة.") { storeRepository.updateMaintenance(id, input, key) }) {
                 refreshMaintenances(null)
             }
         }

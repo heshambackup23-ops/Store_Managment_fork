@@ -718,10 +718,11 @@ internal fun InstallmentCreateDialog(
 @Composable
 internal fun MaintenanceEditDialog(
     record: MaintenanceDto?,
+    hilal: Boolean,
     onDismiss: () -> Unit,
     onSave: (MaintenanceInputDto, String) -> Unit,
 ) {
-    val statuses = listOf("قيد الانتظار", "قيد الصيانة", "مكتمل", "مرفوض")
+    val statuses = maintenanceStatusOptions(record, hilal)
     var name by rememberSaveable(record?.id) { mutableStateOf(record?.name.orEmpty()) }
     var owner by rememberSaveable(record?.id) { mutableStateOf(record?.owner.orEmpty()) }
     var phone by rememberSaveable(record?.id) { mutableStateOf(record?.phone.orEmpty()) }

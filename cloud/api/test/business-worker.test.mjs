@@ -436,4 +436,35 @@ test('Worker and local D1 enforce financial rules through the mounted API', asyn
     assert.ok(movements.some(row => row.purchase_stock_receipt_id === record.id && row.delta === 3));
     assert.ok(movements.some(row => row.purchase_stock_reversal_id && row.delta === -3));
   });
+
+  await t.test('wallet periods exclude reversed trades and expose cash activity and admin audit', async () => {
+    const baseline = assertStatus(await request('/reports/wallets/period'), 200);
+    const wallet = assertStatus(await post('/wallets', { name: 'Wallet reporting fixture', opening_minor: 1200 }), 201);
+    const path = '/wallets/' + wallet.id + '/transactions';
+    const reversed = assertStatus(await post(path, { kind: 'send', amount_minor: 100, commission_minor: 40, fee_minor: 5 }), 201);
+    assertStatus(await post('/wallet-transactions/' + reversed.id + '/reverse', { reason: 'reversal fixture' }), 201);
+    const deferred = assertStatus(await post(path, {
+      kind: 'send', amount_minor: 300, commission_minor: 40, fee_minor: 5, deferred: { customer_id: 1 },
+    }), 201);
+    assertStatus(await post('/wallet-debts/' + deferred.id + '/payments', { amount_minor: 100 }), 201);
+    assertStatus(await post('/wallet-cash', { kind: 'expense', amount_minor: 20, category: 'fixture', note: 'report fixture' }), 201);
+    const report = assertStatus(await request('/reports/wallets/period?mode=daily&date=' + baseline.from), 200);
+    assert.equal(report.timezone, 'Africa/Cairo');
+    assert.equal(report.totals.expense_minor - baseline.totals.expense_minor, 20);
+    assert.equal(report.totals.net_minor - baseline.totals.net_minor, 15);
+    assert.equal(report.totals.cash_movement_minor - baseline.totals.cash_movement_minor, 80);
+    assert.equal(report.totals.cash_collections_minor - baseline.totals.cash_collections_minor, 100);
+    assert.equal(report.totals.new_deferred_minor - baseline.totals.new_deferred_minor, 340);
+    const entry = report.wallets.find(row => row.wallet_id === wallet.id);
+    assert.equal(entry.transactions, 1);
+    assert.equal(entry.sent_minor, 300);
+    const monthly = assertStatus(await request('/reports/wallets/period?mode=monthly&month=' + baseline.from.slice(0, 7)), 200);
+    assert.equal(monthly.from, baseline.from.slice(0, 7) + '-01');
+    assert.equal(monthly.days.find(row => row.day === baseline.from).net_minor, report.totals.net_minor);
+    assertStatus(await request('/reports/wallets/period', { identity: 1 }), 403);
+    assertStatus(await request('/wallet-audit', { identity: 1 }), 403);
+    const log = assertStatus(await request('/wallet-audit?action=wallet.transaction&q=' + deferred.id), 200);
+    assert.equal(log[0].entity_id, deferred.id);
+    assert.equal(log[0].actor_name, 'Demo admin');
+  });
 });

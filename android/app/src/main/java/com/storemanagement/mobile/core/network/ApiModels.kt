@@ -362,11 +362,11 @@ data class PersonalDebtInputDto(
 @Serializable
 data class WalletSummaryDto(
     @SerialName("wallets_total") val walletsTotal: String,
-    val cash: String,
-    @SerialName("profit_today") val profitToday: String,
-    @SerialName("profit_available") val profitAvailable: String,
+    val cash: String? = null,
+    @SerialName("profit_today") val profitToday: String? = null,
+    @SerialName("profit_available") val profitAvailable: String? = null,
     val receivables: String,
-    val capital: String,
+    val capital: String? = null,
 )
 
 @Serializable

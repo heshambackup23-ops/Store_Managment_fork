@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { imageType } from './catalog';
 import { auditedWrite, body, fail, hasPermission, ok, page, paginated, permit, readBytes, searchPrefix, selectPage, timestamp, type ApiContext, type ApiEnv } from './http';
 import { purchaseReceiving } from './purchase-receiving';
+import { walletReporting } from './wallet-reporting';
 
 export const businessPermissions = [
   'inventory.view', 'inventory.manage',
@@ -232,19 +233,20 @@ function refundStatement(db: D1Database, op: string, binds: Bind[], actor: numbe
 }
 
 type OriginalInvoice = { id: number; reason: string };
-type LegacyCheckout = { customer: string; receivedMinor: number | null };
+type LegacyCheckout = { customer: string; receivedMinor: number | null; exactPaid?: boolean };
 
-function checkoutInvoice(c: ApiContext, data: z.infer<typeof checkout>, original?: OriginalInvoice, legacy?: LegacyCheckout) {
+export function checkoutInvoice(c: ApiContext, data: z.infer<typeof checkout>, original?: OriginalInvoice, legacy?: LegacyCheckout,
+  output?: (id: number) => Promise<Response>) {
   const items = [...data.items].sort((a, b) => a.product_id - b.product_id);
   const serializedItems = JSON.stringify(items);
   const expected = data.expected_total_minor ?? null;
-  const operation = legacy ? 'cashier.checkout' : original ? 'invoice.reissue' : 'invoice.checkout';
+  const operation = original ? 'invoice.reissue' : legacy && !legacy.exactPaid ? 'cashier.checkout' : 'invoice.checkout';
   return write(c, operation, { ...data, items, original, legacy }, (op, binds, actor) => {
     const db = c.env.DB;
     const customerSql = legacy?.customer
       ? '(SELECT id FROM customers WHERE name = ? COLLATE NOCASE ORDER BY id LIMIT 1)'
       : '?';
-    const paidSql = legacy ? 'MIN(COALESCE(?, total), total)' : '?';
+    const paidSql = legacy && !legacy.exactPaid ? 'MIN(COALESCE(?, total), total)' : '?';
     const statements = [
       db.prepare(`
         WITH basket AS (
@@ -257,7 +259,7 @@ function checkoutInvoice(c: ApiContext, data: z.infer<typeof checkout>, original
           ${paidSql}, ?, ?, ?, ?
         FROM basket
       `).bind(serializedItems, ...binds, legacy?.customer || data.customer_id || null, items.length, expected, expected,
-        legacy ? legacy.receivedMinor : data.paid_minor, actor, original?.id ?? null,
+        legacy && !legacy.exactPaid ? legacy.receivedMinor : data.paid_minor, actor, original?.id ?? null,
         data.invoice_date ?? cairoDay(), data.notes ?? ''),
       db.prepare(`
         INSERT INTO invoice_items (invoice_id, product_id, product_name, quantity, unit_price_minor, unit_cost_minor)
@@ -277,7 +279,7 @@ function checkoutInvoice(c: ApiContext, data: z.infer<typeof checkout>, original
       SELECT id, id, paid_minor, 'checkout', ? FROM invoices WHERE id = ${op} AND paid_minor > 0
     `).bind(actor, ...binds));
     return statements;
-  }, legacy ? invoiceId => legacyCheckoutResponse(c, invoiceId, legacy.receivedMinor) : undefined);
+  }, output ?? (legacy ? invoiceId => legacyCheckoutResponse(c, invoiceId, legacy.receivedMinor) : undefined));
 }
 
 business.post('/invoices', permit('invoices.create'), async c => checkoutInvoice(c, await body(c, checkout)));
@@ -1224,3 +1226,4 @@ business.get('/reports/suppliers', permit('suppliers.view'), c =>
   'supplier_balances', [], 'balance_minor DESC, name, id'));
 
 business.route('/', purchaseReceiving(write));
+business.route('/', walletReporting);

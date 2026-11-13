@@ -225,11 +225,24 @@ function mobileActor(user: Actor, hilalClient: boolean) {
     }
   }
   if (hilalClient) {
+    permits.add('hilal.android.v1')
     for (const [module, ...required] of [
       ['invoices', 'invoices.view'], ['installments', 'installments.view', 'debts.view'],
       ['maintenance', 'maintenance.view'], ['suppliers', 'suppliers.view'], ['sales', 'reports.view'],
+      ['wallets', 'wallets.view'], ['wallet_cashier', 'wallets.view'], ['damaged', 'damaged.view'],
     ]) {
       if (user.permissions.includes('*') || required.every(permission => user.permissions.includes(permission))) permits.add(`page.${module}.view`)
+    }
+    for (const [clientPermission, permission] of [
+      ['wallets.manage', 'wallets.manage'], ['wallet_cashier.manage', 'wallets.transact'],
+      ['wallet_cashier.reverse', 'wallets.reverse'], ['damaged.manage', 'damaged.manage'],
+      ['suppliers.manage', 'suppliers.manage'], ['maintenance.manage', 'maintenance.manage'],
+      ['invoices.pay', 'invoices.pay'], ['invoices.refund', 'invoices.refund'],
+    ]) {
+      if (user.permissions.includes('*') || user.permissions.includes(permission)) permits.add('page.' + clientPermission)
+    }
+    if (user.permissions.includes('*') || ['installments.manage', 'installments.pay', 'debts.manage', 'debts.pay'].every(permission => user.permissions.includes(permission))) {
+      permits.add('page.installments.manage')
     }
     if (user.permissions.includes('*') || ['create', 'update', 'delete'].every(action => user.permissions.includes(`products.${action}`))) {
       permits.add('page.products.manage')

@@ -6,6 +6,7 @@ import type { User } from './api'
 import { activeColumn, activeField, countColumn, createAction, dateColumn, editAction, moneyColumn, numberColumn, RecordImageDialog, required } from './core'
 import { ActionDialog, DataModule, dataText, FormInput, idOf, Modal, Notice, PageTitle } from './ui'
 import type { Action, Column, Field, ModuleConfig, Row } from './ui'
+import { WalletAudit, WalletPeriodReport } from './WalletPeriodReport'
 
 const remaining = (row: Row, total: string) => Number(row[total]) - Number(row.paid_minor)
 const remainingColumn = (total: string): Column => ({ key: 'remaining', label: 'المتبقي', render: row => money(remaining(row, total)) })
@@ -859,6 +860,8 @@ export function WalletReport({ user }: { user: User }) {
       <div className="metric-grid">{walletMetrics.map(([key, label]) =>
         <article className="panel metric" key={key}><p>{label}</p><strong>{money(report[key])}</strong></article>,
       )}</div>}
+    <WalletPeriodReport revision={revision} />
+    {user.role === 'superadmin' && <WalletAudit />}
   </>
 }
 

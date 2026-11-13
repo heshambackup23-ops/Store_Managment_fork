@@ -38,6 +38,8 @@ jobs:
         working-directory: cloud/api
       - run: node scripts/import-laravel-personal-debts.mjs fixtures/mysql-personal-debts.synthetic.json
         working-directory: cloud/api
+      - run: node scripts/reconcile-laravel-finance.mjs fixtures/mysql-finance.synthetic.json
+        working-directory: cloud/api
       - run: npm ci
         working-directory: cloud/web
       - run: npm run build
@@ -73,7 +75,7 @@ jobs:
           fi
       - name: Test and assemble the staging app
         working-directory: android
-        run: bash gradlew :app:testStagingDebugUnitTest :app:assembleStagingDebug -PstoreCompileSdkMinor="$HILAL_ANDROID_MINOR"
+        run: bash gradlew :app:testStagingDebugUnitTest :app:assembleStagingDebug :app:assembleStagingDebugAndroidTest -PstoreCompileSdkMinor="$HILAL_ANDROID_MINOR"
       - uses: actions/upload-artifact@v4
         with:
           name: hilal-store-staging-apk
@@ -90,7 +92,6 @@ jobs:
     runs-on: ubuntu-latest
     env:
       CLOUDFLARE_ACCOUNT_ID: ${{ vars.HENRA_STORE_CF_ACCOUNT_ID }}
-      CLOUDFLARE_API_TOKEN: ${{ secrets.HENRA_STORE_CF_API_TOKEN }}
       HENRA_STORE_D1_ID: ${{ vars.HENRA_STORE_D1_ID }}
       WRANGLER_SEND_METRICS: 'false'
     steps:
@@ -106,9 +107,29 @@ jobs:
         working-directory: cloud/web
       - run: node scripts/demo-config.mjs
         working-directory: cloud/api
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.HENRA_STORE_CF_API_TOKEN }}
       - run: npx --no-install wrangler d1 migrations apply DB --config .wrangler-demo.json --remote
         working-directory: cloud/api
-      - run: npx --no-install wrangler deploy --config .wrangler-demo.json
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.HENRA_STORE_CF_API_TOKEN }}
+      - run: npx --no-install wrangler deploy --config .wrangler-demo.json --keep-vars
         working-directory: cloud/api
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.HENRA_STORE_CF_API_TOKEN }}
       - run: node ../api/node_modules/wrangler/bin/wrangler.js pages deploy ./dist --project-name henra-store-demo-ui --branch cloudflare-full-migration
         working-directory: cloud/web
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.HENRA_STORE_CF_API_TOKEN }}
+      - name: Check the deployed API and same-origin routing
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --retry 6 --retry-all-errors --max-time 15 \
+            https://henra-store-demo-api.heshambackup23.workers.dev/health | jq -e '.success and .data.status == "ok" and .data.database == "ready"'
+          curl --fail --silent --show-error --retry 6 --retry-all-errors --max-time 15 \
+            https://henra-store-demo-ui.pages.dev/ > "$RUNNER_TEMP/hilal-pages.html"
+          grep -Fq 'هلال لإدارة المتجر' "$RUNNER_TEMP/hilal-pages.html"
+          status=$(curl --silent --show-error --max-time 15 --output "$RUNNER_TEMP/hilal-auth.json" \
+            --write-out '%{http_code}' https://henra-store-demo-ui.pages.dev/api/v1/me)
+          test "$status" = 401
+          jq -e '.success == false and .code == "unauthorized"' "$RUNNER_TEMP/hilal-auth.json"

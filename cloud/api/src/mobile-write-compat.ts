@@ -5,8 +5,12 @@ import { imageType } from './catalog'
 import { auditedWrite, body, fail, hasPermission, identifier, notFoundIfUnchanged, ok, readBytes, timestamp } from './http'
 import type { ApiContext, ApiEnv } from './http'
 import { legacyInvoice } from './mobile-compat'
+import { mobileWalletDamage } from './mobile-wallet-damage'
+import { mobileModuleWrites } from './mobile-module-writes'
 
 export const mobileWriteCompatibility = new Hono<ApiEnv>()
+mobileWriteCompatibility.route('/', mobileWalletDamage)
+mobileWriteCompatibility.route('/', mobileModuleWrites)
 const isAndroid = (c: ApiContext) => c.get('credential') === 'bearer' && c.req.header('X-Store-Client') === 'android'
 const text = z.string().trim().max(2000).nullish()
 const stockCount = z.number().int().min(0).max(1_000_000_000)

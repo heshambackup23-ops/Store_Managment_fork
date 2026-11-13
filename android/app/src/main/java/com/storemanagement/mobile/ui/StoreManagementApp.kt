@@ -700,6 +700,9 @@ private fun StoreHomeScreen(
         }
     }
 
+    val hilal = "hilal.android.v1" in user.permissions
+    val canPayInvoices = if (hilal) "page.invoices.pay" in user.permissions else "page.invoices.manage" in user.permissions
+    val canRefundInvoices = if (hilal) "page.invoices.refund" in user.permissions else "page.invoices.manage" in user.permissions
     val quickActions = buildList {
         if ("page.invoices.manage" in user.permissions && "page.products.view" in user.permissions) {
             add(QuickAction("فاتورة جديدة", Icons.AutoMirrored.Filled.ReceiptLong) { storeViewModel.refreshProducts(null); invoiceDialogOpen = true })
@@ -907,8 +910,9 @@ private fun StoreHomeScreen(
             StoreTab.Invoices -> InvoicesScreen(
                 state = invoices,
                 query = searchQuery,
-                canManage = "page.invoices.manage" in user.permissions,
-                canEdit = "page.invoices.manage" in user.permissions && "page.products.view" in user.permissions,
+                canPay = canPayInvoices,
+                canRefund = canRefundInvoices,
+                canEdit = "page.invoices.manage" in user.permissions && canRefundInvoices && "page.products.view" in user.permissions,
                 onQueryChange = { searchQuery = it },
                 onRefresh = { storeViewModel.refreshInvoices(searchQuery.ifBlank { null }) },
                 onLoadMore = storeViewModel::loadMoreInvoices,
@@ -1130,7 +1134,7 @@ private fun StoreHomeScreen(
                 MoreSection.WalletCashier -> WalletCashierScreen(
                     state = walletCashierState,
                     canManage = "page.wallet_cashier.manage" in user.permissions,
-                    canReverse = "page.wallets.manage" in user.permissions,
+                    canReverse = "page.wallet_cashier.reverse" in user.permissions || "page.wallets.manage" in user.permissions,
                     onRefresh = storeViewModel::refreshWalletCashier,
                     onSettle = { cashierActionTarget = it; cashierAction = CashierAction.Settle },
                     onReverse = { cashierActionTarget = it; cashierAction = CashierAction.Reverse },
@@ -1273,7 +1277,7 @@ private fun StoreHomeScreen(
         StatusChoiceDialog(
             title = "تغيير حالة الفاتورة",
             summary = "فاتورة ${invoice.invoiceNumber} · الإجمالي ${invoice.totalAmount} · المتبقي ${invoice.remainingAmount} ج.م. لتحويلها إلى غير مدفوعة عدّل المبلغ المدفوع من زر التعديل.",
-            options = invoiceStatusOptions(invoice),
+            options = invoiceStatusOptions(invoice, canPay = canPayInvoices, canRefund = canRefundInvoices),
             initial = null,
             confirmLabel = "تأكيد",
             onDismiss = { invoiceStatusTarget = null },
@@ -1315,11 +1319,11 @@ private fun StoreHomeScreen(
         StatusChoiceDialog(
             title = "تغيير حالة الجهاز",
             summary = "${record.name} · ${record.owner}",
-            options = MaintenanceStatusOptions.map { ChoiceOption(it, it) },
+            options = maintenanceStatusOptions(record, hilal).map { ChoiceOption(it, it) },
             initial = record.status,
             confirmLabel = "حفظ الحالة",
             onDismiss = { maintenanceStatusTarget = null },
-            onConfirm = { status, _ ->
+            onConfirm = { status, key ->
                 storeViewModel.updateMaintenance(
                     record.id,
                     MaintenanceInputDto(
@@ -1331,6 +1335,7 @@ private fun StoreHomeScreen(
                         status = status,
                         requestedDate = record.requestedDate,
                     ),
+                    key,
                 )
             },
         )
@@ -1511,11 +1516,12 @@ private fun StoreHomeScreen(
     if (maintenanceDialogOpen) {
         MaintenanceEditDialog(
             record = maintenanceEditTarget,
+            hilal = hilal,
             onDismiss = { maintenanceDialogOpen = false },
             onSave = { input, key ->
                 val record = maintenanceEditTarget
                 if (record == null) storeViewModel.createMaintenance(input, key)
-                else storeViewModel.updateMaintenance(record.id, input)
+                else storeViewModel.updateMaintenance(record.id, input, key)
             },
         )
     }
@@ -2625,11 +2631,11 @@ private fun WalletOverviewContent(
         item {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 WalletSummaryLine("إجمالي المحافظ", overview.summary.walletsTotal)
-                WalletSummaryLine("النقدية بالصندوق", overview.summary.cash)
-                WalletSummaryLine("ربح اليوم", overview.summary.profitToday)
+                overview.summary.cash?.let { WalletSummaryLine("النقدية بالصندوق", it) }
+                overview.summary.profitToday?.let { WalletSummaryLine("ربح اليوم", it) }
                 WalletSummaryLine("المستحق من العملاء", overview.summary.receivables)
-                WalletSummaryLine("الربح المتاح", overview.summary.profitAvailable)
-                WalletSummaryLine("رأس المال العامل", overview.summary.capital)
+                overview.summary.profitAvailable?.let { WalletSummaryLine("الربح المتاح", it) }
+                overview.summary.capital?.let { WalletSummaryLine("رأس المال العامل", it) }
             }
         }
         item {

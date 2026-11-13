@@ -263,4 +263,37 @@ class StoreApiTest {
         assertEquals("/api/v1/maintenance", request.requestUrl?.encodedPath)
         assertEquals("Omar", request.requestUrl?.queryParameter("q"))
     }
+    @Test
+    fun restrictedWalletOverviewAllowsOmittedCashDetails() = runBlocking {
+        server.enqueue(
+            MockResponse()
+                .setHeader("Content-Type", "application/json")
+                .setBody("""{"data":{"summary":{"wallets_total":"10.00","receivables":"0.00"},"wallets":[]}}"""),
+        )
+
+        val result = api.wallets().data
+        assertEquals("10.00", result.summary.walletsTotal)
+        assertEquals(null, result.summary.cash)
+        assertEquals(null, result.summary.profitAvailable)
+        assertEquals("/api/v1/wallets", server.takeRequest().path)
+    }
+
+    @Test
+    fun maintenanceUpdateSendsItsRetryKey() = runBlocking {
+        server.enqueue(
+            MockResponse()
+                .setHeader("Content-Type", "application/json")
+                .setBody("""{"data":{"id":7,"name":"جهاز","owner":"عميل","status":"مكتمل","requested_date":"2026-01-01"}}"""),
+        )
+        val result = api.updateMaintenance(
+            7, "maintenance-edit-test",
+            MaintenanceInputDto(name = "جهاز", owner = "عميل", status = "مكتمل", requestedDate = "2026-01-01"),
+        ).data
+        val request = server.takeRequest()
+        assertEquals("مكتمل", result.status)
+        assertEquals("PUT", request.method)
+        assertEquals("/api/v1/maintenance/7", request.path)
+        assertEquals("maintenance-edit-test", request.getHeader("Idempotency-Key"))
+    }
+
 }
