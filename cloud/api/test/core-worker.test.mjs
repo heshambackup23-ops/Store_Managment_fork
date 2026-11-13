@@ -113,6 +113,13 @@ test('Worker core runs against isolated D1 with real sessions, permissions and c
     assert.equal(login.status, 200, JSON.stringify(payload))
     assert.deepEqual(payload.data.user.permissions, ['*'])
     assert.equal(payload.data.token, undefined)
+    const byName = await raw('/api/v1/auth/login', 'POST', {
+      username: ' ' + env.STORE_USER_USERNAME.toUpperCase() + ' ', password: env.STORE_USER_PASSWORD,
+    })
+    assert.equal(byName.status, 200)
+    assert.equal((await byName.json()).data.user.id, payload.data.user.id)
+    assert.match(byName.headers.get('Set-Cookie'), /HttpOnly/i)
+    await request('/auth/login', 'POST', { username: env.STORE_USER_USERNAME, password: 'incorrect' }, undefined, 401)
     const setCookie = login.headers.get('Set-Cookie')
     assert.match(setCookie, /HttpOnly/i)
     assert.match(setCookie, /Secure/i)

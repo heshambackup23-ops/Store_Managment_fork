@@ -19,7 +19,10 @@ export const emailSchema = z.string().trim().max(254).email().transform((value) 
 export const usernameSchema = z.string().trim().toLowerCase().min(1).max(80).regex(/^[a-z0-9._-]+$/)
 export const passwordSchema = currentCredential.min(12).refine((value) => !accessKeyPattern.test(value))
 const name = z.string().trim().min(1).max(150)
-const login = z.object({ email: emailSchema, password: currentCredential }).strict()
+const login = z.union([
+  z.object({ email: emailSchema, password: currentCredential }).strict(),
+  z.object({ username: usernameSchema, password: currentCredential }).strict(),
+])
 const legacyLogin = z.object({
   username: usernameSchema,
   password: currentCredential,
@@ -193,7 +196,7 @@ async function signIn(c: ApiContext, field: 'email' | 'username', identifier: st
   `).bind(identifier).first<Identity & { password_hash: string }>()
   await throttle(c, row ? `user:${row.id}` : `${field}:${identifier}`, 'login')
   const verified = await verify(c, password, row?.password_hash)
-  if (!row || !verified) fail(401, 'invalid_credentials', 'البريد الإلكتروني أو كلمة المرور غير صحيحة.')
+  if (!row || !verified) fail(401, 'invalid_credentials', 'اسم الدخول أو بيانات الاعتماد غير صحيحة.')
   const token = b64(crypto.getRandomValues(new Uint8Array(32)))
   const now = Math.floor(Date.now() / 1000)
   const expires = now + sessionSeconds
@@ -208,7 +211,7 @@ async function signIn(c: ApiContext, field: 'email' | 'username', identifier: st
       (SELECT token_hash FROM auth_sessions WHERE user_id = ? ORDER BY expires_at DESC, rowid DESC LIMIT 10)
     `).bind(row.id, row.id),
   ])
-  if (session.meta.changes !== 1) fail(401, 'invalid_credentials', 'البريد الإلكتروني أو كلمة المرور غير صحيحة.')
+  if (session.meta.changes !== 1) fail(401, 'invalid_credentials', 'اسم الدخول أو بيانات الاعتماد غير صحيحة.')
   const { password_hash: _, ...identity } = row
   return { user: actor(identity), token, expires_at: new Date(expires * 1000).toISOString() }
 }
@@ -257,8 +260,10 @@ function mobileActor(user: Actor, hilalClient: boolean) {
 export const publicAuth = new Hono<ApiEnv>()
 
 publicAuth.post('/auth/login', async (c) => {
-  const { email, password } = await body(c, login)
-  const session = await signIn(c, 'email', email, password)
+  const credentials = await body(c, login)
+  const session = 'email' in credentials
+    ? await signIn(c, 'email', credentials.email, credentials.password)
+    : await signIn(c, 'username', credentials.username, credentials.password)
   setCookie(c, cookieName, session.token, { path: '/', httpOnly: true, secure: secureCookie(c), sameSite: 'Lax', maxAge: sessionSeconds })
   return ok(c, { user: session.user, expires_at: session.expires_at })
 })

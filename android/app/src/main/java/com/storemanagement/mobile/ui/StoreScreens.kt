@@ -821,7 +821,8 @@ internal fun InvoicesScreen(
 @Composable
 private fun InvoiceCard(
     invoice: InvoiceDto,
-    canManage: Boolean,
+    canPay: Boolean,
+    canRefund: Boolean,
     canEdit: Boolean,
     onClick: (InvoiceDto) -> Unit,
     onPay: (InvoiceDto) -> Unit,

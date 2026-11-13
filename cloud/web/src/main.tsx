@@ -78,8 +78,10 @@ function Login({ onLogin, theme, toggle, startupError }: {
     setError('')
     try {
       const values = new FormData(event.currentTarget)
+      const identifier = String(values.get('identifier')).trim()
       const result = await request<{ user: User }>('/auth/login', {
-        method: 'POST', body: { email: String(values.get('email')).trim(), password: values.get('password') },
+        method: 'POST',
+        body: { [identifier.includes('@') ? 'email' : 'username']: identifier, password: values.get('password') },
       })
       onLogin(result.data.user)
     } catch (error) { setError(error instanceof Error ? error.message : 'تعذر تسجيل الدخول.') }
@@ -97,8 +99,8 @@ function Login({ onLogin, theme, toggle, startupError }: {
         <ThemeButton theme={theme} toggle={toggle} />
         <form className="login-form panel" onSubmit={submit}>
           <h2>تسجيل الدخول</h2>
-          <label className="field">البريد الإلكتروني
-            <input name="email" type="email" autoComplete="username" required />
+          <label className="field">اسم المستخدم أو البريد الإلكتروني
+            <input name="identifier" type="text" dir="ltr" autoComplete="username" autoCapitalize="none" spellCheck={false} required />
           </label>
           <label className="field">كلمة المرور أو مفتاح الدخول
             <input name="password" type="password" autoComplete="current-password" required />
