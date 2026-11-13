@@ -1,0 +1,27 @@
+@layer components {
+  .wallet-provider-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 16rem), 1fr));
+    align-items: stretch;
+    gap: 1rem;
+  }
+
+  .wallet-channel {
+    display: flex;
+    flex-direction: column;
+    gap: .8rem;
+    border-block-start: 3px solid var(--accent);
+  }
+
+  .wallet-channel header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: .45rem;
+  }
+
+  .wallet-channel p { line-height: 1.6; }
+  .wallet-channel .form-actions { margin-block-start: auto; }
+  .wallet-channel .form-actions a { white-space: normal; }
+}

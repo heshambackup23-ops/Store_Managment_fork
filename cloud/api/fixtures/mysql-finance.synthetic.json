@@ -1,0 +1,53 @@
+{
+  "format": "hilal-mysql-finance-v1",
+  "cutoff_at": "2026-10-31T20:00:00+02:00",
+  "invoice_customer_ids": { "201": 41, "202": null },
+  "tables": {
+    "customers": [{"id": 41, "name": "عميل اصطناعي"}],
+    "products": [{"id": 42, "name": "منتج حالي", "stock": 7}, {"id": 43, "name": "قطعة اختبار", "stock": 0}],
+    "invoices": [
+      {
+        "id": 201, "invoice_number": "INV-TEST-201", "customer": "عميل اصطناعي",
+        "product_id": 42, "quantity": 2, "invoice_date": "2026-10-01", "status": "unpaid",
+        "total_amount": "19.80", "product_price": "9.90", "paid_amount": "3.70", "notes": "سجل اختبار",
+        "items": [{"product_id": 42, "name": "اسم المنتج وقت البيع", "quantity": 2, "price": "9.90", "line_total": "19.80"}],
+        "created_at": "2026-10-01T11:30:00+03:00", "updated_at": "2026-10-04T11:30:00+03:00"
+      },
+      {
+        "id": 202, "invoice_number": "INV-TEST-202", "customer": "عميل نقدي",
+        "product_id": 43, "quantity": 1, "invoice_date": "2026-10-02", "status": "paid",
+        "total_amount": "8.50", "product_price": "8.50", "paid_amount": "8.50", "items": null,
+        "created_at": "2026-10-02T12:30:00+03:00", "updated_at": "2026-10-02T12:30:00+03:00"
+      }
+    ],
+    "installments": [
+      {"id": 301, "invoice_id": null, "product_price": "20.00", "paid_amount": "5.00", "remaining": "15.00"},
+      {
+        "id": 302, "invoice_id": 201, "customer_id": 41, "product_name": "اسم المنتج وقت البيع",
+        "product_price": "19.80", "paid_amount": "3.70", "remaining": "16.10",
+        "next_payment_date": "2026-11-01", "payment_date": "2026-10-04",
+        "created_at": "2026-10-01T11:30:00+03:00", "updated_at": "2026-10-04T11:30:00+03:00"
+      }
+    ],
+    "sales": [], "sales_items": [], "payments": [], "debts": [],
+    "personal_debts": [
+      {"id": 401, "total_amount": "15.00", "paid_amount": "4.25", "remaining": "10.75"}
+    ],
+    "personal_debt_payments": [{"id": 402, "personal_debt_id": 401, "amount": "4.25", "paid_on": "2026-10-05"}],
+    "suppliers": [{"id": 501, "opening_balance": "10.00", "balance": "42.25"}],
+    "purchases": [
+      {"id": 502, "supplier_id": 501, "total_amount": "60.25", "paid_amount": "28.00", "remaining": "32.25", "purchase_date": "2026-10-04"}
+    ],
+    "supplier_payments": [
+      {"id": 503, "supplier_id": 501, "purchase_id": 502, "amount": "28.00", "payment_date": "2026-10-05"}
+    ],
+    "wallets": [{"id": 601, "opening_balance": "100.00", "balance": "77.00"}],
+    "wallet_transactions": [
+      {"id": 602, "wallet_id": 601, "wallet_delta": "-23.00", "cash_delta": "24.00", "commission": "4.00", "fee": "3.00", "profit": "1.00", "receivable": "0.00", "type": "send", "status": "completed"}
+    ],
+    "wallet_cash_adjustments": [{"id": 603, "kind": "adjustment", "amount": "5.00"}],
+    "wallet_expenses": [{"id": 604, "amount": "0.50", "voided_at": null}],
+    "damaged_items": [{"id": 701, "product_id": 42, "quantity": 2, "unit_value": "0.95", "total_value": "1.90", "status": "recorded"}],
+    "maintenances": [{"id": 801, "requested_date": "2026-10-06", "completed_date": null}]
+  }
+}

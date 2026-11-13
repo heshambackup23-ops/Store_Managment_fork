@@ -1,0 +1,357 @@
+import { useEffect, useState } from 'react'
+import type { FormEvent } from 'react'
+import { Link, useSearchParams } from 'react-router-dom'
+import { allowed, decimal, formatDate, money, readMoney, request } from './api'
+import type { User } from './api'
+import { ActionDialog, Notice, PageTitle } from './ui'
+import type { ActionDialogProps, Row } from './ui'
+import { orderTotal, RetailOrderFields } from './RetailOrderFields'
+import { BranchSelect } from './RetailBranches'
+import type { OrderItem } from './RetailOrderFields'
+
+export const tenderLabels = { cash: 'نقدي', card: 'بطاقة', wallet: 'محفظة', bank_transfer: 'تحويل بنكي' }
+type TenderMethod = keyof typeof tenderLabels
+export type TenderDraft = { method: TenderMethod; amount: string; reference: string }
+type Tender = { method: TenderMethod; amount_minor: number; reference?: string }
+export const blankTender = (): TenderDraft => ({ method: 'cash', amount: '', reference: '' })
+
+export type Shift = {
+  id: number; register_name: string; actor_id: number; actor_name: string; opening_minor: number;
+  branch_id?: number; branch_name?: string;
+  opened_at: string; business_day: string; status: 'open' | 'closed' | 'pending_approval' | 'approved';
+  expected_minor: number; observed_minor: number | null; difference_minor: number | null;
+  close_reason: string; approval_reason: string; closed_at: string | null;
+  emergency_close?: 0 | 1 | null; closed_by?: number | null; closed_by_name?: string | null;
+  totals?: { method: TenderMethod; received_minor: number; paid_out_minor: number }[];
+  cash_movements_minor?: number;
+  service_cash_minor?: number;
+  cash_movement_totals?: { kind: CashMovementKind; amount_minor: number }[];
+}
+export const shiftStatus = { open: 'مفتوحة', closed: 'مغلقة', pending_approval: 'بانتظار اعتماد الفرق', approved: 'تم اعتماد الفرق' }
+function shiftStatusLabel(shift: Shift) {
+  if (shift.emergency_close && shift.status === 'pending_approval') return 'بانتظار مراجعة الإقفال الاستثنائي'
+  if (shift.emergency_close && shift.status === 'approved') return 'إقفال استثنائي معتمد'
+  return shiftStatus[shift.status]
+}
+const cashMovementLabels = { safe_deposit: 'توريد نقدية من الدرج للخزنة', safe_withdrawal: 'تغذية الدرج من الخزنة', general_expense: 'مصروف عام من الدرج' }
+type CashMovementKind = keyof typeof cashMovementLabels
+type CashMovement = { id: number; kind: CashMovementKind; amount_minor: number; reason: string; reference?: string | null; created_at: string }
+
+export function tendersForAmount(rows: TenderDraft[], amount: number): Tender[] {
+  if (!amount) return []
+  if (rows.length === 1) return [{ method: rows[0].method, amount_minor: amount, reference: rows[0].reference.trim() || undefined }]
+  const tenders = rows.map(row => ({ method: row.method, amount_minor: readMoney(row.amount), reference: row.reference.trim() || undefined }))
+  if (tenders.some(row => row.amount_minor <= 0) || tenders.reduce((sum, row) => sum + row.amount_minor, 0) !== amount) {
+    throw new Error('مجموع طرق الدفع لازم يساوي المبلغ المطلوب، وكل وسيلة لها مبلغ أكبر من صفر.')
+  }
+  return tenders
+}
+
+export function TenderFields({ rows, set, disabled = false }: { rows: TenderDraft[]; set: (value: TenderDraft[]) => void; disabled?: boolean }) {
+  function change(index: number, values: Partial<TenderDraft>) {
+    set(rows.map((row, position) => position === index ? { ...row, ...values } : row))
+  }
+  return <fieldset className="panel panel-inner form-section" disabled={disabled}>
+    <legend>وسائل الدفع</legend>
+    {rows.map((row, index) => <div className="form-grid" key={index}>
+      <label className="field">{rows.length > 1 ? 'وسيلة الدفع ' + (index + 1) : 'وسيلة الدفع'}
+        <select value={row.method} onChange={event => change(index, { method: event.target.value as TenderMethod })}>
+          {Object.entries(tenderLabels).map(([method, label]) => <option key={method} value={method}>{label}</option>)}
+        </select>
+      </label>
+      {rows.length > 1 && <label className="field">مبلغ الوسيلة {index + 1} بالجنيه
+        <input required inputMode="decimal" value={row.amount} onChange={event => change(index, { amount: event.target.value })} />
+      </label>}
+      {row.method !== 'cash' && <label className="field">مرجع الدفع {rows.length > 1 ? index + 1 : ''} (اختياري)
+        <input value={row.reference} maxLength={100} onChange={event => change(index, { reference: event.target.value })} />
+      </label>}
+      {rows.length > 1 && <button type="button" className="secondary" onClick={() => set(rows.filter((_, position) => position !== index))}>احذف وسيلة {index + 1}</button>}
+    </div>)}
+    <button type="button" className="secondary" disabled={rows.length >= 4} onClick={() => set([...rows, { ...blankTender(), method: 'card' }])}>أضف وسيلة دفع</button>
+  </fieldset>
+}
+
+export function useOpenShift(user: User, refreshKey?: string | number) {
+  const canOperate = allowed(user, 'retail.shifts.operate')
+  const [shift, setShift] = useState<Shift>()
+  const [required, setRequired] = useState(false)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
+  useEffect(() => {
+    const abort = new AbortController()
+    setError('')
+    setLoading(true)
+    Promise.all([
+      request<{ require_shift: boolean }>('/retail/settings', { signal: abort.signal }),
+      canOperate ? request<Shift[]>('/retail/shifts?status=open&per_page=100', { signal: abort.signal }) : undefined,
+    ]).then(([settings, shifts]) => {
+      if (abort.signal.aborted) return
+      setRequired(settings.data.require_shift)
+      setShift(shifts?.data.find(row => row.actor_id === user.id && row.status === 'open'))
+    }).catch(error => { if (!abort.signal.aborted) { setError(error.message); setShift(undefined) } })
+      .finally(() => { if (!abort.signal.aborted) setLoading(false) })
+    return () => abort.abort()
+  }, [canOperate, user.id, refreshKey])
+  return { shift, required, loading, error, canOperate }
+}
+
+export function ShiftContext({ value }: { value: ReturnType<typeof useOpenShift> }) {
+  if (value.loading) return <p className="muted" role="status">جارٍ تحميل الوردية…</p>
+  if (value.error) return <Notice error>{value.error}</Notice>
+  if (value.shift) return <p>الوردية المفتوحة · <strong>{value.shift.register_name}</strong>{value.shift.branch_name && ' · ' + value.shift.branch_name}</p>
+  return <p>{value.required ? 'يلزم فتح وردية قبل تسجيل العملية.' : 'العملية خارج وردية.'} {value.canOperate && <Link to="/retail-shifts">فتح وردية</Link>}</p>
+}
+
+export function RetailActionDialog({ user, ...props }: ActionDialogProps & { user: User }) {
+  const shift = useOpenShift(user)
+  const [rows, setRows] = useState([blankTender()])
+  const [items, setItems] = useState<OrderItem[]>([])
+  const mode = props.action.retailTender
+  function prepare(body: Row) {
+    const amount = mode === 'purchase' && body.payment_type === 'cash' ? Number(body.total_minor) : Number(mode === 'purchase' ? body.paid_minor ?? 0 : body.amount_minor)
+    const order = mode === 'purchase' && items.length ? { ...body, items: items.map(({ name: _, scale: _scale, ...item }) => item) } : body
+    if (order !== body && orderTotal(items) !== Number(body.total_minor)) {
+      throw new Error('إجمالي الشراء لازم يساوي مجموع بنود أمر الشراء. الشحن الموزع يُحسب ضمن تكلفة المخزون.')
+    }
+    if (amount && shift.required && !shift.shift) throw new Error('افتح وردية قبل تسجيل هذه الدفعة.')
+    if (!shift.shift || !amount) return order
+    return { ...order, shift_id: shift.shift.id, payments: tendersForAmount(rows, amount) }
+  }
+  return <ActionDialog {...props} prepare={prepare} waiting={shift.loading} extra={<>
+    {mode === 'purchase' && <RetailOrderFields items={items} set={setItems} />}
+    <ShiftContext value={shift} />
+    {shift.shift && <TenderFields rows={rows} set={setRows} />}
+  </>} />
+}
+
+export function SharedDrawerDialog({ user, ...props }: ActionDialogProps & { user: User }) {
+  const shift = useOpenShift(user)
+  const required = props.action.sharedDrawer === 'wallet_reversal' && props.row?.shared_shift_id != null
+  const [useDrawer, setUseDrawer] = useState(false)
+  function prepare(body: Row) {
+    if (!required && !useDrawer) return body
+    if (!shift.shift) throw new Error('افتح وردية قبل استخدام الدرج المشترك.')
+    if (body.wallet_id != null) throw new Error('اترك المحفظة فارغة عند السحب من درج الوردية.')
+    if (body.kind && body.kind !== 'expense') throw new Error('اختر قيد مصروف لاستخدام درج الوردية من شاشة نقدية المحافظ.')
+    return { ...body, shared_shift_id: shift.shift.id }
+  }
+  return <ActionDialog {...props} prepare={prepare} waiting={required && shift.loading} extra={required || props.action.sharedDrawer === 'optional' ? <>
+    {required ? <p>أثر الحركة الأصلية مسجل في درج البيع. عكسها يحتاج وردية مفتوحة.</p> : shift.shift ? <label className="check-field">
+      <input type="checkbox" checked={useDrawer} onChange={event => setUseDrawer(event.target.checked)} /> استخدم نفس الدرج النقدي للوردية
+    </label> : null}
+    {(required || useDrawer) && <ShiftContext value={shift} />}
+  </> : undefined} />
+}
+
+export function RetailShifts({ user }: { user: User }) {
+  const [search, setSearch] = useSearchParams()
+  const pending = search.get('status') === 'pending_approval'
+  const canOperate = allowed(user, 'retail.shifts.operate')
+  const canApprove = allowed(user, 'retail.shifts.approve')
+  const canCloseInEmergency = allowed(user, 'retail.shifts.emergency_close')
+  const canSettings = allowed(user, 'settings.update')
+  const [shifts, setShifts] = useState<Shift[]>([])
+  const [required, setRequired] = useState<boolean>()
+  const [register, setRegister] = useState('')
+  const [branch, setBranch] = useState(1)
+  const [opening, setOpening] = useState('')
+  const [selected, setSelected] = useState<number>()
+  const [observed, setObserved] = useState('')
+  const [countByDenomination, setCountByDenomination] = useState(false)
+  const [counts, setCounts] = useState<Record<number, string>>({})
+  const [showExpected, setShowExpected] = useState(false)
+  const [reason, setReason] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const [message, setMessage] = useState('')
+  const [revision, refresh] = useState(0)
+  const [page, setPage] = useState(1)
+  const [total, setTotal] = useState(0)
+  const [details, setDetails] = useState<Shift>()
+  const [cashEntries, setCashEntries] = useState<CashMovement[]>([])
+  const [cashKind, setCashKind] = useState<CashMovementKind>('general_expense')
+  const [cashAmount, setCashAmount] = useState('')
+  const [cashReason, setCashReason] = useState('')
+  const [cashReference, setCashReference] = useState('')
+  const own = useOpenShift(user, revision)
+  const denominations = [200, 100, 50, 20, 10, 5, 1]
+  const counted = denominations.reduce((sum, denomination) => sum + denomination * 100 * Number(counts[denomination] || 0), 0)
+  const validCount = !countByDenomination || Object.values(counts).every(value => !value || /^\d{1,6}$/.test(value))
+
+  useEffect(() => {
+    const abort = new AbortController()
+    Promise.all([
+      request<Shift[]>('/retail/shifts?page=' + page + '&per_page=20' + (pending ? '&status=pending_approval' : ''), { signal: abort.signal }),
+      request<{ require_shift: boolean }>('/retail/settings', { signal: abort.signal }),
+    ]).then(([list, settings]) => {
+      if (abort.signal.aborted) return
+      setShifts(list.data)
+      setTotal(list.meta?.total ?? list.data.length)
+      setRequired(settings.data.require_shift)
+    }).catch(error => { if (!abort.signal.aborted) setError(error.message) })
+    return () => abort.abort()
+  }, [revision, page, pending])
+
+  useEffect(() => {
+    if (own.shift?.id && !pending) setSelected(previous => previous ?? own.shift?.id)
+  }, [own.shift?.id, pending])
+
+  function chooseShift(id?: number) {
+    setSelected(id)
+    setObserved('')
+    setReason('')
+    setCounts({})
+    setCountByDenomination(false)
+    setShowExpected(false)
+  }
+
+  useEffect(() => {
+    if (!selected) return
+    const abort = new AbortController()
+    request<Shift>('/retail/shifts/' + selected, { signal: abort.signal }).then(result => {
+      if (!abort.signal.aborted) setDetails(result.data)
+    }).catch(error => { if (!abort.signal.aborted) setError(error.message) })
+    setCashEntries([])
+    request<CashMovement[]>(`/retail/shifts/${selected}/cash-movements?per_page=20`, { signal: abort.signal })
+      .then(result => { if (!abort.signal.aborted) setCashEntries(result.data) })
+      .catch(error => { if (!abort.signal.aborted) setError(error.message) })
+    return () => abort.abort()
+  }, [selected, revision])
+
+  async function action(event: FormEvent, path: string, makeBody: () => unknown, success: string, method: 'POST' | 'PATCH' = 'POST') {
+    event.preventDefault()
+    if (busy) return
+    setBusy(true)
+    setError('')
+    setMessage('')
+    try {
+      const response = await request<Shift>(path, { method, financial: method === 'POST', body: makeBody() })
+      if (path === '/retail/shifts' && response.data?.id) setSelected(response.data.id)
+      setMessage(success)
+      setObserved('')
+      setReason('')
+      setCounts({})
+      if (path === '/retail/shifts') { setRegister(''); setOpening(''); setPage(1) }
+      if (path.endsWith('/cash-movements')) { setCashAmount(''); setCashReason(''); setCashReference('') }
+    } catch (error) { setError(error instanceof Error ? error.message : 'تعذّر تنفيذ العملية.') }
+    finally { setBusy(false); refresh(value => value + 1) }
+  }
+
+  const close = details?.status === 'open' && details.actor_id === user.id && canOperate
+  const emergencyClose = details?.status === 'open' && details.actor_id !== user.id && canCloseInEmergency
+  const approve = details?.status === 'pending_approval' && details.actor_id !== user.id && details.closed_by !== user.id && canApprove
+  const closing = Boolean(close || emergencyClose)
+  let difference: number | undefined
+  let countedValue = observed
+  if (details && closing && validCount) {
+    try {
+      if (countByDenomination && (observed || Object.values(counts).some(Boolean))) {
+        countedValue = decimal(counted + (observed ? readMoney(observed) : 0))
+      }
+      if (countedValue) difference = readMoney(countedValue) - details.expected_minor
+    } catch { /* Keep the count editable until it is valid. */ }
+  }
+
+  return <>
+    <PageTitle title="ورديات الكاشير" action={allowed(user, 'invoices.create') && <Link className="secondary" to="/pos">نقطة البيع</Link>} />
+    {error && <Notice error>{error}</Notice>}
+    {message && <Notice>{message}</Notice>}
+    <div className="actions section-space" aria-label="عرض الورديات">
+      {own.shift && <button type="button" className="secondary" onClick={() => { setSearch({}); setPage(1); chooseShift(own.shift?.id) }}>ورديتي</button>}
+      {canApprove && <button type="button" className="secondary" aria-pressed={pending} onClick={() => {
+        setSearch(pending ? {} : { status: 'pending_approval' }); setPage(1); chooseShift()
+      }}>{pending ? 'عرض كل الورديات' : 'فروق تنتظر الاعتماد'}</button>}
+    </div>
+    {canOperate && !pending && !own.loading && !own.error && !own.shift && <form className="panel form-card section-space" onSubmit={event => action(event, '/retail/shifts', () => ({ register_name: register.trim(), opening_minor: readMoney(opening), branch_id: branch }), 'تم فتح الوردية.')}>
+      <h2>فتح وردية</h2>
+      <BranchSelect label="فرع الوردية" value={branch} set={setBranch} disabled={busy} />
+      <label className="field">اسم الدرج<input required value={register} maxLength={100} disabled={busy} onChange={event => setRegister(event.target.value)} /></label>
+      <label className="field">العهدة الافتتاحية بالجنيه<input required value={opening} inputMode="decimal" disabled={busy} onChange={event => setOpening(event.target.value)} /></label>
+      <button className="primary" disabled={busy}>افتح الوردية</button>
+    </form>}
+    {details && details.id === selected && <section className="panel panel-inner form-section section-space" aria-label="تفاصيل الوردية">
+      <div className="shift-balance-heading"><h2>{details.actor_id === user.id && details.status === 'open' ? 'ورديتي' : details.register_name}</h2>
+        <span className={'status-pill' + (details.status === 'pending_approval' ? ' warning' : '')}>{shiftStatusLabel(details)}</span></div>
+      <dl className="invoice-summary">
+        <div><dt>الكاشير</dt><dd>{details.actor_name}</dd></div><div><dt>الفرع</dt><dd>{details.branch_name ?? '—'}</dd></div>
+        <div><dt>الدرج</dt><dd>{details.register_name}</dd></div><div><dt>يوم العمل</dt><dd>{formatDate(details.business_day)}</dd></div>
+        {(!closing || showExpected) && <>
+          <div><dt>العهدة</dt><dd>{money(details.opening_minor)}</dd></div>
+          <div><dt>النقدية المتوقعة</dt><dd>{money(details.expected_minor)}</dd></div>
+        </>}
+        {!closing && <><div><dt>النقدية المعدودة</dt><dd>{money(details.observed_minor)}</dd></div>
+          <div><dt>الفرق</dt><dd>{money(details.difference_minor)}</dd></div></>}
+      </dl>
+      {details.emergency_close === 1 && <p>أقفل الوردية استثنائيًا · {details.closed_by_name ?? details.closed_by}</p>}
+      {details.close_reason && <p>{details.emergency_close ? 'سبب الإقفال الاستثنائي' : 'سبب الفرق'} · {details.close_reason}</p>}
+      {details.approval_reason && <p>اعتماد المشرف · {details.approval_reason}</p>}
+      {details.totals?.length ? <details className="shift-details" open={!closing || undefined}><summary>ملخص وسائل الدفع</summary>
+        <div className="table-scroll" role="region" tabIndex={0} aria-label="ملخص وسائل الدفع"><table><thead><tr><th scope="col">الوسيلة</th><th scope="col">الوارد</th><th scope="col">الصادر</th><th scope="col">الصافي</th></tr></thead>
+          <tbody>{details.totals.map(row => <tr key={row.method}><th scope="row">{tenderLabels[row.method]}</th><td>{money(row.received_minor)}</td><td>{money(row.paid_out_minor)}</td><td>{money(row.received_minor - row.paid_out_minor)}</td></tr>)}</tbody></table></div>
+        {canApprove && allowed(user, 'reports.view') && <Link to={'/retail-finance?view=settlement&shift_id=' + details.id}>مطابقة القنوات غير النقدية</Link>}
+      </details> : null}
+      {details.cash_movements_minor !== undefined && <details className="shift-details"><summary>حركات الدرج والخزنة</summary>
+        <p>صافي الحركات اليدوية ضمن المتوقع · <strong>{money(details.cash_movements_minor)}</strong></p>
+        {details.service_cash_minor !== undefined && <p>صافي نقدية المحافظ والصيانة المسجلة على نفس الدرج · <strong>{money(details.service_cash_minor)}</strong></p>}
+        {cashEntries.length > 0 && <ul className="dash-list">{cashEntries.map(row => <li key={row.id}>
+          {cashMovementLabels[row.kind]} · {money(row.amount_minor)} · {row.reason}{row.reference ? ` · ${row.reference}` : ''} · {formatDate(row.created_at)}
+        </li>)}</ul>}
+        {close && allowed(user, 'retail.cash.manage') && <form className="form-section" onSubmit={event => action(event, `/retail/shifts/${details.id}/cash-movements`, () => ({
+          kind: cashKind, amount_minor: readMoney(cashAmount), reason: cashReason.trim(), reference: cashReference.trim() || undefined,
+        }), 'تم تسجيل حركة الدرج.') }>
+          <label className="field">نوع حركة الدرج<select value={cashKind} disabled={busy} onChange={event => setCashKind(event.target.value as CashMovementKind)}>
+            {Object.entries(cashMovementLabels).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
+          </select></label>
+          <label className="field">مبلغ الحركة بالجنيه<input value={cashAmount} required inputMode="decimal" disabled={busy} onChange={event => setCashAmount(event.target.value)} /></label>
+          <label className="field">بيان الحركة<textarea value={cashReason} required maxLength={500} disabled={busy} onChange={event => setCashReason(event.target.value)} /></label>
+          <label className="field">مرجع السند<input value={cashReference} maxLength={100} disabled={busy} onChange={event => setCashReference(event.target.value)} /></label>
+          <button className="secondary" disabled={busy}>سجّل حركة الدرج</button>
+        </form>}
+      </details>}
+      {closing && <form className="panel panel-inner form-section shift-review" onSubmit={event => action(event,
+        `/retail/shifts/${details.id}/${emergencyClose ? 'emergency-close' : 'close'}`,
+        () => ({ observed_minor: readMoney(countedValue), expected_minor: details.expected_minor, reason: reason.trim() || undefined }),
+        emergencyClose ? 'تم إقفال الدرج استثنائيًا وإحالته للمراجعة.' : 'تم تسجيل إقفال الوردية.')}>
+        <h3>إقفال الوردية</h3>
+        {emergencyClose && <p>عُد النقدية قبل الإقفال. سيتاح الدرج للوردية التالية ويُحال الإقفال إلى مشرف مستقل للمراجعة.</p>}
+        <button type="button" className="secondary" aria-pressed={countByDenomination} disabled={busy}
+          onClick={() => setCountByDenomination(value => !value)}>{countByDenomination ? 'أدخل الإجمالي' : 'عدّ حسب الفئات'}</button>
+        {countByDenomination ? <>
+          <div className="shift-count-grid">{denominations.map(value => <label key={value} className="field">عدد فئة {value} جنيه
+            <input value={counts[value] ?? ''} inputMode="numeric" pattern="[0-9]{1,6}" maxLength={6} disabled={busy}
+              onChange={event => setCounts(previous => ({ ...previous, [value]: event.target.value.replace(/[٠-٩۰-۹]/g, digit => String(digit.charCodeAt(0) & 15)) }))} />
+          </label>)}</div>
+          <label className="field">باقي الفئات والفكة بالجنيه<input inputMode="decimal" value={observed} disabled={busy} onChange={event => setObserved(event.target.value)} /></label>
+        </> : <label className="field">النقدية المعدودة بالجنيه<input required inputMode="decimal" value={observed} disabled={busy} onChange={event => setObserved(event.target.value)} /></label>}
+        {difference !== undefined && <div aria-live="polite">النقدية المعدودة <strong>{money(difference + details.expected_minor)}</strong>
+          {' · '}{difference ? 'فرق الإقفال ' + money(difference) + ' ويحتاج اعتماد مشرف' : 'مطابقة للنقدية المتوقعة'}</div>}
+        <button type="button" className="link-button" aria-expanded={showExpected} onClick={() => setShowExpected(value => !value)}>{showExpected ? 'إخفاء المتوقع' : 'عرض المتوقع'}</button>
+        {(emergencyClose || Boolean(difference) || reason) && <label className="field">{emergencyClose ? 'سبب الإقفال الاستثنائي' : 'سبب الفرق'}<textarea required={emergencyClose || Boolean(difference)} value={reason} maxLength={500} disabled={busy} onChange={event => setReason(event.target.value)} /></label>}
+        <button className="primary" disabled={busy || difference === undefined}>{emergencyClose ? 'أقفل الوردية استثنائيًا' : 'أقفل الوردية'}</button>
+      </form>}
+      {approve && <form className="form-section" onSubmit={event => action(event, `/retail/shifts/${details.id}/approve`, () => ({ reason: reason.trim() }),
+        details.emergency_close ? 'تم اعتماد الإقفال الاستثنائي.' : 'تم اعتماد فرق الوردية.')}>
+        <label className="field">قرار المشرف<textarea required value={reason} maxLength={500} disabled={busy} onChange={event => setReason(event.target.value)} /></label>
+        <button className="primary" disabled={busy}>{details.emergency_close ? 'اعتمد الإقفال الاستثنائي' : 'اعتمد الفرق'}</button>
+      </form>}
+    </section>}
+    <section className="panel panel-inner form-section">
+      <h2>{pending ? 'فروق تنتظر الاعتماد' : 'سجل الورديات'}</h2>
+      {!shifts.length ? <p className="muted">لا توجد ورديات في هذه الصفحة.</p> : <div className="table-scroll"><table>
+        <thead><tr>{['الدرج', 'الكاشير', 'يوم العمل', 'الحالة', 'التفاصيل'].map(label => <th key={label} scope="col">{label}</th>)}</tr></thead>
+        <tbody>{shifts.map(shift => <tr key={shift.id}><th scope="row">{shift.register_name}</th><td>{shift.actor_name}</td><td>{formatDate(shift.business_day)}</td><td>{shiftStatusLabel(shift)}</td>
+          <td><button className="link-button" type="button" onClick={() => chooseShift(shift.id)}>عرض وردية {shift.id}</button></td></tr>)}</tbody>
+      </table></div>}
+      {total > 20 && <nav className="pagination" aria-label="صفحات الورديات">
+        <button className="secondary" disabled={page === 1} onClick={() => setPage(page - 1)}>السابق</button>
+        <button className="secondary" disabled={page * 20 >= total} onClick={() => setPage(page + 1)}>التالي</button>
+      </nav>}
+    </section>
+    {canSettings && required !== undefined && <details className="panel form-card shift-details section-space"><summary>سياسة الورديات</summary>
+      <form className="form-section" onSubmit={event => action(event, '/retail/settings', () => ({ require_shift: !required }), 'تم تحديث سياسة الورديات.', 'PATCH')}>
+        <p>{required ? 'الوردية مطلوبة للعمليات التي يدعمها دفتر الورديات.' : 'الوردية اختيارية حاليًا.'}</p>
+        <button className="secondary" disabled={busy}>{required ? 'اجعل الوردية اختيارية' : 'اطلب وردية للعمليات'}</button>
+      </form>
+    </details>}
+  </>
+}

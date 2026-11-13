@@ -4,7 +4,7 @@
     android:height="48dp"
     android:viewportWidth="48"
     android:viewportHeight="48">
-    <path android:fillColor="#176B58" android:pathData="M0,0h48v48h-48z" />
+    <path android:fillColor="@color/hilal_navigation" android:pathData="M0,0h48v48h-48z" />
     <path android:fillColor="#FFFFFF" android:pathData="M8,20l4,-12h24l4,12zM10,23h28v17h-28z" />
-    <path android:fillColor="#176B58" android:pathData="M14,27h8v8h-8zM26,27h8v8h-8zM22,32h4v8h-4z" />
+    <path android:fillColor="@color/hilal_navigation" android:pathData="M14,27h8v8h-8zM26,27h8v8h-8zM22,32h4v8h-4z" />
 </vector>

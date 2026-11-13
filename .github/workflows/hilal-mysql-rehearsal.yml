@@ -1,0 +1,153 @@
+name: Hilal MySQL to D1 rehearsal
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [cloudflare-full-migration]
+    paths:
+      - '.github/workflows/hilal-mysql-rehearsal.yml'
+      - 'cloud/api/scripts/**'
+      - 'cloud/api/fixtures/mysql-original-seed.synthetic.sql'
+      - 'cloud/api/migrations/**'
+
+permissions:
+  contents: read
+
+jobs:
+  rehearsal:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_DATABASE: hilal_migration_source
+          MYSQL_USER: hilal_fixture
+          MYSQL_PASSWORD: hilal-mysql-ci-fixture
+          MYSQL_ROOT_PASSWORD: hilal-mysql-root-ci-fixture
+        ports:
+          - 33069:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 --silent"
+          --health-interval=5s --health-timeout=3s --health-retries=20
+    env:
+      WRANGLER_SEND_METRICS: 'false'
+      DB_CONNECTION: mysql
+      DB_HOST: 127.0.0.1
+      DB_PORT: '33069'
+      DB_DATABASE: hilal_migration_source
+      DB_USERNAME: hilal_fixture
+      DB_PASSWORD: hilal-mysql-ci-fixture
+      APP_ENV: testing
+      APP_TIMEZONE: UTC
+      CACHE_STORE: array
+      SESSION_DRIVER: array
+      QUEUE_CONNECTION: sync
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: 90baabb4b38ae292ea7ef55806145518774991bb
+          path: laravel-original
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: cloud/api/package-lock.json
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+          extensions: pdo_mysql, dom, gd, mbstring, zip, xml, xmlreader, xmlwriter
+          tools: composer:v2
+          coverage: none
+      - name: Build the original Laravel MySQL schema
+        working-directory: laravel-original
+        run: |
+          php --version
+          composer install --no-interaction --prefer-dist --no-progress
+          php artisan migrate --force --no-interaction
+      - name: Seed, dump and restore the original schema in isolated MySQL
+        shell: bash
+        env:
+          MYSQL_SERVICE_ID: ${{ job.services.mysql.id }}
+          MYSQL_ROOT_FIXTURE: hilal-mysql-root-ci-fixture
+        run: |
+          mkdir -p "$RUNNER_TEMP/hilal-source-evidence"
+          source_dump="$RUNNER_TEMP/hilal-source-evidence/hilal-original.synthetic.sql"
+          mysql_root() {
+            docker exec -i -e "MYSQL_PWD=$MYSQL_ROOT_FIXTURE" "$MYSQL_SERVICE_ID" "$@"
+          }
+          mysql_root mysql -u root "$DB_DATABASE" < cloud/api/fixtures/mysql-original-seed.synthetic.sql
+          mysql_root mysqldump -u root --single-transaction --quick --no-tablespaces \
+            --default-character-set=utf8mb4 --hex-blob --set-gtid-purged=OFF "$DB_DATABASE" > "$source_dump"
+          test -s "$source_dump"
+          mysql_root mysql -u root --execute="CREATE DATABASE hilal_migration_restored CHARACTER SET utf8mb4; GRANT SELECT ON hilal_migration_restored.* TO 'hilal_fixture'@'%';"
+          mysql_root mysql -u root hilal_migration_restored < "$source_dump"
+          (cd "$RUNNER_TEMP/hilal-source-evidence" && sha256sum hilal-original.synthetic.sql > SHA256SUMS.txt)
+      - name: Export the actual legacy ZIP and XLSX from the restored source
+        working-directory: laravel-original
+        shell: bash
+        env:
+          DB_DATABASE: hilal_migration_restored
+        run: |
+          evidence="$RUNNER_TEMP/hilal-source-evidence"
+          export APP_KEY="base64:$(openssl rand -base64 32)"
+          php ../cloud/api/fixtures/export-original-backup.synthetic.php > "$evidence/hilal-laravel-v2.synthetic.zip"
+          unzip -tq "$evidence/hilal-laravel-v2.synthetic.zip"
+          unzip -p "$evidence/hilal-laravel-v2.synthetic.zip" pages/catalog.xlsx > "$evidence/hilal-catalog.synthetic.xlsx"
+          unzip -tq "$evidence/hilal-catalog.synthetic.xlsx"
+      - name: Extract, restore and reconcile in local D1
+        working-directory: cloud/api
+        shell: bash
+        env:
+          STORE_USER_EMAIL: rehearsal-operator@example.invalid
+          STORE_USER_USERNAME: rehearsal-operator
+          STORE_USER_PASSWORD: hilal-d1-rehearsal-fixture
+        run: |
+          npm ci
+          work="$RUNNER_TEMP/hilal-d1-rehearsal"
+          evidence="$RUNNER_TEMP/hilal-source-evidence"
+          mkdir -p "$work"
+          MYSQL_PWD="$DB_PASSWORD" node scripts/extract-mysql-snapshot.mjs \
+            --schema hilal_migration_restored --port "$DB_PORT" --user "$DB_USERNAME" \
+            --source-time-zone UTC --cutoff-at 2026-10-31T18:00:00Z --output "$work/hilal-source.private.json" \
+            > "$evidence/mysql-snapshot-summary.json"
+          node --input-type=module -e '
+            import { readFileSync, writeFileSync } from "node:fs";
+            const file = process.argv[1];
+            const data = JSON.parse(readFileSync(file, "utf8"));
+            data.invoice_customer_ids = {"201": 41, "202": null, "203": 41};
+            writeFileSync(file, JSON.stringify(data), {mode: 0o600});
+          ' "$work/hilal-source.private.json"
+          node scripts/restore-laravel-backup.mjs "$work/hilal-source.private.json" \
+            --invoice-refund-evidence fixtures/mysql-refund-evidence.synthetic.json \
+            --emit-d1-sql "$work/hilal-load.generated.sql" > "$evidence/restore-report.json"
+          node scripts/restore-laravel-backup.mjs "$evidence/hilal-laravel-v2.synthetic.zip" \
+            --invoice-refund-evidence fixtures/mysql-refund-evidence.synthetic.json \
+            --source-time-zone UTC > "$evidence/legacy-zip-restore-report.json"
+          node scripts/restore-laravel-backup.mjs "$evidence/hilal-catalog.synthetic.xlsx" \
+            --source-time-zone UTC > "$evidence/legacy-xlsx-restore-report.json"
+          jq -e '.status == "verified" and .source_counts.invoices == 3 and .checks.wallets.totals.receivables_minor == "700"' "$evidence/legacy-zip-restore-report.json"
+          jq -e '.status == "verified" and .source_counts.products == 2' "$evidence/legacy-xlsx-restore-report.json"
+          export AUTH_PEPPER="$(openssl rand -hex 32)"
+          node scripts/provision-user.mjs "$work/operator.generated.sql"
+          npx --no-install wrangler d1 migrations apply DB --local --persist-to "$work/d1"
+          npx --no-install wrangler d1 execute DB --local --persist-to "$work/d1" --file "$work/operator.generated.sql"
+          npx --no-install wrangler d1 execute DB --local --persist-to "$work/d1" --file "$work/hilal-load.generated.sql"
+          npx --no-install wrangler d1 execute DB --local --persist-to "$work/d1" --json \
+            --file fixtures/mysql-d1-reconciliation.synthetic.sql \
+            | jq -e '.[0].results[0] | select(. == {invoices:3,invoice_total_minor:3380,invoice_paid_minor:1770,refund_minor:550,installment_due_minor:1610,personal_debt_due_minor:1075,stock_units:7,barcode:"000123",damage_units:2,damage_minor:250,supplier_due_minor:4225,supplier_receipt_minor:2800,supplier_allocations:"502:2025,504:775",provider_balance_minor:6600,drawer_minor:3350,receivables_minor:700,transfer_margin_minor:200,drawer_expense_minor:50,profit_available_minor:150,working_capital_minor:10500,foreign_key_violations:0})' \
+            > "$evidence/d1-reconciliation.json"
+          cat "$evidence/d1-reconciliation.json"
+          # Contains only the pre-verified synthetic rows and the isolated target guard.
+          cp "$work/hilal-load.generated.sql" "$evidence/hilal-d1.synthetic.generated.sql"
+          cp fixtures/mysql-refund-evidence.synthetic.json "$evidence/"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: hilal-original-mysql-synthetic-rehearsal
+          path: ${{ runner.temp }}/hilal-source-evidence/
+          if-no-files-found: ignore

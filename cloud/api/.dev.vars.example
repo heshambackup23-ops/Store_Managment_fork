@@ -1,0 +1,4 @@
+# Generate a private random secret of at least 32 characters for AUTH_PEPPER.
+AUTH_PEPPER=
+# Vite development origin. Set the exact public Pages origin on the hosted Worker.
+WEB_ORIGIN=http://localhost:5173

@@ -40,8 +40,9 @@ sealed interface ApiFailure {
         override val message = "لم يعد هذا السجل متاحاً. حدّث القائمة."
     }
 
-    data class Conflict(val code: String?) : ApiFailure {
-        override val message = "تعارضت العملية مع تغيير آخر. راجع النتيجة قبل إعادة المحاولة."
+    data class Conflict(val code: String?, private val detail: String? = null) : ApiFailure {
+        override val message = detail?.takeIf { it.any { char -> char in '\u0600'..'\u06FF' } }
+            ?: "تعارضت العملية مع تغيير آخر. راجع النتيجة قبل إعادة المحاولة."
     }
 
     data class Validation(val fields: Map<String, List<String>>) : ApiFailure {

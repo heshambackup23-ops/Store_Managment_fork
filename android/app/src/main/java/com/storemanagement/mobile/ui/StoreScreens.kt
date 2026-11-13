@@ -68,6 +68,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.material.icons.filled.CheckCircle
@@ -114,7 +117,14 @@ internal val DamagedReasonOptions = listOf(
     "other" to "أخرى",
 )
 
-internal val MaintenanceStatusOptions = listOf("قيد الانتظار", "قيد الصيانة", "مكتمل", "مرفوض")
+internal fun maintenanceStatusOptions(record: MaintenanceDto?, hilal: Boolean): List<String> =
+    if (!hilal) listOf("قيد الانتظار", "قيد الصيانة", "مكتمل", "مرفوض") else when (val status = record?.status) {
+        null -> listOf("قيد الانتظار", "قيد الصيانة")
+        "قيد الانتظار" -> listOf("قيد الانتظار", "قيد الصيانة", "مرفوض")
+        "قيد الصيانة" -> listOf("قيد الصيانة", "مكتمل", "مرفوض")
+        "مكتمل" -> listOf("مكتمل", "تم التسليم", "مرفوض")
+        else -> listOf(status)
+    }
 
 private fun String.moneyOrZero(): BigDecimal = trim().toBigDecimalOrNull() ?: BigDecimal.ZERO
 
@@ -245,7 +255,7 @@ internal fun ManagedCard(
     onClick: (() -> Unit)? = null,
     content: @Composable ColumnScope.() -> Unit,
 ) {
-    val shape = RoundedCornerShape(14.dp)
+    val shape = MaterialTheme.shapes.medium
     val colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
     val border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
     if (onClick != null) {
@@ -753,14 +763,14 @@ internal fun PersonalDebtDetailsSheet(debt: PersonalDebtDto) {
 // Invoices
 // ---------------------------------------------------------------------------
 
-internal fun invoiceStatusOptions(invoice: InvoiceDto): List<ChoiceOption> {
+internal fun invoiceStatusOptions(invoice: InvoiceDto, canPay: Boolean = true, canRefund: Boolean = true): List<ChoiceOption> {
     val remaining = invoice.remainingAmount.moneyOrZero()
     val refunded = invoice.status == "refunded"
     return listOf(
         ChoiceOption(
             value = "paid",
             label = "مدفوعة بالكامل",
-            enabled = !refunded && remaining.signum() > 0,
+            enabled = canPay && !refunded && remaining.signum() > 0,
             hint = when {
                 refunded -> "الفاتورة مستردة"
                 remaining.signum() <= 0 -> "الفاتورة مدفوعة بالفعل"
@@ -770,7 +780,7 @@ internal fun invoiceStatusOptions(invoice: InvoiceDto): List<ChoiceOption> {
         ChoiceOption(
             value = "refunded",
             label = "مستردة",
-            enabled = !refunded,
+            enabled = canRefund && !refunded,
             hint = if (refunded) "تم الاسترداد من قبل" else "إرجاع المنتجات للمخزون وإغلاق أقساطها",
         ),
     )
@@ -780,7 +790,8 @@ internal fun invoiceStatusOptions(invoice: InvoiceDto): List<ChoiceOption> {
 internal fun InvoicesScreen(
     state: RemotePage<InvoiceDto>,
     query: String,
-    canManage: Boolean,
+    canPay: Boolean,
+    canRefund: Boolean,
     canEdit: Boolean,
     onQueryChange: (String) -> Unit,
     onRefresh: () -> Unit,
@@ -802,7 +813,7 @@ internal fun InvoicesScreen(
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 items(state.items, key = InvoiceDto::id) { invoice ->
-                    InvoiceCard(invoice, canManage, canEdit, onInvoiceClick, onPay, onChangeStatus, onEdit)
+                    InvoiceCard(invoice, canPay, canRefund, canEdit, onInvoiceClick, onPay, onChangeStatus, onEdit)
                 }
                 item { LoadMoreButton(state, onLoadMore) }
             }
@@ -813,7 +824,8 @@ internal fun InvoicesScreen(
 @Composable
 private fun InvoiceCard(
     invoice: InvoiceDto,
-    canManage: Boolean,
+    canPay: Boolean,
+    canRefund: Boolean,
     canEdit: Boolean,
     onClick: (InvoiceDto) -> Unit,
     onPay: (InvoiceDto) -> Unit,
@@ -839,12 +851,14 @@ private fun InvoiceCard(
             InfoStat("الإجمالي", invoice.totalAmount, Modifier.weight(1f))
             InfoStat("المتبقي", remaining.display(), Modifier.weight(1f), emphasize = remaining.signum() > 0)
         }
-        if (canManage && !refunded) {
+        if ((canPay || canRefund || canEdit) && !refunded) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                if (remaining.signum() > 0) {
+                if (canPay && remaining.signum() > 0) {
                     CardActionButton("دفعة", Icons.Filled.Payments, { onPay(invoice) }, Modifier.weight(1f), ActionStyle.Filled)
                 }
-                CardActionButton("الحالة", Icons.Filled.SwapHoriz, { onChangeStatus(invoice) }, Modifier.weight(1f), ActionStyle.Tonal)
+                if (canPay || canRefund) {
+                    CardActionButton("الحالة", Icons.Filled.SwapHoriz, { onChangeStatus(invoice) }, Modifier.weight(1f), ActionStyle.Tonal)
+                }
                 if (canEdit) {
                     CardActionButton("تعديل", Icons.Filled.Edit, { onEdit(invoice) }, Modifier.weight(1f))
                 }
@@ -969,7 +983,9 @@ internal fun DamagedScreen(
             state.items.isEmpty() -> EmptyState(if (state.error == null) "لا توجد سجلات هالك" else "تعذر تحميل سجل الهالك")
             else -> {
                 val active = state.items.filter { it.status == "recorded" }
-                val loss = active.fold(BigDecimal.ZERO) { sum, item -> sum + item.totalValue.moneyOrZero() }
+                val loss = active.mapNotNull { it.totalValue?.takeIf(String::isNotBlank) }
+                    .takeIf { active.isNotEmpty() && it.size == active.size }
+                    ?.fold(BigDecimal.ZERO) { sum, value -> sum + value.moneyOrZero() }
                 val units = active.sumOf { it.quantity }
                 LazyColumn(
                     contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 10.dp, bottom = 96.dp),
@@ -977,7 +993,7 @@ internal fun DamagedScreen(
                 ) {
                     item {
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                            SummaryTile("قيمة الهالك (المسجل)", "${loss.display()} ج.م", Modifier.weight(1f), StatusTone.Danger)
+                            loss?.let { SummaryTile("قيمة الهالك (المسجل)", "${it.display()} ج.م", Modifier.weight(1f), StatusTone.Danger) }
                             SummaryTile("الوحدات", units.toString(), Modifier.weight(0.6f))
                         }
                     }
@@ -1020,7 +1036,7 @@ private fun DamagedCard(
         )
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             InfoStat("الكمية", item.quantity.toString(), Modifier.weight(1f))
-            InfoStat("القيمة", "${item.totalValue} ج.م", Modifier.weight(1.3f), emphasize = !voided)
+            item.totalValue?.takeIf(String::isNotBlank)?.let { InfoStat("القيمة", "$it ج.م", Modifier.weight(1.3f), emphasize = !voided) }
             InfoStat("المخزون", "${item.stockBefore} ← ${item.stockAfter}", Modifier.weight(1f))
         }
         item.notes?.takeIf(String::isNotBlank)?.let {
@@ -1055,8 +1071,8 @@ internal fun DamagedDetailsSheet(item: DamagedItemDto) {
         item.productBarcode?.takeIf(String::isNotBlank)?.let { DetailLine("الباركود", it) }
         DetailLine("السبب", item.reasonLabel)
         DetailLine("الكمية", item.quantity.toString())
-        DetailLine("قيمة الوحدة", "${item.unitValue} ج.م")
-        DetailLine("إجمالي القيمة", "${item.totalValue} ج.م")
+        item.unitValue?.takeIf(String::isNotBlank)?.let { DetailLine("قيمة الوحدة", "$it ج.م") }
+        item.totalValue?.takeIf(String::isNotBlank)?.let { DetailLine("إجمالي القيمة", "$it ج.م") }
         DetailLine("تاريخ الهالك", item.damagedOn.toShortDate())
         DetailLine("المخزون قبل / بعد", "${item.stockBefore} ← ${item.stockAfter}")
         item.notes?.takeIf(String::isNotBlank)?.let {
@@ -1073,12 +1089,13 @@ internal fun DamagedDetailsSheet(item: DamagedItemDto) {
 @Composable
 internal fun DamagedItemEditDialog(
     item: DamagedItemDto,
+    canManageCost: Boolean,
     onDismiss: () -> Unit,
     onSave: (DamagedItemInputDto, String) -> Unit,
 ) {
     var quantity by rememberSaveable(item.id) { mutableStateOf(item.quantity.toString()) }
     var reason by rememberSaveable(item.id) { mutableStateOf(item.reason) }
-    var unitValue by rememberSaveable(item.id) { mutableStateOf(item.unitValue) }
+    var unitValue by rememberSaveable(item.id, canManageCost) { mutableStateOf(if (canManageCost) item.unitValue.orEmpty() else "") }
     var damagedOn by rememberSaveable(item.id) { mutableStateOf(item.damagedOn.take(10)) }
     var notes by rememberSaveable(item.id) { mutableStateOf(item.notes.orEmpty()) }
     var reasonMenuOpen by remember { mutableStateOf(false) }
@@ -1140,7 +1157,7 @@ internal fun DamagedItemEditDialog(
                         }
                     }
                 }
-                OutlinedTextField(
+                if (canManageCost) OutlinedTextField(
                     value = unitValue,
                     onValueChange = { value ->
                         val normalized = value.normalizeArabicDigits()
@@ -1230,6 +1247,14 @@ internal data class QuickAction(
     val onClick: () -> Unit,
 )
 
+internal data class DashboardRetailAction(
+    val label: String,
+    val context: String,
+    val icon: ImageVector,
+    val tag: String,
+    val onClick: () -> Unit,
+)
+
 @Composable
 private fun toneContainer(tone: StatusTone): Color = when (tone) {
     StatusTone.Positive -> MaterialTheme.colorScheme.primaryContainer
@@ -1257,7 +1282,8 @@ private fun greetingForNow(): String {
 
 @Composable
 private fun SectionTitle(text: String) {
-    Text(text, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
+    Text(text, modifier = Modifier.semantics { heading() },
+        style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
 }
 
 @Composable
@@ -1267,6 +1293,7 @@ internal fun HomeDashboardScreen(
     metrics: List<DashboardMetric>,
     alerts: List<DashboardAlert>,
     quickActions: List<QuickAction>,
+    retailActions: List<DashboardRetailAction>,
     modifier: Modifier = Modifier,
 ) {
     val today = remember { SimpleDateFormat("EEEE d MMMM yyyy", Locale.forLanguageTag("ar")).format(Date()) }
@@ -1277,6 +1304,32 @@ internal fun HomeDashboardScreen(
         Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Text("${greetingForNow()}، $userName", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
             Text(today, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        if (retailActions.isNotEmpty()) {
+            SectionTitle("تشغيل المتجر")
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                retailActions.forEach { action ->
+                    Surface(
+                        onClick = action.onClick,
+                        modifier = Modifier.fillMaxWidth().testTag(action.tag),
+                        shape = MaterialTheme.shapes.medium,
+                        color = MaterialTheme.colorScheme.primaryContainer,
+                        contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                    ) {
+                        Row(
+                            Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Icon(action.icon, contentDescription = null, modifier = Modifier.size(24.dp))
+                            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                Text(action.label, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                                RetailLiveStatus(action.context)
+                            }
+                        }
+                    }
+                }
+            }
         }
         if (quickActions.isNotEmpty()) {
             SectionTitle("إجراءات سريعة")

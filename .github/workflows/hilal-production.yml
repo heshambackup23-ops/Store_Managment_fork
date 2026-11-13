@@ -1,0 +1,123 @@
+name: Hilal Production
+
+on:
+  workflow_dispatch:
+    inputs:
+      deploy:
+        description: Deploy after preflight
+        type: boolean
+        default: false
+      confirm:
+        description: Enter hilal-store-production-ui when deploying
+        type: string
+      restored_at:
+        description: UTC timestamp of the verified private restore
+        type: string
+      restored_sha256:
+        description: SHA-256 of the verified private SQL snapshot
+        type: string
+      restored_database:
+        description: D1 UUID of that source snapshot
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hilal-store-production
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    if: github.ref == 'refs/heads/cloudflare-full-migration'
+    runs-on: ubuntu-latest
+    environment: hilal-store-production
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.HILAL_PRODUCTION_CF_ACCOUNT_ID }}
+      HILAL_PRODUCTION_D1_ID: ${{ vars.HILAL_PRODUCTION_D1_ID }}
+      HENRA_STORE_DEMO_D1_ID: ${{ vars.HENRA_STORE_DEMO_D1_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node cloud/api/scripts/production-config.mjs --check
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.HILAL_PRODUCTION_CF_API_TOKEN }}
+
+  deploy:
+    if: inputs.deploy
+    needs: preflight
+    runs-on: ubuntu-latest
+    environment: hilal-store-production
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.HILAL_PRODUCTION_CF_ACCOUNT_ID }}
+      HILAL_PRODUCTION_D1_ID: ${{ vars.HILAL_PRODUCTION_D1_ID }}
+      HENRA_STORE_DEMO_D1_ID: ${{ vars.HENRA_STORE_DEMO_D1_ID }}
+      HILAL_PRODUCTION_DEPLOY_ENABLED: ${{ vars.HILAL_PRODUCTION_DEPLOY_ENABLED }}
+      HILAL_PRODUCTION_CONFIRM: ${{ inputs.confirm }}
+      HILAL_RESTORE_AT: ${{ inputs.restored_at }}
+      HILAL_RESTORE_SHA256: ${{ inputs.restored_sha256 }}
+      HILAL_RESTORE_DATABASE_ID: ${{ inputs.restored_database }}
+      WRANGLER_SEND_METRICS: 'false'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            cloud/api/package-lock.json
+            cloud/web/package-lock.json
+      - run: npm ci && npm run check && npm test
+        working-directory: cloud/api
+      - run: npm ci && npm run build
+        working-directory: cloud/web
+      - name: Verify production and prepare deployment files
+        run: node cloud/api/scripts/production-config.mjs --prepare
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.HILAL_PRODUCTION_CF_API_TOKEN }}
+          HILAL_PRODUCTION_PAGES_STAGE: ${{ runner.temp }}/hilal-production-pages
+      - name: Record the production recovery bookmark
+        working-directory: cloud/api
+        shell: bash
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.HILAL_PRODUCTION_CF_API_TOKEN }}
+        run: |
+          npx --no-install wrangler d1 time-travel info DB --config .wrangler-production.json --json \
+            > "$RUNNER_TEMP/hilal-production-bookmark.json"
+          jq -e '(.bookmark | type) == "string" and (.bookmark | length) > 0' \
+            "$RUNNER_TEMP/hilal-production-bookmark.json" > /dev/null
+          {
+            echo '### Production recovery'
+            echo
+            printf '%s\n' "- Private SQL snapshot SHA-256 $HILAL_RESTORE_SHA256"
+            printf '%s\n' "- Snapshot restore verified $HILAL_RESTORE_AT"
+            printf '%s\n' "- D1 Time Travel bookmark captured before migration at $(date -u '+%Y-%m-%dT%H:%M:%SZ')."
+          } >> "$GITHUB_STEP_SUMMARY"
+      - run: npx --no-install wrangler d1 migrations apply DB --config .wrangler-production.json --remote
+        working-directory: cloud/api
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.HILAL_PRODUCTION_CF_API_TOKEN }}
+      - run: npx --no-install wrangler deploy --config .wrangler-production.json --keep-vars
+        working-directory: cloud/api
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.HILAL_PRODUCTION_CF_API_TOKEN }}
+      - name: Publish the isolated Pages binding
+        shell: bash
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.HILAL_PRODUCTION_CF_API_TOKEN }}
+        run: |
+          node "$GITHUB_WORKSPACE/cloud/api/node_modules/wrangler/bin/wrangler.js" --cwd "$RUNNER_TEMP/hilal-production-pages" \
+            pages deploy ./dist --project-name hilal-store-production-ui --branch cloudflare-full-migration --commit-hash "$GITHUB_SHA"
+      - name: Verify Pages and the protected Worker route
+        shell: bash
+        run: |
+          pages='https://hilal-store-production-ui.pages.dev'
+          curl --fail --silent --show-error --retry 5 --retry-all-errors --max-time 15 \
+            "$pages/" > "$RUNNER_TEMP/hilal-production-pages.html"
+          grep -Fq 'هلال لإدارة المتجر' "$RUNNER_TEMP/hilal-production-pages.html"
+          status="$(curl --silent --show-error --max-time 15 --output "$RUNNER_TEMP/hilal-production-auth.json" \
+            --write-out '%{http_code}' "$pages/api/v1/me")"
+          test "$status" = 401
+          jq -e '.success == false and .code == "unauthorized"' "$RUNNER_TEMP/hilal-production-auth.json"

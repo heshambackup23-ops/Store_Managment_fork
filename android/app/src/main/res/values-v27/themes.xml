@@ -2,11 +2,12 @@
 <resources>
     <style name="Theme.StoreManagement" parent="android:style/Theme.Material.Light.NoActionBar">
         <item name="android:fontFamily">sans</item>
-        <item name="android:colorAccent">#176B58</item>
-        <item name="android:statusBarColor">#F5F6F1</item>
-        <item name="android:navigationBarColor">#F5F6F1</item>
+        <item name="android:colorAccent">@color/hilal_primary</item>
+        <item name="android:windowBackground">@color/hilal_canvas</item>
+        <item name="android:statusBarColor">@color/hilal_canvas</item>
+        <item name="android:navigationBarColor">@color/hilal_navigation</item>
         <item name="android:windowLightStatusBar">true</item>
-        <item name="android:windowLightNavigationBar">true</item>
+        <item name="android:windowLightNavigationBar">false</item>
         <item name="android:windowActionModeOverlay">true</item>
     </style>
 </resources>

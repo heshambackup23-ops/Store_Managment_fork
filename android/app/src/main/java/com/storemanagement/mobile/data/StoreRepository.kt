@@ -1,5 +1,6 @@
 package com.storemanagement.mobile.data
 
+import com.storemanagement.mobile.BuildConfig
 import com.storemanagement.mobile.core.database.CachedCategory
 import com.storemanagement.mobile.core.database.CachedProduct
 import com.storemanagement.mobile.core.database.CatalogDao
@@ -54,6 +55,7 @@ import okhttp3.MultipartBody
 import okhttp3.RequestBody.Companion.asRequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.ResponseBody
+import okhttp3.ResponseBody.Companion.toResponseBody
 
 @Singleton
 class StoreRepository @Inject constructor(
@@ -224,15 +226,15 @@ class StoreRepository @Inject constructor(
         api.createMaintenance(key, input)
     }
 
-    suspend fun updateMaintenance(id: Long, input: MaintenanceInputDto) = calls.execute {
-        api.updateMaintenance(id, input)
+    suspend fun updateMaintenance(id: Long, input: MaintenanceInputDto, key: String) = calls.execute {
+        api.updateMaintenance(id, key, input)
     }
 
     suspend fun deleteMaintenance(id: Long) = calls.execute {
         api.deleteMaintenance(id).requireSuccess()
     }
 
-    suspend fun walletCashier(): ApiResult<WalletCashierDto> = calls.execute { api.walletCashier().data }
+    suspend fun walletCashier(provider: String?): ApiResult<WalletCashierDto> = calls.execute { api.walletCashier(provider).data }
 
     suspend fun createWalletTransaction(key: String, input: WalletCashierInputDto) = calls.execute {
         api.createWalletTransaction(key, input)
@@ -331,7 +333,11 @@ class StoreRepository @Inject constructor(
     suspend fun invoiceDetails(id: Long): ApiResult<InvoiceDto> =
         calls.execute { api.invoice(id).data }
 
-    suspend fun invoicePdf(id: Long): ResponseBody = api.invoicePdf(id)
+    suspend fun invoicePdf(id: Long): ResponseBody {
+        if (BuildConfig.FLAVOR != "staging") return api.invoicePdf(id)
+        val invoice = api.invoice(id).data
+        return renderInvoicePdf(invoice).toResponseBody("application/pdf".toMediaType())
+    }
 
     suspend fun payInvoice(id: Long, key: String, input: PayAmountInputDto) = calls.execute {
         api.payInvoice(id, key, input)

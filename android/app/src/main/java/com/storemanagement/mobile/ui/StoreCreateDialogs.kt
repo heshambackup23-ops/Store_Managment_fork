@@ -94,7 +94,8 @@ internal fun ProductEditDialog(
     var description by rememberSaveable(product?.id) { mutableStateOf(product?.description.orEmpty()) }
     var notes by rememberSaveable(product?.id) { mutableStateOf(product?.notes.orEmpty()) }
     var barcode by rememberSaveable(product?.id) { mutableStateOf(product?.barcode.orEmpty()) }
-    var stock by rememberSaveable(product?.id) { mutableStateOf(product?.stock?.toString() ?: "0") }
+    val expectedStock by rememberSaveable(product?.id) { mutableStateOf<Int?>(product?.stock) }
+    var stock by rememberSaveable(product?.id) { mutableStateOf(expectedStock?.toString() ?: "0") }
     var categoryId by rememberSaveable(product?.id) { mutableStateOf(product?.categoryId) }
     var categoryMenuOpen by remember { mutableStateOf(false) }
     var validationError by remember { mutableStateOf<String?>(null) }
@@ -128,7 +129,7 @@ internal fun ProductEditDialog(
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     AsyncImage(
-                        model = selectedImage ?: product?.imageUrl,
+                        model = selectedImage ?: productImageModel(product?.imageUrl, product?.serverUpdatedAt),
                         contentDescription = "صورة المنتج",
                         modifier = Modifier.size(88.dp).clip(RoundedCornerShape(12.dp)),
                     )
@@ -191,7 +192,21 @@ internal fun ProductEditDialog(
                 } else {
                     validationError = null
                     attemptedPayload = payload()
-                    onSave(product?.id, ProductInputDto(name = name.trim(), price = normalizedPrice, description = description.trim().ifBlank { null }, notes = notes.trim().ifBlank { null }, barcode = barcode.trim().ifBlank { null }, stock = stock.toInt(), categoryId = categoryId), requestKey, selectedImage)
+                    onSave(
+                        product?.id,
+                        ProductInputDto(
+                            name = name.trim(),
+                            price = normalizedPrice,
+                            description = description.trim().ifBlank { null },
+                            notes = notes.trim().ifBlank { null },
+                            barcode = barcode.trim().ifBlank { null },
+                            stock = stock.toInt(),
+                            categoryId = categoryId,
+                            expectedStock = expectedStock,
+                        ),
+                        requestKey,
+                        selectedImage,
+                    )
                 }
             }) { Text(if (product == null) "حفظ المنتج" else "حفظ التعديلات") }
         },
@@ -201,19 +216,20 @@ internal fun ProductEditDialog(
 
 @Composable
 internal fun WalletCreateDialog(
+    initialProvider: String? = null,
     onDismiss: () -> Unit,
     onCreate: (WalletInputDto, String) -> Unit,
 ) {
     val providers = listOf(
         "vodafone_cash" to "فودافون كاش",
-        "instapay" to "إنستا باي",
+        "fawry" to "فوري",
         "orange_cash" to "أورنج كاش",
         "etisalat_cash" to "اتصالات كاش",
         "we_pay" to "WE Pay",
         "other" to "أخرى",
     )
     var name by rememberSaveable { mutableStateOf("") }
-    var provider by rememberSaveable { mutableStateOf(providers.first().first) }
+    var provider by rememberSaveable(initialProvider) { mutableStateOf(initialProvider ?: providers.first().first) }
     var identifier by rememberSaveable { mutableStateOf("") }
     var openingBalance by rememberSaveable { mutableStateOf("0.00") }
     var menuOpen by remember { mutableStateOf(false) }
@@ -703,10 +719,11 @@ internal fun InstallmentCreateDialog(
 @Composable
 internal fun MaintenanceEditDialog(
     record: MaintenanceDto?,
+    hilal: Boolean,
     onDismiss: () -> Unit,
     onSave: (MaintenanceInputDto, String) -> Unit,
 ) {
-    val statuses = listOf("قيد الانتظار", "قيد الصيانة", "مكتمل", "مرفوض")
+    val statuses = maintenanceStatusOptions(record, hilal)
     var name by rememberSaveable(record?.id) { mutableStateOf(record?.name.orEmpty()) }
     var owner by rememberSaveable(record?.id) { mutableStateOf(record?.owner.orEmpty()) }
     var phone by rememberSaveable(record?.id) { mutableStateOf(record?.phone.orEmpty()) }
@@ -1175,6 +1192,7 @@ internal fun DamagedItemCreateDialog(
     products: List<DamagedProductDto>,
     isLoading: Boolean,
     error: String?,
+    canManageCost: Boolean,
     onSearch: (String) -> Unit,
     onDismiss: () -> Unit,
     onCreate: (DamagedItemInputDto, String) -> Unit,
@@ -1192,7 +1210,7 @@ internal fun DamagedItemCreateDialog(
     var productId by rememberSaveable { mutableStateOf<Long?>(null) }
     var quantity by rememberSaveable { mutableStateOf("1") }
     var reason by rememberSaveable { mutableStateOf("broken") }
-    var unitValue by rememberSaveable { mutableStateOf("") }
+    var unitValue by rememberSaveable(canManageCost) { mutableStateOf("") }
     var damagedOn by rememberSaveable { mutableStateOf(SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())) }
     var notes by rememberSaveable { mutableStateOf("") }
     var search by rememberSaveable { mutableStateOf("") }
@@ -1273,10 +1291,10 @@ internal fun DamagedItemCreateDialog(
                         }
                     }
                 }
-                OutlinedTextField(
+                if (canManageCost) OutlinedTextField(
                     unitValue,
                     { value -> val normalized = value.normalizeArabicDigits(); updatePayload(payload(nextUnitValue = normalized)); unitValue = normalized },
-                    label = { Text("قيمة الوحدة (اختياري، الافتراضي سعر البيع)") },
+                    label = { Text("قيمة الوحدة (اختياري، الافتراضي تكلفة المنتج)") },
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),

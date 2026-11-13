@@ -16,6 +16,8 @@ import kotlinx.serialization.SerializationException
 @Serializable
 private data class ErrorEnvelope(
     @SerialName("error_code") val errorCode: String? = null,
+    val code: String? = null,
+    val message: String? = null,
     val errors: Map<String, List<String>> = emptyMap(),
 )
 
@@ -50,7 +52,7 @@ class ApiCallExecutor @Inject constructor(
             401 -> ApiFailure.Unauthorized
             403 -> ApiFailure.Forbidden
             404 -> ApiFailure.NotFound
-            409 -> ApiFailure.Conflict(envelope?.errorCode)
+            409 -> ApiFailure.Conflict(envelope?.code ?: envelope?.errorCode, envelope?.message)
             422 -> ApiFailure.Validation(envelope?.errors.orEmpty())
             429 -> ApiFailure.RateLimited
             in 500..599 -> ApiFailure.Server

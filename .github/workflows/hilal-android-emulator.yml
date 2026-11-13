@@ -1,0 +1,213 @@
+name: Hilal Android Emulator
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [cloudflare-full-migration]
+    paths:
+      - 'android/**'
+      - 'cloud/api/**'
+      - '.github/workflows/hilal-android-emulator.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  staging:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 28
+    env:
+      WRANGLER_SEND_METRICS: 'false'
+      HILAL_EMULATOR_IMAGE: system-images;android-35;google_apis;x86_64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: cloud/api/package-lock.json
+      - name: Install Android platform and emulator image
+        shell: bash
+        run: |
+          sdkmanager="${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager"
+          "$sdkmanager" --list --channel=3 > "$RUNNER_TEMP/hilal-sdk-packages.txt"
+          if [ -f "${ANDROID_HOME}/platforms/android-37/android.jar" ]; then
+            echo 'HILAL_ANDROID_MINOR=0' >> "$GITHUB_ENV"
+          else
+            package=$(awk -F'|' '{gsub(/[[:space:]]/, "", $1); if ($1 ~ /^platforms;android-37(\.[0-9]+)?$/) print $1}' \
+              "$RUNNER_TEMP/hilal-sdk-packages.txt" | sort -Vu | tail -n 1)
+            test -n "$package"
+            "$sdkmanager" --channel=3 "$package"
+            minor=0
+            if [[ "$package" =~ \.([0-9]+)$ ]]; then minor="${BASH_REMATCH[1]}"; fi
+            echo "HILAL_ANDROID_MINOR=$minor" >> "$GITHUB_ENV"
+          fi
+          "$sdkmanager" emulator platform-tools "$HILAL_EMULATOR_IMAGE"
+          echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
+      - name: Boot an Android 15 emulator
+        shell: bash
+        run: |
+          test -c /dev/kvm
+          sudo chmod a+rw /dev/kvm
+          emulator="$ANDROID_HOME/emulator/emulator"
+          adb="$ANDROID_HOME/platform-tools/adb"
+          export ANDROID_AVD_HOME="$RUNNER_TEMP/hilal-emulator/avd"
+          mkdir -p "$ANDROID_AVD_HOME"
+          avdmanager="$ANDROID_HOME/cmdline-tools/latest/bin/avdmanager"
+          echo no | "$avdmanager" create avd --name hilal-ci --package "$HILAL_EMULATOR_IMAGE" \
+            --path "$ANDROID_AVD_HOME/hilal-ci.avd" --force
+          test -f "$ANDROID_AVD_HOME/hilal-ci.avd/config.ini"
+          if [ ! -f "$ANDROID_AVD_HOME/hilal-ci.ini" ]; then
+            printf 'avd.ini.encoding=UTF-8\npath=%s/hilal-ci.avd\ntarget=android-35\n' \
+              "$ANDROID_AVD_HOME" > "$ANDROID_AVD_HOME/hilal-ci.ini"
+          fi
+          "$emulator" -list-avds | grep -Fx 'hilal-ci'
+          "$emulator" -accel-check
+          "$adb" start-server
+          boot_log="$RUNNER_TEMP/hilal-emulator/boot.log"
+          nohup "$emulator" -avd hilal-ci -port 5554 -no-window -no-boot-anim -no-snapshot -no-audio \
+            -gpu software -feature -Vulkan -camera-back none -camera-front none \
+            > "$boot_log" 2>&1 < /dev/null &
+          emulator_pid=$!
+          export ANDROID_SERIAL=emulator-5554
+          deadline=$((SECONDS + 240))
+          until [[ "$(timeout 5 "$adb" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true)" = 1 ]]; do
+            if ! kill -0 "$emulator_pid" 2>/dev/null || (( SECONDS >= deadline )); then
+              tail -n 100 "$boot_log"
+              "$adb" devices -l
+              exit 1
+            fi
+            sleep 3
+          done
+          tail -n 25 "$boot_log"
+          echo "ANDROID_SERIAL=$ANDROID_SERIAL" >> "$GITHUB_ENV"
+          "$adb" shell wm size 1080x1920
+          "$adb" shell wm density 360
+          "$adb" shell input keyevent 82
+          for setting in window_animation_scale transition_animation_scale animator_duration_scale; do
+            "$adb" shell settings put global "$setting" 0
+          done
+      - name: Build the staging APK and Android test APK
+        working-directory: android
+        run: bash gradlew :app:assembleStagingDebug :app:assembleStagingDebugAndroidTest -PstoreCompileSdkMinor="$HILAL_ANDROID_MINOR"
+      - name: Launch the standard staging APK and check Cloudflare connectivity
+        working-directory: android
+        shell: bash
+        run: |
+          adb install -t app/build/outputs/apk/staging/debug/*.apk
+          adb install -t app/build/outputs/apk/androidTest/staging/debug/*.apk
+          timeout 180 adb shell am instrument -w -r \
+            -e class 'com.storemanagement.mobile.StagingAcceptanceTest#launchesPublishedStagingAndReachesCloudApi' \
+            com.storemanagement.mobile.staging.test/androidx.test.runner.AndroidJUnitRunner \
+            | tee "$RUNNER_TEMP/hilal-emulator/cloud-startup.txt"
+          grep -Fq 'OK (1 test)' "$RUNNER_TEMP/hilal-emulator/cloud-startup.txt"
+      - name: Seed and start an isolated Worker and D1
+        working-directory: cloud/api
+        shell: bash
+        env:
+          STORE_USER_NAME: مسؤول محاكي هلال
+          STORE_USER_EMAIL: emulator-operator@example.invalid
+          STORE_USER_USERNAME: emulator-operator
+          STORE_USER_PASSWORD: hilal-emulator-fixture-only
+        run: |
+          npm ci
+          state="$RUNNER_TEMP/hilal-d1"
+          pepper="$(openssl rand -hex 32)"
+          export AUTH_PEPPER="$pepper"
+          node scripts/provision-user.mjs "$RUNNER_TEMP/hilal-emulator-user.generated.sql"
+          STORE_USER_NAME='مراجع محاكي هلال' STORE_USER_EMAIL=emulator-reviewer@example.invalid \
+            STORE_USER_USERNAME=emulator-reviewer node scripts/provision-user.mjs "$RUNNER_TEMP/hilal-emulator-reviewer.generated.sql"
+          cat >> "$RUNNER_TEMP/hilal-emulator-reviewer.generated.sql" <<'SQL'
+          INSERT INTO roles (name) VALUES ('Emulator shift reviewer');
+          INSERT INTO role_permissions (role_id, permission)
+            SELECT id, 'retail.shifts.approve' FROM roles WHERE name = 'Emulator shift reviewer';
+          UPDATE users SET role_id = (SELECT id FROM roles WHERE name = 'Emulator shift reviewer')
+            WHERE email = 'emulator-reviewer@example.invalid';
+          SQL
+          node scripts/import-laravel-catalog.mjs fixtures/mysql-catalog.synthetic.json \
+            --emit-sql "$RUNNER_TEMP/hilal-emulator-catalog.generated.sql"
+          npx --no-install wrangler d1 migrations apply DB --local --persist-to "$state"
+          npx --no-install wrangler d1 execute DB --local --persist-to "$state" \
+            --file "$RUNNER_TEMP/hilal-emulator-user.generated.sql"
+          npx --no-install wrangler d1 execute DB --local --persist-to "$state" \
+            --file "$RUNNER_TEMP/hilal-emulator-reviewer.generated.sql"
+          npx --no-install wrangler d1 execute DB --local --persist-to "$state" \
+            --file "$RUNNER_TEMP/hilal-emulator-catalog.generated.sql"
+          printf 'AUTH_PEPPER=%s\n' "$pepper" > .dev.vars
+          nohup node node_modules/wrangler/bin/wrangler.js dev --local --ip 127.0.0.1 \
+            --port 8787 --persist-to "$state" > "$RUNNER_TEMP/hilal-emulator/worker.log" 2>&1 < /dev/null &
+          curl --fail --silent --show-error --retry 12 --retry-connrefused --retry-delay 2 \
+            --max-time 5 http://127.0.0.1:8787/health | jq -e '.success and .data.database == "ready"'
+          token="$(jq -nc --arg username "$STORE_USER_USERNAME" --arg password "$STORE_USER_PASSWORD" \
+            '{username:$username,password:$password,device_name:"emulator-api-precheck"}' | \
+            curl --fail --silent --show-error --header 'Content-Type: application/json' \
+              --header 'X-Store-Client: android' --data-binary @- http://127.0.0.1:8787/api/v1/auth/token | \
+            jq -er '.data | select(.user.permissions | index("page.retail_shifts.operate")) | .access_token')"
+          curl --fail --silent --show-error --header "Authorization: Bearer $token" \
+            --header 'X-Store-Client: android' 'http://127.0.0.1:8787/api/v1/retail/shifts?page=1' | \
+            jq -e '.success and .data == [] and .meta.current_page == 1 and .meta.total == 0'
+          base='http://127.0.0.1:8787/api/v1'
+          post_fixture() {
+            curl --fail-with-body --silent --show-error --header "Authorization: Bearer $token" \
+              --header 'Content-Type: application/json' --header "Idempotency-Key: emulator-fixture-$2" \
+              --data-binary "$3" "$base/$1"
+          }
+          product="$(post_fixture products tracked-product '{"name":"هاتف محاكي هلال","barcode":"HILAL-EMU-TRACKED","price_minor":5000,"tracking":"imei","warranty_months":1}' | jq -er '.data.id')"
+          supplier="$(post_fixture suppliers supplier '{"name":"Emulator tracked fixture supplier"}' | jq -er '.data.id')"
+          purchase="$(post_fixture purchases purchase "$(jq -nc --argjson supplier "$supplier" \
+            '{supplier_id:$supplier,description:"Emulator tracked delivery",total_minor:5000,purchase_date:"2026-01-01"}')" | jq -er '.data.id')"
+          post_fixture "purchases/$purchase/receipts" receipt "$(jq -nc --argjson product "$product" \
+            '{reference:"EMULATOR-IMEI",items:[{product_id:$product,quantity:1,devices:[{serial_number:"HILAL-EMU-IMEI",imei1:"490154203237518"}]}]}')" | \
+            jq -e '.success and (.data.id > 0)'
+          curl --fail --silent --show-error --header "Authorization: Bearer $token" \
+            "$base/retail/devices?q=490154203237518" | \
+            jq -e '.success and (.data | length == 1 and .[0].serial_number == "HILAL-EMU-IMEI" and .[0].status == "available")'
+          curl --fail --silent --show-error --request DELETE --header "Authorization: Bearer $token" \
+            --header 'X-Store-Client: android' http://127.0.0.1:8787/api/v1/auth/token > /dev/null
+          adb reverse tcp:8787 tcp:8787
+      - name: Test tracked checkout, shift review and Arabic PDF
+        working-directory: android
+        shell: bash
+        run: |
+          bash gradlew :app:assembleStagingDebug :app:assembleStagingDebugAndroidTest \
+            -PstoreCompileSdkMinor="$HILAL_ANDROID_MINOR" \
+            -PstoreApiStagingUrl=http://127.0.0.1:8787/api/
+          adb install -r -t app/build/outputs/apk/staging/debug/*.apk
+          adb install -r -t app/build/outputs/apk/androidTest/staging/debug/*.apk
+          timeout 180 adb shell am instrument -w -r \
+            -e class 'com.storemanagement.mobile.StagingAcceptanceTest#sellsTrackedDeviceAndClosesShiftAgainstIsolatedWorker,com.storemanagement.mobile.data.AndroidInvoicePdfTest' \
+            com.storemanagement.mobile.staging.test/androidx.test.runner.AndroidJUnitRunner \
+            | tee "$RUNNER_TEMP/hilal-emulator/isolated-operations.txt"
+          grep -Fq 'OK (2 tests)' "$RUNNER_TEMP/hilal-emulator/isolated-operations.txt"
+      - name: Confirm the Android write reached D1
+        working-directory: cloud/api
+        shell: bash
+        run: |
+          npx --no-install wrangler d1 execute DB --local --persist-to "$RUNNER_TEMP/hilal-d1" \
+            --command "SELECT name, price_minor FROM products WHERE name = 'منتج من محاكي هلال'" \
+            --json | jq -e '.[0].results == [{"name":"منتج من محاكي هلال","price_minor":1325}]'
+          npx --no-install wrangler d1 execute DB --local --persist-to "$RUNNER_TEMP/hilal-d1" \
+            --command "SELECT d.status AS device_status, v.status AS shift_status, v.expected_minor, v.observed_minor,
+              v.difference_minor, r.username AS reviewer,
+              SUM(CASE WHEN l.method = 'cash' THEN l.delta_minor ELSE 0 END) AS cash_minor,
+              SUM(CASE WHEN l.method = 'card' AND l.reference = 'EMULATOR-CARD' THEN l.delta_minor ELSE 0 END) AS card_minor
+              FROM retail_devices d JOIN retail_device_sales s ON s.device_id = d.id
+              JOIN retail_tender_ledger l ON l.invoice_id = s.invoice_id
+              JOIN retail_shift_positions v ON v.id = l.shift_id
+              JOIN users r ON r.id = v.approved_by AND r.id <> v.actor_id
+              WHERE d.serial_number = 'HILAL-EMU-IMEI' GROUP BY d.id, v.id" \
+            --json | jq -e '.[0].results == [{"device_status":"sold","shift_status":"approved","expected_minor":8000,
+              "observed_minor":7900,"difference_minor":-100,"reviewer":"emulator-reviewer","cash_minor":3000,"card_minor":2000}]'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: hilal-android-emulator-results
+          path: |
+            ${{ runner.temp }}/hilal-emulator/*-*.txt
+            ${{ runner.temp }}/hilal-emulator/boot.log
+            ${{ runner.temp }}/hilal-emulator/worker.log
+          if-no-files-found: ignore

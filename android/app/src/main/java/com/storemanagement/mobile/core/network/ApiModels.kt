@@ -75,8 +75,8 @@ data class DamagedItemDto(
     @SerialName("product_name") val productName: String,
     @SerialName("product_barcode") val productBarcode: String? = null,
     val quantity: Int,
-    @SerialName("unit_value") val unitValue: String,
-    @SerialName("total_value") val totalValue: String,
+    @SerialName("unit_value") val unitValue: String? = null,
+    @SerialName("total_value") val totalValue: String? = null,
     val reason: String,
     @SerialName("reason_label") val reasonLabel: String,
     val status: String,
@@ -132,6 +132,7 @@ data class ProductInputDto(
     val barcode: String? = null,
     val stock: Int,
     @SerialName("category_id") val categoryId: Long? = null,
+    @SerialName("expected_stock") val expectedStock: Int? = null,
 )
 
 @Serializable
@@ -245,6 +246,7 @@ data class WalletCashierTransactionDto(
     val uuid: String,
     @SerialName("wallet_id") val walletId: Long,
     @SerialName("wallet_name") val walletName: String? = null,
+    @SerialName("wallet_provider") val walletProvider: String? = null,
     val type: String,
     val status: String,
     val amount: String,
@@ -294,6 +296,7 @@ data class CashierProductDto(
     val price: String,
     val barcode: String? = null,
     val stock: Int,
+    val tracking: String = "quantity",
     @SerialName("image_url") val imageUrl: String? = null,
 )
 
@@ -361,11 +364,11 @@ data class PersonalDebtInputDto(
 @Serializable
 data class WalletSummaryDto(
     @SerialName("wallets_total") val walletsTotal: String,
-    val cash: String,
-    @SerialName("profit_today") val profitToday: String,
-    @SerialName("profit_available") val profitAvailable: String,
+    val cash: String? = null,
+    @SerialName("profit_today") val profitToday: String? = null,
+    @SerialName("profit_available") val profitAvailable: String? = null,
     val receivables: String,
-    val capital: String,
+    val capital: String? = null,
 )
 
 @Serializable

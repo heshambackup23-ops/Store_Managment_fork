@@ -34,6 +34,59 @@ interface StoreApi {
     @GET("v1/me")
     suspend fun currentUser(): ApiEnvelope<UserDto>
 
+    @GET("v1/retail/shifts")
+    suspend fun retailShifts(
+        @Query("status") status: String?,
+        @Query("page") page: Int,
+        @Query("per_page") perPage: Int? = null,
+    ): ApiPage<RetailShiftDto>
+
+    @GET("v1/retail/settings")
+    suspend fun retailSettings(): ApiEnvelope<RetailSettingsDto>
+
+    @GET("v1/retail/shifts/{id}")
+    suspend fun retailShift(@Path("id") id: Long): ApiEnvelope<RetailShiftDto>
+
+    @GET("v1/retail/shifts/{id}/cash-movements")
+    suspend fun retailCashMovements(@Path("id") id: Long, @Query("page") page: Int): ApiPage<RetailCashMovementDto>
+
+    @POST("v1/retail/shifts")
+    suspend fun openRetailShift(
+        @Header("Idempotency-Key") key: String,
+        @Body input: OpenRetailShiftDto,
+    ): ApiEnvelope<RetailShiftDto>
+
+    @POST("v1/retail/shifts/{id}/close")
+    suspend fun closeRetailShift(
+        @Path("id") id: Long,
+        @Header("Idempotency-Key") key: String,
+        @Body input: CloseRetailShiftDto,
+    ): ApiEnvelope<RetailShiftDto>
+
+    @POST("v1/retail/shifts/{id}/approve")
+    suspend fun approveRetailShift(
+        @Path("id") id: Long,
+        @Header("Idempotency-Key") key: String,
+        @Body input: ApproveRetailShiftDto,
+    ): ApiEnvelope<RetailShiftDto>
+
+    @GET("v1/retail/devices")
+    suspend fun retailDevices(
+        @Query("q") query: String?,
+        @Query("status") status: String?,
+        @Query("page") page: Int,
+        @Query("product_id") productId: Long? = null,
+    ): ApiPage<RetailDeviceDto>
+
+    @GET("v1/retail/devices/{id}")
+    suspend fun retailDevice(@Path("id") id: Long): ApiEnvelope<RetailDeviceDto>
+
+    @POST("v1/retail/checkout")
+    suspend fun retailCheckout(
+        @Header("Idempotency-Key") key: String,
+        @Body input: RetailCheckoutDto,
+    ): ApiEnvelope<RetailCheckoutReceiptDto>
+
     @GET("v1/profile")
     suspend fun profile(): ApiEnvelope<ProfileDto>
 
@@ -102,6 +155,10 @@ interface StoreApi {
         @Body body: ProductInputDto,
     ): ApiEnvelope<ProductDto>
 
+    @Streaming
+    @GET("v1/products/{product}/image")
+    suspend fun productImage(@Path("product") id: Long): ResponseBody
+
     @Multipart
     @POST("v1/products/{product}/image")
     suspend fun updateProductImage(
@@ -159,6 +216,7 @@ interface StoreApi {
     @PUT("v1/maintenance/{maintenance}")
     suspend fun updateMaintenance(
         @Path("maintenance") id: Long,
+        @Header("Idempotency-Key") key: String,
         @Body body: MaintenanceInputDto,
     ): ApiEnvelope<MaintenanceDto>
 
@@ -166,7 +224,7 @@ interface StoreApi {
     suspend fun deleteMaintenance(@Path("maintenance") id: Long): Response<Unit>
 
     @GET("v1/wallet-cashier")
-    suspend fun walletCashier(): ApiEnvelope<WalletCashierDto>
+    suspend fun walletCashier(@Query("provider") provider: String? = null): ApiEnvelope<WalletCashierDto>
 
     @POST("v1/wallet-cashier")
     suspend fun createWalletTransaction(

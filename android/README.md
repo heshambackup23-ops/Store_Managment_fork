@@ -1,4 +1,4 @@
-# phoneStore Android App
+# هلال لإدارة المتجر — Android
 
 Native Kotlin and Jetpack Compose client for the Laravel `/api/v1` API. Android never connects directly to the application database; Laravel remains authoritative for permissions, prices, invoice totals, and stock.
 
@@ -28,7 +28,7 @@ For a physical device on the same trusted Wi-Fi network:
 
 Replace `192.168.0.31` if the PC's Wi-Fi address changes. The emulator continues to use `10.0.2.2`.
 
-Staging and production have intentionally unusable placeholder defaults. Set each URL to the Laravel API base ending in `/api/`; non-debug builds require HTTPS and keep Android's normal certificate validation enabled. Configure Laravel `APP_URL` to a hostname reachable by the device so product image URLs resolve correctly; release image URLs must use HTTPS.
+Staging defaults to `https://henra-store-demo-ui.pages.dev/api/`. It uses the Cloud Edition demonstration database and its Android compatibility routes. Production requires an explicit API base ending in `/api/`. Release builds use HTTPS and standard Android certificate validation. For a Laravel endpoint, configure its `APP_URL` so product image URLs resolve correctly on the device.
 
 PowerShell examples from the repository root:
 
