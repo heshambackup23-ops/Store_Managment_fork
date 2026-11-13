@@ -16,7 +16,7 @@ const catalogTables = ['categories', 'products', 'customers']
 const debtTables = ['personal_debts', 'personal_debt_payments']
 const salesTables = ['sales', 'sales_items', 'payments', 'debts']
 const historyTables = ['invoices', 'installments']
-const businessTables = new Set([...catalogTables, ...debtTables, ...historyTables])
+const businessTables = new Set([...catalogTables, ...debtTables, ...historyTables, 'maintenances'])
 const systemTables = new Set([
   'users', 'profiles', 'roles', 'permissions', 'model_has_permissions', 'model_has_roles', 'role_has_permissions',
   'migrations', 'sessions', 'password_reset_tokens', 'personal_access_tokens', 'cache', 'cache_locks',
@@ -24,6 +24,9 @@ const systemTables = new Set([
 ])
 const maxJsonBytes = 128 * 1024 * 1024
 const localTimestamp = /^\d{4}-\d{2}-\d{2}[ T](?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d{1,6})?$/
+const maintenanceStatuses = new Map([
+  ['قيد الانتظار', 'received'], ['قيد الصيانة', 'in_progress'], ['مكتمل', 'completed'], ['مرفوض', 'cancelled'],
+])
 
 function object(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -198,6 +201,46 @@ function standaloneSql(rows, source, actor) {
   }
 }
 
+function maintenanceRecord(row, actor) {
+  const key = id(row.id)
+  const status = maintenanceStatuses.get(row.status)
+  if (!status) throw new Error('unmapped maintenance status')
+  const requested = day(row.requested_date)
+  const completed = row.completed_date == null ? null : day(row.completed_date)
+  if (completed && (completed < requested || status !== 'completed')) throw new Error('maintenance completion date conflicts with status or request date')
+  if (!row.created_at || !row.updated_at) throw new Error('created_at and updated_at are required')
+  const columns = ['id', 'name', 'owner', 'status', 'address', 'phone', 'description', 'notes', 'image_path', 'requested_date', 'completed_date', 'created_at', 'updated_at']
+  if (Object.keys(row).some(column => !columns.includes(column) && row[column] != null)) {
+    throw new Error('maintenance row has additional source data needing a destination mapping')
+  }
+  return {
+    id: key, status, customer_name: text(row.owner, 255, true), phone: text(row.phone, 32),
+    item: text(row.name, 255, true), problem: text(row.description, 12000), address: text(row.address, 255),
+    notes: text(row.notes, 2000), requested_date: requested, completed_date: completed,
+    actor_id: actor, created_at: row.created_at, updated_at: row.updated_at,
+  }
+}
+
+function maintenanceSql(rows, actor) {
+  const records = rowMap(rows, 'maintenances', row => maintenanceRecord(row, actor))
+  const commands = [...records.values()].map(record => (
+    `INSERT INTO maintenance_requests (${Object.keys(record).join(', ')}) VALUES (${Object.values(record).map(literal).join(', ')});`
+  ))
+  const reservation = 'historical-maintenance'
+  const largest = [...records.keys()].reduce((max, key) => Math.max(max, key), 0)
+  commands.push(`INSERT INTO business_operations(id,actor_id,request_key,operation,fingerprint)
+    SELECT ${largest}, ${actor}, '${reservation}', 'import.reserve', '${reservation}'
+    WHERE NOT EXISTS (SELECT 1 FROM business_operations WHERE id >= ${largest});`)
+  return {
+    sql: commands.join('\n'),
+    checks: {
+      requests: records.size,
+      attachments_requiring_separate_import: rows.filter(row => row.image_path).length,
+      source_has_financial_ledger: false,
+    },
+  }
+}
+
 async function importedSql(temp, tool, payload, actor) {
   const input = join(temp, tool + '.json')
   const output = join(temp, tool + '.generated.sql')
@@ -237,7 +280,8 @@ function verifyCounts(db, source) {
   const target = {}
   for (const table of businessTables) {
     const expected = rowMap(source[table] ?? [], table)
-    const actual = db.prepare(`SELECT id FROM ${table}`).all()
+    const destination = table === 'maintenances' ? 'maintenance_requests' : table
+    const actual = db.prepare(`SELECT id FROM ${destination}`).all()
     if (expected.size !== actual.length || actual.some(({ id: key }) => !expected.has(key))) {
       throw new Error(`Row IDs did not reconcile for ${table}.`)
     }
@@ -250,10 +294,19 @@ function verifyCounts(db, source) {
       throw new Error('Stock or price did not reconcile per product.')
     }
   }
+  const installments = rowMap(source.installments ?? [], 'installments')
   for (const row of db.prepare('SELECT id, principal_minor, paid_minor FROM installments').all()) {
-    const expected = rowMap(source.installments ?? [], 'installments').get(row.id)
+    const expected = installments.get(row.id)
     if (BigInt(row.principal_minor) !== minor(expected.product_price) || BigInt(row.paid_minor) !== minor(expected.paid_amount)) {
       throw new Error('An installment balance did not reconcile.')
+    }
+  }
+  const maintenance = rowMap(source.maintenances ?? [], 'maintenances')
+  for (const row of db.prepare('SELECT id, status, requested_date, completed_date, price_minor, paid_minor FROM maintenance_requests').all()) {
+    const expected = maintenance.get(row.id)
+    if (row.status !== maintenanceStatuses.get(expected.status) || row.requested_date !== expected.requested_date
+      || row.completed_date !== (expected.completed_date ?? null) || row.price_minor || row.paid_minor) {
+      throw new Error('A maintenance status or date did not reconcile.')
     }
   }
   if (db.prepare('PRAGMA foreign_key_check').all().length) throw new Error('Foreign keys did not reconcile.')
@@ -291,7 +344,10 @@ function collectTables(input) {
       throw new Error('Invalid source table or row collection.')
     }
     sourceCounts[table] = rows.length
-    if (systemTables.has(table)) excludedSystem[table] = rows.length
+    const emptySettings = table === 'settings' && rows.every((row) => (
+      Object.keys(row).every((column) => ['id', 'created_at', 'updated_at'].includes(column))
+    ))
+    if (systemTables.has(table) || emptySettings) excludedSystem[table] = rows.length
     else if (!businessTables.has(table) && rows.length) blocked[table] = rows.length
   }
   if (input.excluded_table_counts !== undefined && !object(input.excluded_table_counts)) {
@@ -407,6 +463,11 @@ export async function restoreLaravelBackup(path, options = {}) {
     if (source.personal_debts?.length) await include('personal-debts', {
       format: 'hilal-mysql-personal-debts-v1', tables: Object.fromEntries(debtTables.map((name) => [name, source[name] ?? []])),
     })
+    if (source.maintenances?.length) {
+      const result = maintenanceSql(source.maintenances, actor)
+      parts.push(result.sql)
+      checks.maintenance = result.checks
+    }
     const sql = parts.join('\n\n') + '\n'
     const verification = new DatabaseSync(':memory:')
     let counts
