@@ -65,13 +65,20 @@ const damageFrom = `damaged_stock d JOIN products p ON p.id = d.product_id
       ON im.source_type = 'adjustment' AND im.source_id = correction.id AND im.product_id = d.product_id
     WHERE correction.damage_id = d.id
   ), (SELECT im.id FROM inventory_movements im WHERE im.source_type = 'damage' AND im.source_id = d.id AND im.product_id = d.product_id))`
+const compatibleDamage = 'd.branch_id = 1 AND p.quantity_scale = 1'
 const damageSelect = `d.id, d.product_id, COALESCE(d.legacy_product_name, p.name) AS product_name,
   CASE WHEN d.legacy_damage_fingerprint IS NULL THEN p.barcode ELSE d.legacy_product_barcode END AS product_barcode, d.quantity, d.reason,
   CASE WHEN reversal.id IS NULL THEN 'recorded' ELSE 'voided' END AS status,
   COALESCE(d.damaged_on, date(d.created_at)) AS damaged_on, d.notes, reversal.reason AS void_reason,
   d.unit_cost_minor, d.quantity * d.unit_cost_minor AS total_minor, COALESCE(m.delta, -d.legacy_quantity) AS delta,
   CASE WHEN m.id IS NULL THEN d.legacy_stock_after
-    ELSE p.stock - COALESCE((SELECT SUM(im.delta) FROM inventory_movements im WHERE im.product_id = p.id AND im.id > m.id), 0)
+    ELSE COALESCE((SELECT stock FROM retail_branch_stock b WHERE b.product_id = p.id AND b.branch_id = 1), 0)
+      - COALESCE((SELECT SUM(im.delta) FROM inventory_movements im
+        LEFT JOIN retail_branch_movement_links link ON link.movement_id = im.id
+        WHERE im.product_id = p.id AND im.id > m.id AND COALESCE(link.branch_id, 1) = 1), 0)
+      - COALESCE((SELECT SUM(CASE WHEN tr.to_branch_id = 1 THEN tr.quantity ELSE -tr.quantity END)
+        FROM retail_branch_transfers tr
+        WHERE tr.product_id = p.id AND (tr.to_branch_id = 1 OR tr.from_branch_id = 1) AND tr.id > m.source_id), 0)
   END AS stock_after`
 type Damage = Record<string, unknown> & { unit_cost_minor: number; total_minor: number; delta: number; stock_after: number; reason: string }
 const damageReasons: Record<string, string> = {
@@ -91,7 +98,8 @@ function damageView({ unit_cost_minor, total_minor, delta, ...row }: Damage, inc
   }
 }
 async function damageDetail(c: ApiContext, id: number, status: 200 | 201 = 200) {
-  const row = await c.env.DB.prepare(`SELECT ${damageSelect} FROM ${damageFrom} WHERE d.id = ?`).bind(id).first<Damage>()
+  const row = await c.env.DB.prepare(`SELECT ${damageSelect} FROM ${damageFrom} WHERE d.id = ? AND ${compatibleDamage}`)
+    .bind(id).first<Damage>()
   if (!row) fail(404, 'not_found', 'سجل الهالك غير موجود.')
   return ok(c, damageView(row, canReadDamageCost(c)), status)
 }
@@ -100,7 +108,7 @@ mobileWalletDamage.get('/damaged', async (c, next) => {
   requirePermission(c, 'damaged.view')
   const query = searchText.optional().parse(c.req.query('q'))
   const status = z.enum(['recorded', 'voided']).optional().parse(c.req.query('status'))
-  const predicates = []
+  const predicates = [compatibleDamage]
   if (query) predicates.push(`(COALESCE(d.legacy_product_name, p.name) LIKE ? ESCAPE '\\'
     OR CASE WHEN d.legacy_damage_fingerprint IS NULL THEN p.barcode ELSE d.legacy_product_barcode END = ?)`)
   if (status) predicates.push('reversal.id IS ' + (status === 'recorded' ? 'NULL' : 'NOT NULL'))
@@ -112,9 +120,11 @@ mobileWalletDamage.get('/damaged/products', async (c, next) => {
   if (!isAndroid(c)) return next()
   requirePermission(c, 'damaged.view')
   const query = searchText.optional().parse(c.req.query('q'))
-  const match = query ? " AND (name LIKE ? ESCAPE '\\' OR barcode = ?)" : ''
-  const rows = await c.env.DB.prepare(`SELECT id, name, barcode, price_minor, stock
-    FROM products WHERE active = 1 AND stock > 0${match} ORDER BY name, id LIMIT 30`)
+  const match = query ? " AND (p.name LIKE ? ESCAPE '\\' OR p.barcode = ?)" : ''
+  const rows = await c.env.DB.prepare(`SELECT p.id, p.name, p.barcode, p.price_minor, b.stock
+    FROM products p JOIN retail_branch_stock b ON b.branch_id = 1 AND b.product_id = p.id
+    WHERE p.active = 1 AND p.quantity_scale = 1 AND p.tracking = 'quantity' AND b.stock > 0${match}
+    ORDER BY p.name, p.id LIMIT 30`)
     .bind(...(query ? [searchPrefix(query), query] : [])).all<{ price_minor: number }>()
   return ok(c, rows.results.map(({ price_minor, ...row }) => ({ ...row, price: asDecimal(price_minor) })))
 })
@@ -131,6 +141,12 @@ mobileWalletDamage.post('/damaged', async (c, next) => {
   if (!isAndroid(c)) return next()
   requirePermission(c, 'damaged.manage')
   const { unit_value, notes, ...data } = await body(c, damageBody)
+  const product = await c.env.DB.prepare('SELECT quantity_scale, tracking FROM products WHERE id = ? AND active = 1')
+    .bind(data.product_id).first<{ quantity_scale: number; tracking: string }>()
+  if (!product) return fail(404, 'not_found', 'الصنف غير موجود.')
+  if (product.quantity_scale !== 1 || product.tracking !== 'quantity') {
+    return fail(422, 'RETAIL_MEASUREMENT_CLIENT', 'سجّل هالك الأصناف المقاسة أو الأجهزة المتتبعة من واجهة الويب.')
+  }
   const result = await canonicalWrite(c, '/damaged', { ...data, unit_value_minor: unit_value ?? undefined, notes: notes ?? undefined })
   return damageDetail(c, Number(result.id), 201)
 })
@@ -139,7 +155,8 @@ mobileWalletDamage.put('/damaged/:id', async (c, next) => {
   requirePermission(c, 'damaged.manage')
   const id = identifier.parse(c.req.param('id'))
   const { product_id, unit_value, notes, ...data } = await body(c, damageBody)
-  const product = await c.env.DB.prepare('SELECT product_id FROM damaged_stock WHERE id = ?').bind(id).first<number>('product_id')
+  const product = await c.env.DB.prepare(`SELECT d.product_id FROM damaged_stock d JOIN products p ON p.id = d.product_id
+    WHERE d.id = ? AND ${compatibleDamage}`).bind(id).first<number>('product_id')
   if (product === null) fail(404, 'not_found', 'سجل الهالك غير موجود.')
   if (product !== product_id) fail(409, 'different_product', 'لعلاج تسجيل هالك على منتج آخر، ألغِ القيد وسجّل المنتج الصحيح.')
   await canonicalWrite(c, '/damaged/' + id + '/correct', { ...data, unit_value_minor: unit_value ?? undefined, notes: notes ?? '' })
@@ -150,6 +167,9 @@ mobileWalletDamage.post('/damaged/:id/void', async (c, next) => {
   requirePermission(c, 'damaged.manage')
   const id = identifier.parse(c.req.param('id'))
   const data = await body(c, z.object({ reason }).strict())
+  const found = await c.env.DB.prepare(`SELECT 1 FROM damaged_stock d JOIN products p ON p.id = d.product_id
+    WHERE d.id = ? AND ${compatibleDamage}`).bind(id).first()
+  if (!found) return fail(404, 'not_found', 'سجل الهالك غير موجود.')
   await canonicalWrite(c, '/damaged/' + id + '/reverse', data)
   return damageDetail(c, id)
 })

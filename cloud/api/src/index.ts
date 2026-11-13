@@ -4,7 +4,7 @@ import { ZodError } from 'zod'
 import { adminPermissions, adminRoutes, notifications } from './admin'
 import { allowedOrigin, authRequired, protectedAuth, publicAuth } from './auth'
 import { backup } from './backup'
-import { business, businessPermissions } from './business'
+import { business, businessPermissions, write } from './business'
 import { catalog, catalogPermissions } from './catalog'
 import { customerLedger } from './customer-ledger'
 import { dashboard } from './dashboard'
@@ -16,6 +16,8 @@ import { retailDeviceErrors } from './retail-devices'
 import { retailMargin } from './retail-margin'
 import { retailInventoryValuation } from './retail-inventory-valuation'
 import { retailAccountant, retailAccountantPermissions } from './retail-accountant'
+import { retailBranchPermissions, retailBranches } from './retail-branches'
+import { retailLedger, retailLedgerPermissions } from './retail-ledger'
 
 const app = new Hono<ApiEnv>()
 
@@ -51,12 +53,14 @@ api.route('/', protectedAuth)
 api.route('/', dashboard)
 api.route('/', catalog)
 api.route('/', customerLedger)
-api.route('/', adminRoutes([...catalogPermissions, ...adminPermissions, ...businessPermissions, ...retailAccountantPermissions, 'backup.export']))
+api.route('/', adminRoutes([...catalogPermissions, ...adminPermissions, ...businessPermissions, ...retailAccountantPermissions, ...retailBranchPermissions, ...retailLedgerPermissions, 'backup.export']))
 api.route('/', notifications)
 api.route('/', business)
 api.route('/', retailMargin)
 api.route('/', retailInventoryValuation)
 api.route('/', retailAccountant)
+api.route('/', retailBranches(write))
+api.route('/', retailLedger)
 api.route('/', backup)
 app.route('/api/v1', api)
 
@@ -86,6 +90,10 @@ app.onError((error, c) => {
   }
   if (message.includes('product_has_stock')) {
     return c.json({ success: false, code: 'product_has_stock', message: 'سجّل حركة لتصفير المخزون قبل أرشفة المنتج.' }, 409)
+  }
+  if (message.includes('RETAIL_METER_PRODUCT')) {
+    return c.json({ success: false, code: 'RETAIL_METER_PRODUCT',
+      message: 'وحدة القياس تُحدد عند إنشاء الصنف. البيع بالمتر يتطلب التتبع بالكمية دون عبوات بالقطعة.' }, 409)
   }
   if (message.includes('product_images_demo_limit')) {
     return c.json({ success: false, code: 'image_limit', message: 'بلغت النسخة التجريبية حد الصور المسموح.' }, 409)

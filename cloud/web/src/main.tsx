@@ -15,6 +15,10 @@ import { DeviceDetail, DeviceList } from './RetailDevices'
 import { RetailStocktakes } from './RetailStocktakes'
 import { RetailFinance } from './RetailFinance'
 import { RetailDiscounts } from './RetailDiscounts'
+import { RetailBranches } from './RetailBranches'
+import { RetailUsedPhones } from './RetailUsedPhones'
+import { RetailInstallations } from './RetailInstallations'
+import { RetailLedger } from './RetailLedger'
 import { DataModule, idOf, Notice, PageTitle } from './ui'
 import { WalletLedger } from './WalletOperations'
 import './styles.css'
@@ -36,11 +40,14 @@ const navGroups: { title: string; items: NavigationItem[] }[] = [
     { path: '/products', label: 'المنتجات', permission: 'products.view' },
     { path: '/categories', label: 'التصنيفات', permission: 'categories.view' },
     { path: '/inventory', label: 'حركات المخزون', permission: 'inventory.view' },
+    { path: '/retail-branches', label: 'مخزون الفروع', permission: 'inventory.view' },
     { path: '/retail-stocktakes', label: 'جرد المخزون', permission: 'inventory.stocktake.count' },
     { path: '/retail-devices', label: 'الأجهزة المتتبعة', permission: 'inventory.view' },
+    { path: '/retail-used-phones', label: 'الموبايلات المستعملة', permission: 'inventory.view' },
     { path: '/damaged', label: 'الهالك', permission: 'damaged.view' },
     { path: '/reports', label: 'تقارير المبيعات', permission: 'reports.view' },
     { path: '/retail-finance', label: 'تقارير مالية للمتجر', permission: 'reports.view' },
+    { path: '/retail-ledger', label: 'دفتر الأستاذ وإقفال الشهر', permission: 'retail.ledger.view' },
   ] },
   { title: 'الحسابات والخدمات', items: [
     { path: '/customers', label: 'العملاء', permission: 'customers.view' },
@@ -57,6 +64,7 @@ const navGroups: { title: string; items: NavigationItem[] }[] = [
     { path: '/wallet-report', label: 'تقرير المحافظ', permission: 'wallets.cash' },
     { path: '/wallet-reconciliation', label: 'مطابقة الدرج والمحافظ', permission: 'wallets.cash' },
     { path: '/maintenance', label: 'الصيانة', permission: 'maintenance.view' },
+    { path: '/retail-installations', label: 'مواعيد التركيب', permission: 'retail.installations.view' },
   ] },
   { title: 'إدارة النظام', items: [
     { path: '/staff', label: 'الموظفون', permission: 'staff.view' },
@@ -179,7 +187,8 @@ function Shell({ user, update, clear, theme, toggle }: {
     ['/retail-shifts', '/retail-safe'].includes(item.path) && allowed(user, 'retail.shifts.approve') ||
     item.path === '/retail-shifts' && allowed(user, 'retail.shifts.emergency_close') ||
     item.path === '/retail-discounts' && allowed(user, 'invoices.discount') ||
-    item.path === '/retail-stocktakes' && allowed(user, 'inventory.stocktake.approve')) })).filter(group => group.items.length > 0)
+    item.path === '/retail-stocktakes' && allowed(user, 'inventory.stocktake.approve') ||
+    item.path === '/retail-branches' && ['retail.branches.manage', 'retail.branches.transfer'].some(permission => allowed(user, permission))) })).filter(group => group.items.length > 0)
   const home = '/dashboard'
   const protect = (permission: string, element: ReactNode) => allowed(user, permission) ? element : <Notice error>ليست لديك صلاحية عرض هذه الصفحة.</Notice>
 
@@ -258,12 +267,16 @@ function Shell({ user, update, clear, theme, toggle }: {
             <Route path="/retail-discounts" element={allowed(user, 'invoices.discount') || allowed(user, 'retail.discounts.approve') ? <RetailDiscounts user={user} /> : <Notice error>ليست لديك صلاحية عرض الاعتمادات.</Notice>} />
             <Route path="/retail-safe" element={allowed(user, 'retail.safe.manage') || allowed(user, 'retail.shifts.approve') ? <RetailSafe user={user} /> : <Notice error>ليست لديك صلاحية عرض الخزنة.</Notice>} />
             <Route path="/retail-devices" element={protect('inventory.view', <DeviceList />)} />
+            <Route path="/retail-branches" element={['inventory.view', 'retail.branches.manage', 'retail.branches.transfer'].some(permission => allowed(user, permission)) ? <RetailBranches user={user} /> : <Notice error>ليست لديك صلاحية عرض مخزون الفروع.</Notice>} />
+            <Route path="/retail-used-phones" element={protect('inventory.view', <RetailUsedPhones user={user} />)} />
+            <Route path="/retail-installations" element={protect('retail.installations.view', <RetailInstallations user={user} />)} />
             <Route path="/retail-stocktakes" element={allowed(user, 'inventory.stocktake.count') || allowed(user, 'inventory.stocktake.approve') ? <RetailStocktakes user={user} /> : <Notice error>ليست لديك صلاحية عرض الجرد.</Notice>} />
             <Route path="/retail-devices/:id" element={protect('inventory.view', <DeviceDetail user={user} />)} />
             <Route path="/pos/reissue/:invoiceId" element={<Pos key="reissue" user={user} />} />
             <Route path="/invoices/:id" element={protect('invoices.view', <InvoiceDetail user={user} />)} />
             <Route path="/reports" element={protect('reports.view', <SalesReport />)} />
             <Route path="/retail-finance" element={protect('reports.view', <RetailFinance user={user} />)} />
+            <Route path="/retail-ledger" element={protect('retail.ledger.view', <RetailLedger user={user} />)} />
             <Route path="/wallet-report" element={protect('wallets.cash', <WalletReport user={user} />)} />
             <Route path="/wallet-reconciliation" element={protect('wallets.cash', <WalletReconciliation />)} />
             <Route path="/wallet-cashier" element={protect('wallets.view', <WalletCashier user={user} />)} />

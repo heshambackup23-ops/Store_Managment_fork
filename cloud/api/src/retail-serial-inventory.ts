@@ -11,13 +11,14 @@ const cost = 'products.cost.manage';
 const recordId = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
 const key = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 const text = (max: number) => z.string().trim().min(1).max(max).regex(/^[^\p{Cc}\p{Cf}]+$/u);
-const snapshot = z.strictObject({ stock: z.number().int().min(0).max(1_000_000_000), movement_id: key, review_id: key });
+const snapshot = z.strictObject({ stock: z.number().int().min(0).max(1_000_000_000), movement_id: key, review_id: key, transfer_id: key.optional() });
 const unitCost = z.number().int().min(0).max(900_000_000_000_000);
 const registeredDevice = z.strictObject({
   ...retailDeviceInput.shape, unit_cost_minor: unitCost,
 }).refine(({ unit_cost_minor: _cost, ...device }) => retailDeviceInput.safeParse(device).success);
 const common = {
   product_id: recordId, position: snapshot, source_reference: text(120), reason: text(1000),
+  branch_id: recordId.optional(),
   additions: z.array(registeredDevice).max(200).default([]),
 };
 const review = z.discriminatedUnion('kind', [
@@ -71,8 +72,13 @@ export function retailSerialInventory(writeOperation: typeof write) {
     const actor = c.get('actor');
     const id = identifier.parse(c.req.param('id'));
     const mayReadCost = hasPermission(actor, 'products.cost.view') || hasPermission(actor, cost);
-    const row = await c.env.DB.prepare(`SELECT product_id, product_name, barcode, tracking, stock, movement_id, review_id${mayReadCost ? ', inventory_value_minor' : ''}
-      FROM retail_device_inventory_positions WHERE product_id = ?`).bind(id).first();
+    const branch = identifier.optional().parse(c.req.query('branch_id')) ?? 1;
+    const row = await c.env.DB.prepare(`SELECT p.product_id, p.product_name, p.barcode, p.tracking, p.stock, p.movement_id, p.review_id,
+      COALESCE(s.stock,0) AS branch_stock, b.id AS branch_id,
+      COALESCE((SELECT MAX(t.id) FROM retail_branch_transfers t WHERE t.product_id=p.product_id),0) AS transfer_id
+      ${mayReadCost ? ', p.inventory_value_minor' : ''}
+      FROM retail_device_inventory_positions p JOIN retail_branches b ON b.id = ? AND b.active = 1
+      LEFT JOIN retail_branch_stock s ON s.branch_id=b.id AND s.product_id=p.product_id WHERE p.product_id = ?`).bind(branch, id).first();
     if (!row) return fail(404, 'not_found', 'الصنف غير موجود أو مؤرشف.');
     return ok(c, row);
   });
@@ -82,7 +88,8 @@ export function retailSerialInventory(writeOperation: typeof write) {
     const mayApprove = hasPermission(actor, approve);
     if (!mayApprove && !hasPermission(actor, count)) return fail(403, 'forbidden', 'ليست لديك صلاحية لجرد الأجهزة.');
     return selectPage(c, `id, kind, product_id, product_name, source_reference, actor_id, status, created_at, missing_count,
-      recovered_count, added_count, expected_stock, approval_id, approved_by`, 'retail_device_inventory_records',
+      recovered_count, added_count, expected_stock, approval_id, approved_by,
+      (SELECT branch_id FROM retail_device_inventory_reviews r WHERE r.id=retail_device_inventory_records.id) AS branch_id`, 'retail_device_inventory_records',
       mayApprove ? '' : 'WHERE actor_id = ?', mayApprove ? [] : [actor.id], 'id DESC');
   });
 
@@ -102,11 +109,12 @@ export function retailSerialInventory(writeOperation: typeof write) {
     return writeOperation(c, 'inventory.serial.review', data, (operation, binds, actorId) => [
       c.env.DB.prepare(`INSERT INTO retail_device_inventory_reviews(id, kind, product_id, source_product_id,
         expected_stock, expected_movement, expected_review, source_expected_stock, source_expected_movement,
-        source_reference, reason, scanned_json, additions_json, actor_id)
-        VALUES (${operation}, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(...binds,
+        source_reference, reason, scanned_json, additions_json, actor_id, branch_id, expected_transfer_id)
+        VALUES (${operation}, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(...binds,
         data.kind, data.product_id, source?.product_id ?? null, data.position.stock, data.position.movement_id, data.position.review_id,
         source?.position.stock ?? null, source?.position.movement_id ?? null, data.source_reference, data.reason,
-        JSON.stringify(data.kind === 'count' ? data.scanned : []), JSON.stringify(data.additions), actorId),
+        JSON.stringify(data.kind === 'count' ? data.scanned : []), JSON.stringify(data.additions), actorId,
+        data.branch_id ?? 1, data.position.transfer_id ?? 0),
     ], id => showReview(c, id, 201));
   });
 

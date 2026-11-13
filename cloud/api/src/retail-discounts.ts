@@ -2,11 +2,12 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import { body, fail, hasPermission, identifier, ok, permit, selectPage, type ApiEnv } from './http';
 import type { write } from './business';
+import { roundedLineSql, saleQuantity, withStockQuantities } from './retail-measurement';
 
 export const approveRetailDiscount = 'retail.discounts.approve';
 const discountReason = z.string().trim().min(1).max(1000);
 const discountItem = z.strictObject({ product_id: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
-  quantity: z.number().int().min(1).max(1_000_000), unit_discount_minor: z.number().int().min(0).max(100_000_000_000) });
+  quantity: saleQuantity, unit_discount_minor: z.number().int().min(0).max(100_000_000_000) });
 const discountRequest = z.strictObject({ items: z.array(discountItem).min(1).max(40)
   .refine(items => new Set(items.map(item => item.product_id)).size === items.length && items.some(item => item.unit_discount_minor > 0)),
   total_minor: z.number().int().min(0).max(900_000_000_000_000), reason: discountReason });
@@ -35,15 +36,19 @@ export function retailDiscounts(writeOperation: typeof write) {
   routes.post('/retail/discounts', permit('invoices.create'), permit('invoices.discount'), async c => {
     const data = await body(c, discountRequest);
     const db = c.env.DB;
+    const items = JSON.stringify(await withStockQuantities(db, data.items));
+    const quantity = "json_extract(j.value,'$.quantity')";
+    const net = roundedLineSql("p.price_minor - json_extract(j.value,'$.unit_discount_minor')", quantity, 'p.quantity_scale');
+    const gross = roundedLineSql('p.price_minor', quantity, 'p.quantity_scale');
     return writeOperation(c, 'retail.discount.request', data, (op, binds, actor) => [
       db.prepare(`WITH basket AS (
-        SELECT count(*) AS matched, sum((p.price_minor - json_extract(j.value,'$.unit_discount_minor')) * json_extract(j.value,'$.quantity')) AS total,
-          sum(json_extract(j.value,'$.unit_discount_minor') * json_extract(j.value,'$.quantity')) AS discount,
+        SELECT count(*) AS matched, sum(${net}) AS total,
+          sum(${gross} - ${net}) AS discount,
           min(p.price_minor - json_extract(j.value,'$.unit_discount_minor')) AS min_price
         FROM json_each(?) j JOIN products p ON p.id = json_extract(j.value,'$.product_id') AND p.active = 1
       ) INSERT INTO retail_discount_requests (id, cashier_id, items_json, total_minor, discount_minor, reason)
       SELECT ${op}, ?, ?, CASE WHEN matched = ? AND total = ? AND min_price >= 0 THEN total END, discount, ? FROM basket`)
-        .bind(JSON.stringify(data.items), ...binds, actor, JSON.stringify(data.items), data.items.length, data.total_minor, data.reason),
+        .bind(items, ...binds, actor, items, data.items.length, data.total_minor, data.reason),
     ]);
   });
   routes.post('/retail/discounts/:id/approve', permit(approveRetailDiscount), async c => {

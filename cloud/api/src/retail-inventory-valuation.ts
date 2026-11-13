@@ -28,8 +28,10 @@ const valuation = `
     FROM devices GROUP BY product_id
   ), items AS (
     SELECT p.category_id, COALESCE(c.name, 'بدون تصنيف') AS category,
-      SUM(CASE WHEN p.tracking = 'quantity' THEN p.stock ELSE 0 END) AS quantity_units,
-      SUM(CASE WHEN p.tracking = 'quantity' AND p.inventory_value_minor IS NULL THEN p.stock ELSE 0 END) AS unvalued_quantity_units,
+      SUM(CASE WHEN p.tracking = 'quantity' AND p.quantity_scale = 1 THEN p.stock ELSE 0 END) AS quantity_units,
+      SUM(CASE WHEN p.tracking = 'quantity' AND p.quantity_scale = 1 AND p.inventory_value_minor IS NULL THEN p.stock ELSE 0 END) AS unvalued_quantity_units,
+      SUM(CASE WHEN p.quantity_scale = 1000 THEN p.stock ELSE 0 END) AS length_mm,
+      SUM(CASE WHEN p.quantity_scale = 1000 AND p.inventory_value_minor IS NULL THEN p.stock ELSE 0 END) AS unvalued_length_mm,
       SUM(CASE WHEN p.tracking = 'quantity' AND p.stock > 0 THEN COALESCE(p.inventory_value_minor, 0) ELSE 0 END) AS quantity_value,
       SUM(COALESCE(t.available_devices, 0)) AS available_devices,
       SUM(COALESCE(t.unvalued_available_devices, 0)) AS unvalued_available_devices,
@@ -44,7 +46,7 @@ const valuation = `
     GROUP BY p.category_id, c.name
   )
 `;
-const counts = ['quantity_units', 'unvalued_quantity_units', 'available_devices', 'unvalued_available_devices',
+const counts = ['quantity_units', 'unvalued_quantity_units', 'length_mm', 'unvalued_length_mm', 'available_devices', 'unvalued_available_devices',
   'held_devices', 'unvalued_held_devices', 'missing_devices'];
 const values = ['quantity_value', 'available_device_value', 'held_device_value'];
 const totalColumns = [...counts.map(column => `COALESCE(SUM(${column}), 0) AS ${column}`),

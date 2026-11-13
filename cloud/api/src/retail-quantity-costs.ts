@@ -18,7 +18,7 @@ export function retailQuantityCosts(writeOperation: typeof write) {
     const db = c.env.DB;
     const [products, openings] = await db.batch([
       db.prepare(`
-        SELECT id, name, stock, active,
+        SELECT id, name, stock, active, quantity_scale,
           CASE WHEN stock = 0 THEN 0 ELSE inventory_value_minor END AS inventory_value_minor,
           COALESCE((SELECT MAX(id) FROM inventory_movements WHERE product_id = p.id), 0) AS last_movement_id
         FROM products p WHERE id = ? AND tracking = 'quantity'

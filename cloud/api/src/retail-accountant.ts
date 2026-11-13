@@ -36,8 +36,8 @@ retailAccountant.get('/retail/accountant.csv', permit('retail.accountant.export'
   const tender = `
       SELECT 'tender' AS record_type, operation_id AS record_id, source AS kind, method, delta_minor,
         shift_id, invoice_id, reference, created_at FROM retail_tender_ledger
-      UNION ALL SELECT 'manual_drawer', id, kind, 'cash', delta_minor, shift_id, NULL, reference, created_at
-        FROM retail_cash_movements
+      UNION ALL SELECT 'manual_drawer', m.id, m.kind, 'cash', m.delta_minor, m.shift_id, NULL, m.reference, m.created_at
+        FROM retail_cash_movements m WHERE NOT EXISTS (SELECT 1 FROM retail_used_phone_acquisitions a WHERE a.id = m.id)
       UNION ALL SELECT 'shared_drawer', operation_id, source, 'cash', delta_minor, shift_id, NULL, NULL, created_at
         FROM retail_drawer_service_ledger
       UNION ALL SELECT 'shift_open', id, 'opening_float', 'cash', opening_minor, id, NULL, register_name, opened_at
@@ -50,6 +50,9 @@ retailAccountant.get('/retail/accountant.csv', permit('retail.accountant.export'
       UNION ALL SELECT 'supplier_document', id, 'purchase', NULL, total_minor, NULL, NULL, reference, created_at FROM purchases
       UNION ALL SELECT 'supplier_document', id, 'supplier_credit', NULL, -credit_minor, NULL, NULL,
         COALESCE(vendor_reference, CAST(purchase_id AS TEXT)), created_at FROM supplier_stock_returns`;
+  const usedAcquisitions = `SELECT 'inventory_acquisition' AS record_type, id AS record_id, 'used_phone_purchase' AS kind,
+    payment_method AS method, -acquisition_cost_minor AS delta_minor, shift_id, NULL AS invoice_id,
+    COALESCE(payment_reference, 'USED-' || id) AS reference, created_at FROM retail_used_phone_acquisitions`;
   const dispositions = `
       SELECT 'supplier_credit_allocation' AS record_type, id AS record_id, 'unapplied_vendor_credit' AS kind, NULL AS method,
         unapplied_credit_minor AS delta_minor, NULL AS shift_id, NULL AS invoice_id,
@@ -75,7 +78,7 @@ retailAccountant.get('/retail/accountant.csv', permit('retail.accountant.export'
       FROM retail_settlement_batches b WHERE b.fee_minor > 0
     UNION ALL SELECT 'tender_settlement', r.id, 'settlement_fee_reversal', b.method, b.fee_minor, NULL, NULL, b.statement_reference, r.created_at
       FROM retail_settlement_reversals r JOIN retail_settlement_batches b ON b.id = r.settlement_id WHERE b.fee_minor > 0`;
-  const groups = await db.batch<Movement>([tender, documents, legacy, dispositions, settlements].map(query => db.prepare(`
+  const groups = await db.batch<Movement>([tender, documents, usedAcquisitions, legacy, dispositions, settlements].map(query => db.prepare(`
     SELECT * FROM (${query})
     WHERE substr(replace(created_at, ' ', 'T'), 1, 19) >= ? AND substr(replace(created_at, ' ', 'T'), 1, 19) < ?
     ORDER BY created_at, record_type, record_id, method LIMIT 5001

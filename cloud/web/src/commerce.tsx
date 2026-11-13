@@ -5,14 +5,16 @@ import { allowed, apiUrl, decimal, formatDate, integer, money, readMoney, reques
 import type { User } from './api'
 import { activeColumn, activeField, countColumn, createAction, dateColumn, editAction, moneyColumn, numberColumn, RecordImageDialog, required } from './core'
 import { ActionDialog, DataModule, dataText, FormInput, idOf, Modal, Notice, PageTitle } from './ui'
-import type { Action, Column, Field, ModuleConfig, Row } from './ui'
+import type { Action, ActionDialogProps, Column, Field, ModuleConfig, Row } from './ui'
 import { WalletAudit, WalletPeriodReport } from './WalletPeriodReport'
 import { WalletPositions } from './WalletOperations'
 import { walletProviderLabel, walletProviderOptions, walletProviderPreset } from './wallet-providers'
 import { blankTender, RetailActionDialog, SharedDrawerDialog, ShiftContext, tenderLabels, TenderFields, tendersForAmount, useOpenShift } from './RetailShifts'
 import { DevicePicker, trackingOf } from './RetailDevices'
+import { BranchSelect } from './RetailBranches'
 import type { Tracking } from './RetailDevices'
 import { RetailReturns } from './RetailReturns'
+import { displayQuantity, formatQuantity, lineMinor, measurementLabel, quantityScale, quantityStep, stockQuantity, validQuantity } from './measurement'
 
 const remaining = (row: Row, total: string) => Number(row[total]) - Number(row.paid_minor)
 const remainingColumn = (total: string): Column => ({ key: 'remaining', label: 'المتبقي', render: row => money(remaining(row, total)) })
@@ -226,12 +228,20 @@ const walletAdjustment: Action = {
 }
 
 const damageFields: Field[] = [
-  { ...required('quantity', 'الكمية', 'number'), min: 1 },
+  { ...required('quantity', 'الكمية بوحدة الصنف', 'number'), min: 0.001, step: 0.001,
+    read: row => String(displayQuantity(row.quantity, row.quantity_scale)) },
   required('reason', 'السبب', 'textarea'),
   moneyField('unit_value_minor', 'قيمة الوحدة بالجنيه'),
   { name: 'damaged_on', label: 'تاريخ الهالك', kind: 'date' },
   { name: 'notes', label: 'ملاحظات', kind: 'textarea' },
 ]
+
+function BranchInventoryAction(props: ActionDialogProps) {
+  const [branch, setBranch] = useState(1)
+  return <ActionDialog {...props}
+    extra={<BranchSelect value={branch} set={setBranch} />}
+    prepare={body => ({ ...body, branch_id: branch })} />
+}
 export const supplierPayment: Action = {
   label: 'سداد على حساب المورد', permission: 'suppliers.pay', financial: true, retailTender: 'amount',
   endpoint: row => '/suppliers/' + idOf(row) + '/payments',
@@ -246,12 +256,13 @@ invoicePayment.visible = row => row.status === 'open' && !row.installment_id
 export const businessModules: Record<string, ModuleConfig> = {
   inventory: {
     title: 'حركات المخزون', description: 'كميات الدخول والخروج ومراجع الحركات المسجلة.', endpoint: '/inventory/movements', permission: 'inventory.view', searchable: false,
-    columns: [numberColumn, { key: 'product_name', label: 'المنتج' }, countColumn('delta', 'التغير في الكمية'),
+    columns: [numberColumn, { key: 'product_name', label: 'المنتج' }, { key: 'branch_name', label: 'الفرع' },
+      { key: 'delta', label: 'التغير في الكمية', render: row => formatQuantity(row.delta, row.quantity_scale) },
       { ...statusColumn('source_type', 'مصدر الحركة'), render: row => row.purchase_stock_receipt_id
         ? 'استلام مشتريات' : row.purchase_stock_reversal_id ? 'عكس استلام مشتريات' : statuses[String(row.source_type)] || dataText(row.source_type) },
       { key: 'source_id', label: 'رقم المرجع' }, { key: 'note', label: 'الملاحظة' }, dateColumn('created_at', 'التاريخ')],
     create: createAction('تعديل كمية المخزون', '/inventory/adjustments', 'inventory.manage', [
-      reference('product_id', 'المنتج', '/products', true), required('delta', 'تغير الكمية (موجب للإضافة وسالب للخصم)', 'number'),
+      reference('product_id', 'المنتج', '/products', true), { ...required('delta', 'تغير الكمية بوحدة الصنف (موجب للإضافة وسالب للخصم)', 'number'), step: 'any' },
       required('note', 'سبب التعديل', 'textarea'),
     ], true),
   },
@@ -365,7 +376,8 @@ export const businessModules: Record<string, ModuleConfig> = {
   },
   damaged: {
     title: 'الهالك', description: 'قيود المخزون التالف وأسبابها.', endpoint: '/damaged', permission: 'damaged.view', searchable: false,
-    columns: [numberColumn, imageColumn('/damaged'), { key: 'product_name', label: 'المنتج' }, countColumn('quantity', 'الكمية'),
+    columns: [numberColumn, imageColumn('/damaged'), { key: 'product_name', label: 'المنتج' }, { key: 'branch_name', label: 'الفرع' },
+      { key: 'quantity', label: 'الكمية', render: row => formatQuantity(row.quantity, row.quantity_scale) },
       { key: 'reason', label: 'السبب' }, moneyColumn('unit_value_minor', 'قيمة الوحدة'), moneyColumn('total_value_minor', 'قيمة الهالك'), dateColumn('damaged_on', 'تاريخ الهالك'),
       { key: 'reversed_by', label: 'الحالة', render: row => <span className="status-pill">{row.reversed_by ? 'معكوس' : 'مسجل'}</span> }],
     create: createAction('تسجيل هالك', '/damaged', 'damaged.manage', [
@@ -453,7 +465,8 @@ export function CommerceModule({ name, user }: { name: string; user: User }) {
   return <>
     <DataModule key={endpoint + ':' + imageVersion} user={user} config={{ ...config, endpoint }}
       renderAction={props => props.action.retailTender ? <RetailActionDialog {...props} user={user} /> : props.action.sharedDrawer
-        ? <SharedDrawerDialog {...props} user={user} /> : <ActionDialog {...props} />}
+        ? <SharedDrawerDialog {...props} user={user} /> : !props.row && ['inventory', 'damaged'].includes(name)
+          ? <BranchInventoryAction {...props} /> : <ActionDialog {...props} />}
       extra={isInvoice ? <form className="panel panel-inner invoice-filter section-space" onSubmit={event => {
         event.preventDefault()
         if (invoiceId.trim()) navigate('/invoices/' + encodeURIComponent(invoiceId.trim()))
@@ -506,24 +519,20 @@ export function CommerceModule({ name, user }: { name: string; user: User }) {
 
 const posCustomerField = reference('customer_id', 'العميل', '/customers')
 
-async function searchPosProducts(canViewCatalog: boolean, term = '', signal?: AbortSignal): Promise<Row[]> {
-  const params = new URLSearchParams()
+async function searchPosProducts(branch: number, term = '', signal?: AbortSignal, productId?: unknown): Promise<Row[]> {
+  const params = new URLSearchParams({ per_page: '20' })
   if (term) params.set('q', term)
-  if (canViewCatalog) {
-    params.set('per_page', '20')
-    const result = await request<Row[]>('/products?' + params, { signal })
-    return result.data.filter(row => Boolean(row.active))
-  }
-  const result = await request<Row[]>('/cashier/products?' + params, { signal })
-  return result.data.map(row => ({ ...row, active: true, price_minor: readMoney(String(row.price)) }))
+  if (productId) params.set('product_id', String(productId))
+  return (await request<Row[]>('/retail/branches/' + branch + '/stock?' + params, { signal })).data
 }
 
-type CartItem = { id: number; name: string; stock: number; price: number; quantity: number; tracking?: Tracking; deviceIds?: number[]; discount?: string }
+type CartItem = { id: number; name: string; stock: number; price: number; quantity: number; quantityDraft?: string;
+  scale: number; tracking?: Tracking; deviceIds?: number[]; discount?: string }
 
 function unitDiscount(item: CartItem) {
   if (!item.discount?.trim()) return 0
   const amount = readMoney(item.discount)
-  if (amount > item.price) throw new Error('خصم القطعة يتجاوز سعر ' + item.name + '.')
+  if (amount > item.price) throw new Error('خصم الوحدة يتجاوز سعر ' + item.name + '.')
   return amount
 }
 
@@ -538,6 +547,7 @@ export function Pos({ user }: { user: User }) {
   const [products, setProducts] = useState<Row[]>([])
   const [query, setQuery] = useState('')
   const [cart, setCart] = useState<CartItem[]>([])
+  const [selectedBranch, setSelectedBranch] = useState(1)
   const [customer, setCustomer] = useState('')
   const [paid, setPaid] = useState('')
   const [tenders, setTenders] = useState([blankTender()])
@@ -551,20 +561,29 @@ export function Pos({ user }: { user: User }) {
   const [discountNotice, setDiscountNotice] = useState('')
   const navigate = useNavigate()
   const shiftContext = useOpenShift(user)
+  const branch = Number(original?.branch_id || shiftContext.shift?.branch_id || selectedBranch)
   const canDiscount = allowed(user, 'invoices.discount')
+  const invalidQuantity = cart.some(item => !validQuantity(Number(item.quantityDraft ?? displayQuantity(item.quantity, item.scale)), item.scale)
+    || item.quantity > item.stock)
   let total = 0
   let invalidDiscount = false
-  try { total = cart.reduce((sum, line) => sum + (line.price - unitDiscount(line)) * line.quantity, 0) }
+  try { total = cart.reduce((sum, line) => sum + lineMinor(line.price - unitDiscount(line), line.quantity, line.scale), 0) }
   catch { invalidDiscount = true }
   const hasDiscount = !invalidDiscount && cart.some(line => unitDiscount(line) > 0)
   const canViewCatalog = allowed(user, 'products.view')
   const canSell = allowed(user, 'invoices.create') && (!invoiceId || canViewCatalog && allowed(user, 'invoices.refund') && allowed(user, 'invoices.view'))
 
   useEffect(() => {
-    if (!canSell) return
+    if (!canSell || shiftContext.loading) return
     const controller = new AbortController()
-    searchPosProducts(canViewCatalog, '', controller.signal).then(setProducts)
+    searchPosProducts(branch, '', controller.signal).then(setProducts)
       .catch(error => { if (!controller.signal.aborted) setError(error.message) })
+    return () => controller.abort()
+  }, [canSell, branch, shiftContext.loading])
+
+  useEffect(() => {
+    if (!canSell || !invoiceId) return
+    const controller = new AbortController()
     if (invoiceId) {
       request<Invoice>('/invoices/' + encodeURIComponent(invoiceId), { signal: controller.signal })
         .then(async result => {
@@ -577,8 +596,8 @@ export function Pos({ user }: { user: User }) {
           if (previous.customer_id) setCustomer(String(previous.customer_id))
           const currentProducts = await Promise.all((previous.items || []).map(async line => {
             try {
-              const result = await request<Row>('/products/' + line.product_id, { signal: controller.signal })
-              return result.data
+              const [product] = await searchPosProducts(Number(previous.branch_id || 1), '', controller.signal, line.product_id)
+              return product
             } catch { return undefined }
           }))
           if (controller.signal.aborted) return
@@ -588,7 +607,8 @@ export function Pos({ user }: { user: User }) {
             const quantity = Number(line.quantity)
             return [{
               id: Number(product.id), name: String(product.name), price: Number(product.price_minor),
-              stock: Number(product.stock) + quantity, quantity,
+              stock: Number(product.stock) + quantity, quantity, scale: quantityScale(line.quantity_scale),
+              tracking: trackingOf(product.tracking),
             }]
           })
           setCart(editableLines)
@@ -602,56 +622,59 @@ export function Pos({ user }: { user: User }) {
         .catch(error => { if (!controller.signal.aborted) setError(error.message) })
     }
     return () => controller.abort()
-  }, [canSell, canViewCatalog, invoiceId])
+  }, [canSell, invoiceId])
 
   function availableStock(product: Row) {
     const originalLine = original?.items?.find(line => line.product_id === product.id)
     return Number(product.stock) + Number(originalLine?.quantity || 0)
   }
 
-  function add(product: Row, units = 1) {
+  function add(product: Row, units?: number) {
     setError('')
     setLastInvoice(undefined)
     const id = Number(product.id)
     const stock = availableStock(product)
     const price = Number(product.price_minor)
+    const scale = quantityScale(product.quantity_scale)
     if (!Number.isSafeInteger(id) || !Number.isSafeInteger(stock) || !Number.isSafeInteger(price) || stock < 1) {
       setError('المنتج غير متاح في المخزون.')
       return
     }
     const line = cart.find(item => item.id === id)
-    if ((line?.quantity ?? 0) + units > stock) {
+    const increase = units ?? Math.min(scale, stock - (line?.quantity ?? 0))
+    if (increase < 1 || (line?.quantity ?? 0) + increase > stock) {
       setError('الكمية المطلوبة تتجاوز المخزون المتاح.')
       return
     }
-    setCart(items => line ? items.map(item => item.id === id ? { ...item, quantity: item.quantity + units, price, stock } : item)
-      : [...items, { id, stock, price, name: String(product.name), quantity: units, tracking: trackingOf(product.tracking), deviceIds: [] }])
+    setCart(items => line ? items.map(item => item.id === id ? { ...item, quantity: item.quantity + increase, quantityDraft: undefined, price, stock } : item)
+      : [...items, { id, stock, price, name: String(product.name), quantity: increase, scale, tracking: trackingOf(product.tracking), deviceIds: [] }])
   }
 
   async function search(event: FormEvent) {
     event.preventDefault()
-    if (searching || submitting) return
+    if (searching || submitting || shiftContext.loading) return
     setSearching(true)
     setError('')
     try {
       const term = query.trim()
-      const found = await searchPosProducts(canViewCatalog, term)
+      const found = await searchPosProducts(branch, term)
       setProducts(found)
       const exact = term && found.find(row => row.barcode === term || row.pack_barcode === term)
-      if (exact) { add(exact, exact.pack_barcode === term ? Number(exact.units_per_pack) : 1); setQuery('') }
+      if (exact) { add(exact, exact.pack_barcode === term ? Number(exact.units_per_pack) : undefined); setQuery('') }
     } catch (error) { setError(error instanceof Error ? error.message : 'تعذر البحث عن المنتجات.') }
     finally { setSearching(false) }
   }
 
   async function checkout(event: FormEvent) {
     event.preventDefault()
-    if (!cart.length || submitting || (invoiceId && !reissueLoaded)) return
+    if (!cart.length || submitting || shiftContext.loading || (invoiceId && !reissueLoaded)) return
     setSubmitting(true)
     setError('')
     try {
       const amount = checkoutMode === 'full' ? total : readMoney(paid)
       const customerId = customer.trim() ? Number(customer) : undefined
-      if (invalidDiscount) throw new Error('راجع الخصم بالجنيه لكل قطعة.')
+      if (invalidDiscount) throw new Error('راجع الخصم بالجنيه لكل وحدة.')
+      if (invalidQuantity) throw new Error('راجع الكميات ووحدة الصنف والمخزون المتاح.')
       if (!Number.isSafeInteger(total)) throw new Error('إجمالي الفاتورة خارج النطاق المسموح.')
       if (amount > total) throw new Error('المبلغ المدفوع يتجاوز إجمالي الفاتورة.')
       if (amount < total && (!Number.isSafeInteger(customerId) || Number(customerId) < 1)) throw new Error('اختر عميلًا لتسجيل المبلغ المتبقي.')
@@ -664,7 +687,8 @@ export function Pos({ user }: { user: User }) {
         method: 'POST', financial: true,
         body: {
           customer_id: customerId,
-          items: cart.map(item => ({ product_id: item.id, quantity: item.quantity, device_ids: item.deviceIds?.length ? item.deviceIds : undefined,
+          branch_id: branch,
+          items: cart.map(item => ({ product_id: item.id, quantity: displayQuantity(item.quantity, item.scale), device_ids: item.deviceIds?.length ? item.deviceIds : undefined,
             unit_discount_minor: canDiscount ? unitDiscount(item) || undefined : undefined })),
           paid_minor: amount,
           ...(shiftContext.shift ? { shift_id: shiftContext.shift.id, payments: tendersForAmount(tenders, amount) } : {}),
@@ -694,7 +718,7 @@ export function Pos({ user }: { user: User }) {
         if (allowed(user, 'invoices.view')) navigate('/invoices/' + result.data.id)
       })
       if (!allowed(user, 'invoices.view')) {
-        searchPosProducts(canViewCatalog).then(setProducts)
+        searchPosProducts(branch).then(setProducts)
           .catch(() => { /* The confirmed sale remains valid if refreshing the catalog fails. */ })
       }
     } catch (error) { setError(error instanceof Error ? error.message : 'تعذر تأكيد الفاتورة.') }
@@ -707,7 +731,7 @@ export function Pos({ user }: { user: User }) {
     try {
       const result = await request<{ id: number }>('/retail/discounts', { method: 'POST', financial: true, body: {
         total_minor: total, reason: discountReason.trim(),
-        items: cart.map(line => ({ product_id: line.id, quantity: line.quantity, unit_discount_minor: unitDiscount(line) })),
+        items: cart.map(line => ({ product_id: line.id, quantity: displayQuantity(line.quantity, line.scale), unit_discount_minor: unitDiscount(line) })),
       } })
       setDiscountRequest(String(result.data.id))
       setDiscountNotice(`أرسل رقم الطلب ${result.data.id} للمشرف. أكّد البيع بعد اعتماده.`)
@@ -729,6 +753,8 @@ export function Pos({ user }: { user: User }) {
         <>
           {error && <Notice error>{error}</Notice>}
           {lastInvoice && <Notice>تم تسجيل الفاتورة رقم {integer(lastInvoice)}.</Notice>}
+          <BranchSelect label="فرع البيع" value={branch} disabled={Boolean(invoiceId || shiftContext.shift || shiftContext.loading || submitting || searching)}
+            set={id => { setSelectedBranch(id); setProducts([]); setCart([]); setDiscountRequest(''); setLastInvoice(undefined) }} />
           <div className="pos-grid">
             <section className="panel panel-inner">
               <form className="search-form" onSubmit={search}>
@@ -741,7 +767,7 @@ export function Pos({ user }: { user: User }) {
                 {products.map(product => <article className="product-result" key={idOf(product)}>
                   <div>
                     <strong>{dataText(product.name)}</strong>
-                    <small>{money(product.price_minor)} · المتاح {integer(availableStock(product))} {product.barcode ? '· ' + String(product.barcode) : ''}</small>
+                    <small>{money(product.price_minor)} / {measurementLabel(product.quantity_scale)} · المتاح {formatQuantity(availableStock(product), product.quantity_scale)} {product.barcode ? '· ' + String(product.barcode) : ''}</small>
                     {Boolean(product.compatible_models) && <small>يتوافق مع {dataText(product.compatible_models)}</small>}
                   </div>
                   <button className="secondary" disabled={submitting || availableStock(product) < 1 || Boolean(invoiceId && !reissueLoaded)} onClick={() => add(product)}>إضافة</button>
@@ -751,22 +777,26 @@ export function Pos({ user }: { user: User }) {
             <form className="panel panel-inner pos-cart" onSubmit={checkout}>
               <h2>الفاتورة الحالية</h2>
               {cart.length ? <div className="table-scroll"><table>
-                <thead><tr><th scope="col">المنتج</th><th scope="col">الكمية</th>{canDiscount && <th scope="col">خصم القطعة</th>}<th scope="col">الإجمالي</th><th scope="col">إزالة</th></tr></thead>
+                <thead><tr><th scope="col">المنتج</th><th scope="col">الكمية</th>{canDiscount && <th scope="col">خصم الوحدة</th>}<th scope="col">الإجمالي</th><th scope="col">إزالة</th></tr></thead>
                 <tbody>{cart.map(item => <tr key={item.id}>
                   <td>{item.name}</td>
-                  <td><input aria-label={'كمية ' + item.name} type="number" min="1" max={item.stock} required
-                    disabled={submitting} value={item.quantity || ''} onChange={event => {
-                      const quantity = Number(event.target.value)
-                      setCart(items => items.map(line => line.id === item.id ? { ...line, quantity, deviceIds: line.deviceIds?.slice(0, Math.max(0, quantity)) } : line))
+                  <td><input aria-label={'كمية ' + item.name + ' (' + measurementLabel(item.scale) + ')'} type="number"
+                    min={quantityStep(item.scale)} step={quantityStep(item.scale)} max={displayQuantity(Math.min(item.stock, 1_000_000), item.scale)} required
+                    disabled={submitting} value={item.quantityDraft ?? (displayQuantity(item.quantity, item.scale) || '')} onChange={event => {
+                      const quantityDraft = event.target.value
+                      const value = Number(quantityDraft)
+                      const quantity = validQuantity(value, item.scale) ? stockQuantity(value, item.scale) : 0
+                      setCart(items => items.map(line => line.id === item.id ? { ...line, quantity, quantityDraft,
+                        deviceIds: line.deviceIds?.slice(0, quantity) } : line))
                     }} /></td>
-                  {canDiscount && <td><input aria-label={'خصم القطعة من ' + item.name} inputMode="decimal" value={item.discount ?? ''} disabled={submitting}
+                  {canDiscount && <td><input aria-label={'خصم الوحدة من ' + item.name} inputMode="decimal" value={item.discount ?? ''} disabled={submitting}
                     onChange={event => { const discount = event.target.value; setCart(items => items.map(line => line.id === item.id ? { ...line, discount } : line)) }} /></td>}
-                  <td>{invalidDiscount ? '—' : money((item.price - unitDiscount(item)) * item.quantity)}</td>
+                  <td>{invalidDiscount ? '—' : money(lineMinor(item.price - unitDiscount(item), item.quantity, item.scale))}</td>
                   <td><button type="button" className="icon-button" aria-label={'إزالة ' + item.name} disabled={submitting}
                     onClick={() => setCart(items => items.filter(line => line.id !== item.id))}>×</button></td>
                 </tr>)}</tbody>
               </table></div> : <p className="muted">أضف منتجًا لبدء الفاتورة.</p>}
-              {cart.filter(item => item.tracking && item.tracking !== 'quantity' && item.quantity > 0).map(item => <DevicePicker key={item.id}
+              {cart.filter(item => item.tracking && item.tracking !== 'quantity' && item.quantity > 0).map(item => <DevicePicker key={item.id} branchId={branch}
                 productId={item.id} productName={item.name} quantity={item.quantity} selected={item.deviceIds ?? []} disabled={submitting}
                 change={deviceIds => setCart(items => items.map(line => line.id === item.id ? { ...line, deviceIds } : line))} />)}
               {allowed(user, 'customers.view')
@@ -793,15 +823,16 @@ export function Pos({ user }: { user: User }) {
               {invoiceId && <label className="field">سبب التعديل<textarea required disabled={submitting}
                 value={reissueReason} onChange={event => setReissueReason(event.target.value)} /></label>}
               <div className="pos-total"><span>إجمالي الفاتورة</span><strong>{money(total)}</strong></div>
-              {invalidDiscount && <Notice error>راجع خصم القطعة. أدخل مبلغًا بالجنيه لا يتجاوز سعرها.</Notice>}
+              {invalidQuantity && <Notice error>راجع الكميات ووحدة كل صنف والمخزون المتاح.</Notice>}
+              {invalidDiscount && <Notice error>أدخل خصمًا بالجنيه لا يتجاوز سعر الوحدة.</Notice>}
               {hasDiscount && <details className="form-section"><summary>اعتماد خصم يتجاوز الحد</summary>
                 <label className="field">رقم طلب الخصم المعتمد<input type="number" min="1" step="1" value={discountRequest} disabled={submitting} onChange={event => setDiscountRequest(event.target.value)} /></label>
                 <label className="field">سبب طلب الاعتماد<textarea maxLength={1000} value={discountReason} disabled={submitting} onChange={event => setDiscountReason(event.target.value)} /></label>
-                <button type="button" className="secondary" disabled={submitting || !discountReason.trim()} onClick={() => void requestDiscount()}>اطلب اعتماد المشرف</button>
+                <button type="button" className="secondary" disabled={submitting || invalidQuantity || !discountReason.trim()} onClick={() => void requestDiscount()}>اطلب اعتماد المشرف</button>
                 {discountNotice && <Notice>{discountNotice}</Notice>}
               </details>}
               <div className="pos-total"><span>المتبقي</span><strong>{money(due)}</strong></div>
-              <button className="primary" disabled={!cart.length || submitting || invalidDiscount || shiftContext.loading || Boolean(shiftContext.required && !shiftContext.shift) || Boolean(invoiceId && !original)}>{submitting ? 'جارٍ تأكيد العملية…' : invoiceId ? 'إصدار الفاتورة البديلة' : 'تأكيد البيع'}</button>
+              <button className="primary" disabled={!cart.length || submitting || invalidQuantity || invalidDiscount || shiftContext.loading || Boolean(shiftContext.required && !shiftContext.shift) || Boolean(invoiceId && !original)}>{submitting ? 'جارٍ تأكيد العملية…' : invoiceId ? 'إصدار الفاتورة البديلة' : 'تأكيد البيع'}</button>
             </form>
           </div>
         </>
@@ -855,9 +886,9 @@ export function InvoiceDetail({ user }: { user: User }) {
           <div className="table-scroll"><table>
             <thead><tr><th scope="col">المنتج</th><th scope="col">الكمية</th><th scope="col">السعر</th><th scope="col">المجموع</th></tr></thead>
             <tbody>{lines.map((line, index) => <tr key={String(line.id ?? line.product_id ?? index)}>
-              <td>{dataText(line.product_name)}</td><td>{integer(line.quantity)}</td><td>{money(line.unit_price_minor)}
+              <td>{dataText(line.product_name)}</td><td>{formatQuantity(line.quantity, line.quantity_scale)}</td><td>{money(line.unit_price_minor)} / {measurementLabel(line.quantity_scale)}
                 {Number(line.unit_discount_minor) > 0 && <small> · خصم {money(line.unit_discount_minor)} للقطعة</small>}</td>
-              <td>{money(Number(line.quantity) * Number(line.unit_price_minor))}</td>
+              <td>{money(line.line_total_minor ?? lineMinor(Number(line.unit_price_minor), Number(line.quantity), line.quantity_scale))}</td>
             </tr>)}</tbody>
           </table></div>
           {Boolean(invoice.devices?.length) && <p>أرقام الأجهزة · {invoice.devices?.map(device =>
@@ -1023,7 +1054,8 @@ export function DamageReport() {
   }
 
   const metrics = [
-    ['entries', 'القيود المسجلة', integer], ['units', 'إجمالي الوحدات', integer],
+    ['entries', 'القيود المسجلة', integer], ['units', 'إجمالي القطع', integer],
+    ['length_mm', 'إجمالي الأطوال', (value: unknown) => formatQuantity(value, 1000)],
     ['total_value_minor', 'إجمالي قيمة الهالك', money], ['voided_entries', 'القيود الملغاة', integer],
   ] as const
   return <>

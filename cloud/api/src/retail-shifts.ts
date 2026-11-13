@@ -78,7 +78,9 @@ async function shiftDetail(c: ApiContext, id: number, status: 200 | 201 = 200) {
   const scope = shiftScope(c);
   const db = c.env.DB;
   const [shifts, sums, cashMovements] = await db.batch<Record<string, unknown>>([
-    db.prepare('SELECT s.* FROM retail_shift_positions s WHERE s.id = ?' + scope.clause).bind(id, ...scope.values),
+    db.prepare(`SELECT s.*, r.branch_id, b.name AS branch_name FROM retail_shift_positions s
+      JOIN retail_shifts r ON r.id = s.id JOIN retail_branches b ON b.id = r.branch_id
+      WHERE s.id = ?` + scope.clause).bind(id, ...scope.values),
     db.prepare(`SELECT method,
       SUM(CASE WHEN delta_minor > 0 THEN delta_minor ELSE 0 END) AS received_minor,
       SUM(CASE WHEN delta_minor < 0 THEN -delta_minor ELSE 0 END) AS paid_out_minor
@@ -98,6 +100,7 @@ async function shiftDetail(c: ApiContext, id: number, status: 200 | 201 = 200) {
 const openInput = z.strictObject({
   register_name: z.string().trim().min(1).max(80).refine(value => !value.includes('\0')),
   opening_minor: amount,
+  branch_id: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
 });
 const closeInput = z.strictObject({
   observed_minor: amount,
@@ -135,7 +138,9 @@ export function retailShifts(writeOperation: typeof write) {
   routes.get('/retail/shifts', c => {
     const scope = shiftScope(c);
     const status = z.enum(statuses).optional().parse(c.req.query('status'));
-    return selectPage(c, 's.*', 'retail_shift_positions s', 'WHERE 1 = 1' + scope.clause + (status ? ' AND status = ?' : ''),
+    return selectPage(c, 's.*, r.branch_id, b.name AS branch_name',
+      'retail_shift_positions s JOIN retail_shifts r ON r.id = s.id JOIN retail_branches b ON b.id = r.branch_id',
+      'WHERE 1 = 1' + scope.clause + (status ? ' AND s.status = ?' : ''),
       [...scope.values, ...(status ? [status] : [])], 's.id DESC');
   });
 
@@ -171,9 +176,9 @@ export function retailShifts(writeOperation: typeof write) {
     }
     const now = new Date();
     return writeOperation(c, 'retail.shift.open', data, (op, binds, actor) => [
-      c.env.DB.prepare(`INSERT INTO retail_shifts(id, register_name, actor_id, actor_name, opening_minor, business_day, opened_at)
-        VALUES (${op}, ?, ?, ?, ?, ?, ?)`)
-        .bind(...binds, data.register_name, actor, c.get('actor').name, data.opening_minor, cairoRetailDay(now), now.toISOString()),
+      c.env.DB.prepare(`INSERT INTO retail_shifts(id, register_name, actor_id, actor_name, opening_minor, business_day, opened_at, branch_id)
+        VALUES (${op}, ?, ?, ?, ?, ?, ?, ?)`)
+        .bind(...binds, data.register_name, actor, c.get('actor').name, data.opening_minor, cairoRetailDay(now), now.toISOString(), data.branch_id ?? 1),
     ], shiftId => shiftDetail(c, shiftId, 201));
   });
 

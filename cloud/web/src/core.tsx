@@ -3,6 +3,7 @@ import type { FormEvent } from 'react'
 import { Link } from 'react-router-dom'
 import { allowed, apiUrl, decimal, formatDate, integer, money, request } from './api'
 import { RetailQuantityCost } from './RetailQuantityCost'
+import { displayQuantity, formatQuantity, measurementLabel } from './measurement'
 import type { User } from './api'
 import { AccessKeyDialog, DataModule, idOf, Modal, Notice, PageTitle } from './ui'
 import type { Action, Column, Field, ModuleConfig, Row } from './ui'
@@ -33,29 +34,33 @@ const customerFields = [
   required('name', 'اسم العميل'), optional('phone', 'رقم الهاتف'), optional('email', 'البريد الإلكتروني', 'email'),
   optional('address', 'العنوان'), optional('notes', 'ملاحظات', 'textarea'),
 ]
-const warrantyEnabled = (values: Record<string, string>) => values.tracking !== 'quantity' && Number(values.warranty_months) > 0
+const warrantyEnabled = (values: Record<string, string>) => values.measurement_unit !== 'meter' && values.tracking !== 'quantity' && Number(values.warranty_months) > 0
 const productFields: Field[] = [
   required('name', 'اسم المنتج'),
-  { ...required('price_minor', 'سعر البيع بالجنيه', 'money'), read: row => decimal(row.price_minor) },
-  { ...required('cost_minor', 'التكلفة بالجنيه', 'money'), read: row => decimal(row.cost_minor) },
+  { ...required('price_minor', 'سعر وحدة البيع بالجنيه', 'money'), read: row => decimal(row.price_minor) },
+  { ...required('cost_minor', 'تكلفة الوحدة بالجنيه', 'money'), read: row => decimal(row.cost_minor) },
+  { ...required('measurement_unit', 'وحدة البيع والمخزون', 'select'), initial: 'piece', options: [
+    { value: 'piece', label: 'قطعة' }, { value: 'meter', label: 'متر (حتى ٣ خانات عشرية)' },
+  ] },
   { ...optional('category_id', 'التصنيف', 'reference'), reference: { path: '/categories' }, min: 1 },
   optional('barcode', 'الباركود'),
   optional('variant_group', 'الموديل أو مجموعة المتغيرات'), optional('variant_color', 'اللون'), optional('variant_size', 'المقاس'),
   optional('compatible_models', 'الأجهزة المتوافقة', 'textarea'),
-  { ...required('tracking', 'تتبّع المخزون', 'select'), initial: 'quantity', options: [
+  { ...required('tracking', 'تتبّع المخزون', 'select'), initial: 'quantity', visible: values => values.measurement_unit !== 'meter', options: [
     { value: 'quantity', label: 'بالكمية' }, { value: 'serial', label: 'بالرقم التسلسلي' }, { value: 'imei', label: 'برقم IMEI' },
   ] },
-  { ...optional('warranty_months', 'مدة الضمان بالشهور', 'number'), min: 0, initial: '0', visible: values => values.tracking !== 'quantity' },
+  { ...optional('warranty_months', 'مدة الضمان بالشهور', 'number'), min: 0, initial: '0', visible: values => values.measurement_unit !== 'meter' && values.tracking !== 'quantity' },
   { ...required('warranty_basis', 'بداية احتساب الضمان', 'select'), initial: 'sale', visible: warrantyEnabled, options: [
     { value: 'sale', label: 'تاريخ الفاتورة' }, { value: 'delivery', label: 'تاريخ التسليم' },
     { value: 'installation', label: 'تاريخ التركيب' },
   ] },
   { ...optional('warranty_guarantor', 'اسم جهة الضمان'), visible: warrantyEnabled },
-  { ...optional('units_per_pack', 'عدد القطع في العبوة', 'number'), min: 1, nullable: false, initial: '1', visible: values => values.tracking === 'quantity' },
-  { ...optional('pack_barcode', 'باركود العبوة'), visible: values => values.tracking === 'quantity' },
+  { ...optional('units_per_pack', 'عدد القطع في العبوة', 'number'), min: 1, nullable: false, initial: '1', visible: values => values.tracking === 'quantity' && values.measurement_unit !== 'meter' },
+  { ...optional('pack_barcode', 'باركود العبوة'), visible: values => values.tracking === 'quantity' && values.measurement_unit !== 'meter' },
   optional('description', 'الوصف', 'textarea'),
   optional('notes', 'ملاحظات', 'textarea'),
-  { ...required('low_stock_threshold', 'حد المخزون المنخفض', 'number'), min: 0, initial: '0' },
+  { ...required('low_stock_threshold', 'حد المخزون المنخفض بوحدة الصنف', 'number'), min: 0, step: 0.001,
+    initial: '0', read: row => String(displayQuantity(row.low_stock_threshold, row.quantity_scale)) },
   activeField,
 ]
 const staffFields: Field[] = [
@@ -75,10 +80,12 @@ export const coreModules: Record<string, ModuleConfig> = {
     columns: [
       { key: 'has_image', label: 'الصورة', render: row => row.has_image ? <img className="preview-image" src={apiUrl('/products/' + idOf(row) + '/image') + '?v=' + encodeURIComponent(String(row.updated_at || ''))} alt="" loading="lazy" /> : '—' },
       { key: 'name', label: 'المنتج' }, { key: 'category_name', label: 'التصنيف' }, { key: 'barcode', label: 'الباركود' },
-      moneyColumn('price_minor', 'سعر البيع'), countColumn('stock', 'المخزون'), activeColumn,
+      { key: 'price_minor', label: 'سعر البيع', render: row => money(row.price_minor) + ' / ' + measurementLabel(row.quantity_scale) },
+      { key: 'stock', label: 'المخزون', render: row => formatQuantity(row.stock, row.quantity_scale) }, activeColumn,
     ],
     create: createAction('إضافة منتج', '/products', 'products.create', productFields),
-    actions: [editAction('/products', 'products.update', productFields), { ...deleteAction('/products', 'products.delete'),
+    actions: [editAction('/products', 'products.update', productFields.map(field =>
+      field.name === 'measurement_unit' ? { ...field, visible: () => false } : field)), { ...deleteAction('/products', 'products.delete'),
       label: 'أرشفة', visible: row => Boolean(row.active), confirmation: 'هل تريد إيقاف هذا المنتج عن البيع؟' }],
   },
   customers: {
@@ -212,12 +219,19 @@ const moduleNames: Record<string, string> = {
 
 function permissionLabel(value: string) {
   if (value === 'retail.devices.disposition.approve') return 'الأجهزة المتتبعة — اعتماد قرار الجهاز المعزول'
+  if (value === 'retail.used_phones.acquire') return 'الموبايلات المستعملة — إثبات الشراء والدفع'
+  if (value === 'retail.installations.view') return 'التركيب — عرض المواعيد'
+  if (value === 'retail.installations.manage') return 'التركيب — جدولة المواعيد والإسناد'
+  if (value === 'retail.installations.perform') return 'التركيب — إثبات التسليم والتركيب'
   if (value === 'retail.shifts.operate') return 'ورديات الكاشير — فتح وإقفال'
   if (value === 'retail.shifts.approve') return 'ورديات الكاشير — اعتماد الفروق'
   if (value === 'retail.shifts.emergency_close') return 'ورديات الكاشير — إقفال استثنائي'
   if (value === 'retail.cash.manage') return 'ورديات الكاشير — حركات الدرج والخزنة'
   if (value === 'retail.safe.manage') return 'الخزنة — توثيق الافتتاح والجرد'
   if (value === 'retail.audit.view') return 'الرقابة — عرض سجل تدقيق المتجر'
+  if (value === 'retail.ledger.view') return 'دفتر الأستاذ — عرض القيود وميزان المراجعة'
+  if (value === 'retail.ledger.post') return 'دفتر الأستاذ — ترحيل الحركات وتسجيل القيود والتصحيحات'
+  if (value === 'retail.ledger.close') return 'دفتر الأستاذ — بدء الدفتر وإقفال الفترات'
   if (value === 'retail.accountant.export') return 'الحسابات — تصدير الحركات للمحاسب'
   if (value === 'products.cost.view') return 'المنتجات — عرض التكلفة والهامش'
   if (value === 'products.cost.manage') return 'المنتجات — تعديل التكلفة'

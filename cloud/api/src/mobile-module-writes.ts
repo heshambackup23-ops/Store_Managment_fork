@@ -3,7 +3,7 @@ import { z } from 'zod'
 import { checkoutInvoice, write } from './business'
 import { body, fail, identifier, ok, timestamp } from './http'
 import type { ApiContext, ApiEnv } from './http'
-import { legacyInvoice, legacyRecord } from './mobile-compat'
+import { legacyInvoice, legacyRecord, requireLegacyInvoice } from './mobile-compat'
 import { canonicalWrite, decimalMinor, isAndroid, requirePermission } from './mobile-wallet-damage'
 import { retailTenderStatements } from './retail-shifts'
 
@@ -39,6 +39,7 @@ for (const [method, path] of [['POST', '/invoices'], ['PUT', '/invoices/:id']] a
     const original = method === 'PUT' ? {
       id: identifier.parse(c.req.param('id')), reason: 'إعادة إصدار الفاتورة من تطبيق Android',
     } : undefined
+    if (original) await requireLegacyInvoice(c, original.id)
     return checkoutInvoice(c, {
       items: lineItems(data.product_ids, data.quantities), paid_minor: data.paid_amount,
       invoice_date: data.invoice_date, notes: data.notes ?? undefined,

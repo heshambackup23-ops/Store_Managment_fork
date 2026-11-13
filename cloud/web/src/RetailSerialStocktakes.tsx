@@ -3,10 +3,11 @@ import type { FormEvent } from 'react'
 import { allowed, formatDate, integer, money, readMoney, request } from './api'
 import type { User } from './api'
 import { Notice } from './ui'
+import { BranchSelect } from './RetailBranches'
 
 type Product = { id: number; name: string; barcode?: string; tracking: string }
-type Snapshot = { stock: number; movement_id: number; review_id: number }
-type Position = Snapshot & { product_id: number; product_name: string; inventory_value_minor?: number | null }
+type Snapshot = { stock: number; movement_id: number; review_id: number; transfer_id?: number }
+type Position = Snapshot & { product_id: number; product_name: string; inventory_value_minor?: number | null; branch_stock: number; branch_id: number }
 type Identity = { serial_number?: string | null; imei1?: string | null; imei2?: string | null }
 type Row = { id: number; kind: 'opening' | 'count'; product_name: string; source_reference: string; status: string;
   actor_id: number; expected_stock: number; missing_count: number; recovered_count: number; added_count: number; created_at: string }
@@ -15,7 +16,7 @@ type Detail = Row & { source_product_name?: string; reason: string; approval_rea
 const endpoint = '/retail/serial-stocktakes'
 const statusLabels: Record<string, string> = { pending_approval: 'بانتظار الاعتماد', matched: 'مطابق', stale: 'يتطلب إعادة العد', approved: 'تسوية معتمدة' }
 const dispositionLabels: Record<string, string> = { present: 'موجود', missing: 'مفقود', recovered: 'عُثر عليه' }
-const asSnapshot = ({ stock, movement_id, review_id }: Position): Snapshot => ({ stock, movement_id, review_id })
+const asSnapshot = ({ stock, movement_id, review_id, transfer_id }: Position): Snapshot => ({ stock, movement_id, review_id, transfer_id })
 const lines = (text: string) => text.split(/\r?\n/).map(line => line.trim()).filter(Boolean)
 const identityLabel = (row: Identity) => [row.serial_number, row.imei1, row.imei2].filter(Boolean).join(' / ')
 
@@ -61,6 +62,7 @@ export function RetailSerialStocktakes({ user }: { user: User }) {
   const canApprove = allowed(user, 'inventory.stocktake.approve')
   const canIntake = allowed(user, 'inventory.manage') && allowed(user, 'products.cost.manage')
   const [kind, setKind] = useState<'count' | 'opening'>('count')
+  const [branch, setBranch] = useState(1)
   const [product, setProduct] = useState<Product>()
   const [source, setSource] = useState<Product>()
   const [hasSource, setHasSource] = useState(false)
@@ -92,23 +94,23 @@ export function RetailSerialStocktakes({ user }: { user: User }) {
     setPosition(undefined)
     setSourcePosition(undefined)
     const abort = new AbortController()
-    const loadPosition = (id: number, callback: (data: Position) => void) =>
-      request<Position>(`${endpoint}/positions/${id}`, { signal: abort.signal }).then(result => {
+    const loadPosition = (id: number, branchId: number, callback: (data: Position) => void) =>
+      request<Position>(`${endpoint}/positions/${id}?branch_id=${branchId}`, { signal: abort.signal }).then(result => {
         if (!abort.signal.aborted) callback(result.data)
       }).catch(error => { if (!abort.signal.aborted) setError(error.message) })
-    if (product) void loadPosition(product.id, setPosition)
-    if (hasSource && source) void loadPosition(source.id, setSourcePosition)
+    if (product) void loadPosition(product.id, branch, setPosition)
+    if (hasSource && source) void loadPosition(source.id, 1, setSourcePosition)
     return () => abort.abort()
-  }, [product, source, hasSource, revision])
+  }, [product, source, hasSource, revision, branch])
 
   async function submit(event: FormEvent) {
     event.preventDefault()
-    if (!product || !position || position.product_id !== product.id || busy || (hasSource && sourcePosition?.product_id !== source?.id)) return
+    if (!product || !position || position.product_id !== product.id || position.branch_id !== branch || busy || (hasSource && sourcePosition?.product_id !== source?.id)) return
     setBusy(true); setError(''); setSuccess('')
     try {
       const devices = canIntake ? readAdditions(additions) : []
       const { data } = await request<Detail>(endpoint, { method: 'POST', financial: true, body: {
-        kind, product_id: product.id, position: asSnapshot(position), source_reference: reference.trim(), reason: reason.trim(), additions: devices,
+        kind, product_id: product.id, branch_id: branch, position: asSnapshot(position), source_reference: reference.trim(), reason: reason.trim(), additions: devices,
         ...(kind === 'count' ? { scanned: lines(scanned) } : hasSource && sourcePosition && source
           ? { source: { product_id: source.id, position: asSnapshot(sourcePosition) } } : {}),
       } })
@@ -145,9 +147,10 @@ export function RetailSerialStocktakes({ user }: { user: User }) {
         </select>
       </label>}
       <SerialProductSearch label="اسم الصنف المتتبع أو الباركود" onChoose={setProduct} />
-      {kind === 'opening' && <label className="check-field"><input type="checkbox" checked={hasSource} onChange={event => setHasSource(event.target.checked)} /> انقل القطع من صنف كمي قائم</label>}
+      <BranchSelect label="فرع جرد الأجهزة" value={branch} set={id => { setBranch(id); setHasSource(false); setScanned(''); setAdditions('') }} disabled={busy} />
+      {kind === 'opening' && branch === 1 && <label className="check-field"><input type="checkbox" checked={hasSource} onChange={event => setHasSource(event.target.checked)} /> انقل القطع من صنف كمي قائم</label>}
       {hasSource && <SerialProductSearch label="اسم الصنف الكمي القديم أو الباركود" source onChoose={setSource} />}
-      {sourcePosition && <p>{sourcePosition.product_name} · {integer(sourcePosition.stock)} قطعة متاحة للنقل</p>}
+      {sourcePosition && <p>{sourcePosition.product_name} · {integer(sourcePosition.branch_stock)} قطعة متاحة للنقل</p>}
       <form className="form-section" onSubmit={submit}>
         {kind === 'count' && <label className="field">الأرقام الموجودة فعليًا
           <textarea dir="ltr" value={scanned} onChange={event => setScanned(event.target.value)} rows={5} aria-describedby="serial-count-help" />

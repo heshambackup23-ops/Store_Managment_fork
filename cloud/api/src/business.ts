@@ -9,12 +9,15 @@ import { retailSalesReport } from './retail-sales-report';
 import { cairoRetailDay, retailPayments, retailPermissions, retailShifts, retailTenderInput, retailTenderStatements } from './retail-shifts';
 import { retailSafe, retailSafePermission } from './retail-safe';
 import { deviceDispositionApprove, deviceWarrantyView, retailDeviceErrors, retailDevices } from './retail-devices';
+import { retailUsedInstall, retailUsedInstallErrors, retailUsedInstallPermissions } from './retail-used-install';
 import { procurementErrors, purchaseOrderDetail, purchaseOrderItems, purchaseOrderStatements, retailProcurement } from './retail-procurement';
 import { retailQuantityCosts } from './retail-quantity-costs';
+import { roundedLineMinor, roundedLineSql, saleQuantity, toStockQuantity, withStockQuantities } from './retail-measurement';
 import { retailReturns } from './retail-returns';
 import { approveRetailDiscount, retailDiscounts } from './retail-discounts';
 import { retailStocktakes, stocktakePermissions } from './retail-stocktakes';
 import { retailSerialInventoryErrors } from './retail-serial-inventory';
+import { retailBranchErrors } from './retail-branches';
 import { walletReconciliation } from './wallet-reconciliation';
 import { walletReporting } from './wallet-reporting';
 
@@ -32,6 +35,7 @@ export const businessPermissions = [
   approveRetailDiscount,
   retailSafePermission,
   deviceDispositionApprove,
+  ...retailUsedInstallPermissions,
   ...stocktakePermissions,
 ];
 
@@ -42,7 +46,6 @@ type Bind = string | number | null;
 const money = z.number().int().min(0).max(900_000_000_000_000);
 const positiveMoney = money.min(1);
 const id = z.number().int().min(1).max(Number.MAX_SAFE_INTEGER);
-const quantity = z.number().int().min(1).max(1_000_000);
 const name = z.string().trim().min(1).max(200);
 const note = z.string().trim().max(1000);
 const reason = z.string().trim().min(1).max(1000);
@@ -151,7 +154,9 @@ function businessError(error: unknown): never {
     ['PURCHASE_PRODUCT_UNAVAILABLE', 'أحد منتجات الاستلام غير متاح.'],
     ['PURCHASE_RECEIPT_EMPTY', 'سند الاستلام لا يحتوي على أصناف.'],
     ...retailDeviceErrors,
+    ...retailUsedInstallErrors,
     ...retailSerialInventoryErrors,
+    ...retailBranchErrors,
     ...procurementErrors,
     ['RETAIL_OPENING_VALUE_STALE', 'راجع الرصيد وآخر حركة قبل اعتماد قيمة افتتاحية لصنف كمي غير مقيّم.'],
     ['RETAIL_INVENTORY_VALUE_LIMIT', 'قيمة المخزون تتجاوز النطاق المسموح.'],
@@ -221,22 +226,28 @@ export async function write(
 business.get('/inventory/movements', permit('inventory.view'), c => {
   const product = c.req.query('product_id');
   const values = product ? [id.parse(Number(product))] : [];
-  return list(c, 'm.*, p.name AS product_name',
-    'inventory_movements m JOIN products p ON p.id = m.product_id' + (product ? ' WHERE m.product_id = ?' : ''),
+  return list(c, 'm.*, p.name AS product_name, p.quantity_scale, b.name AS branch_name',
+    `inventory_movements m JOIN products p ON p.id = m.product_id
+      LEFT JOIN retail_branch_movement_links bl ON bl.movement_id = m.id
+      LEFT JOIN retail_branches b ON b.id = COALESCE(bl.branch_id, 1)` + (product ? ' WHERE m.product_id = ?' : ''),
     values, 'm.id DESC');
 });
 
 const adjustment = z.object({
   product_id: id,
-  delta: z.number().int().min(-1_000_000_000).max(1_000_000_000).refine(value => value !== 0),
+  delta: z.number().min(-1_000_000_000).max(1_000_000_000).refine(value => value !== 0),
+  branch_id: id.optional(),
   note: reason,
 }).strict();
 
 business.post('/inventory/adjustments', permit('inventory.manage'), async c => {
   const data = await body(c, adjustment);
+  const scale = await c.env.DB.prepare('SELECT quantity_scale FROM products WHERE id = ?').bind(data.product_id).first<number>('quantity_scale');
+  if (scale === null) return fail(422, 'RETAIL_MEASUREMENT_PRODUCT', 'الصنف المحدد غير موجود.');
+  const delta = toStockQuantity(data.delta, scale, 1_000_000_000);
   return write(c, 'inventory.adjust', data, (op, binds, actor) => [
-    c.env.DB.prepare('INSERT INTO inventory_movements (product_id, delta, source_type, source_id, note, actor_id) VALUES (?, ?, ?, ' + op + ', ?, ?)')
-      .bind(data.product_id, data.delta, 'adjustment', ...binds, data.note, actor),
+    c.env.DB.prepare('INSERT INTO inventory_movements (product_id, delta, source_type, source_id, note, actor_id, branch_hint_id) VALUES (?, ?, ?, ' + op + ', ?, ?, ?)')
+      .bind(data.product_id, delta, 'adjustment', ...binds, data.note, actor, data.branch_id ?? null),
   ]);
 });
 
@@ -299,7 +310,7 @@ business.get('/invoices/:id', permit('invoices.view'), async c => {
     devices: devices.results.map(row => deviceWarrantyView(row, today, canReadCost)) });
 });
 
-const basketItem = z.object({ product_id: id, quantity, device_ids: z.array(id).max(200).optional() }).strict();
+const basketItem = z.object({ product_id: id, quantity: saleQuantity, device_ids: z.array(id).max(200).optional() }).strict();
 const checkoutItems = z.array(basketItem).min(1).max(40)
     .refine(items => new Set(items.map(item => item.product_id)).size === items.length);
 const invoiceItems = z.array(basketItem.extend({ unit_discount_minor: money.max(100_000_000_000).optional() })).min(1).max(40)
@@ -307,6 +318,7 @@ const invoiceItems = z.array(basketItem.extend({ unit_discount_minor: money.max(
 
 const checkout = z.object({
   customer_id: id.nullish(),
+  branch_id: id.optional(),
   items: invoiceItems,
   paid_minor: money,
   ...retailTenderInput,
@@ -334,7 +346,7 @@ function refundStatement(db: D1Database, op: string, binds: Bind[], actor: numbe
 type OriginalInvoice = { id: number; reason: string; refundPayments?: z.infer<typeof retailPayments> };
 type LegacyCheckout = { customer: string; receivedMinor: number | null; exactPaid?: boolean };
 
-export function checkoutInvoice(c: ApiContext, data: z.infer<typeof checkout>, original?: OriginalInvoice, legacy?: LegacyCheckout,
+export async function checkoutInvoice(c: ApiContext, data: z.infer<typeof checkout>, original?: OriginalInvoice, legacy?: LegacyCheckout,
   output?: (id: number) => Promise<Response>) {
   const documentDate = data.invoice_date ?? cairoDay();
   if (data.due_date && data.due_date < documentDate) return fail(422, 'RETAIL_DUE_DATE', 'تاريخ الاستحقاق لا يمكن أن يسبق تاريخ المستند.');
@@ -344,11 +356,15 @@ export function checkoutInvoice(c: ApiContext, data: z.infer<typeof checkout>, o
     }
     if (data.expected_total_minor === undefined) return fail(422, 'RETAIL_DISCOUNT_TOTAL_REQUIRED', 'أكد الإجمالي بعد الخصم.');
   }
-  const items = [...data.items].sort((a, b) => a.product_id - b.product_id);
+  const items = await withStockQuantities(c.env.DB, [...data.items].sort((a, b) => a.product_id - b.product_id));
+  if (legacy && items.some(item => item.quantity_scale > 1)) {
+    return fail(422, 'RETAIL_MEASUREMENT_CLIENT', 'استخدم واجهة نقطة البيع الحديثة لبيع الأصناف بالمتر.');
+  }
   const serializedItems = JSON.stringify(items);
   const expected = data.expected_total_minor ?? null;
   const operation = original ? 'invoice.reissue' : legacy && !legacy.exactPaid ? 'cashier.checkout' : 'invoice.checkout';
-  return write(c, operation, { ...data, items, original, legacy }, (op, binds, actor) => {
+  const auditItems = [...data.items].sort((a, b) => a.product_id - b.product_id);
+  return write(c, operation, { ...data, items: auditItems, original, legacy }, (op, binds, actor) => {
     const db = c.env.DB;
     const customerSql = legacy?.customer
       ? '(SELECT id FROM customers WHERE name = ? COLLATE NOCASE ORDER BY id LIMIT 1)'
@@ -358,23 +374,23 @@ export function checkoutInvoice(c: ApiContext, data: z.infer<typeof checkout>, o
       db.prepare(`
         WITH basket AS (
           SELECT COUNT(*) AS product_count,
-            SUM((p.price_minor - ${checkoutDiscount}) * json_extract(j.value, '$.quantity')) AS total,
+            SUM(${roundedLineSql('p.price_minor - ' + checkoutDiscount, "json_extract(j.value, '$.quantity')", 'p.quantity_scale')}) AS total,
             MIN(p.price_minor - ${checkoutDiscount}) AS minimum_price
           ${checkoutProducts}
         )
-        INSERT INTO invoices (id, customer_id, total_minor, paid_minor, actor_id, replaces_invoice_id, invoice_date, notes, due_date)
+        INSERT INTO invoices (id, customer_id, total_minor, paid_minor, actor_id, replaces_invoice_id, invoice_date, notes, due_date, branch_id)
         SELECT ${op}, ${customerSql},
           CASE WHEN product_count = ? AND minimum_price >= 0 AND (? IS NULL OR total = ?) THEN total END,
-           ${paidSql}, ?, ?, ?, ?, ?
+           ${paidSql}, ?, ?, ?, ?, ?, COALESCE((SELECT branch_id FROM invoices WHERE id = ?), ?)
         FROM basket
       `).bind(serializedItems, ...binds, legacy?.customer || data.customer_id || null, items.length, expected, expected,
         legacy && !legacy.exactPaid ? legacy.receivedMinor : data.paid_minor, actor, original?.id ?? null,
-        documentDate, data.notes ?? '', data.due_date ?? null),
+        documentDate, data.notes ?? '', data.due_date ?? null, original?.id ?? null, data.branch_id ?? 1),
       db.prepare(`
         INSERT INTO invoice_items (invoice_id, product_id, product_name, quantity, unit_price_minor, unit_cost_minor,
-          device_ids_json, original_unit_price_minor, unit_discount_minor)
+          device_ids_json, original_unit_price_minor, unit_discount_minor, quantity_scale)
         SELECT ${op}, p.id, p.name, json_extract(j.value, '$.quantity'), p.price_minor - ${checkoutDiscount}, p.cost_minor,
-          COALESCE(json_extract(j.value, '$.device_ids'), '[]'), p.price_minor, ${checkoutDiscount}
+          COALESCE(json_extract(j.value, '$.device_ids'), '[]'), p.price_minor, ${checkoutDiscount}, p.quantity_scale
         ${checkoutProducts}
       `).bind(...binds, serializedItems),
     ];
@@ -446,21 +462,25 @@ async function legacyCheckoutResponse(c: ApiContext, invoiceId: number, received
   } }, 201);
 }
 
-type CashierProduct = { id: number; name: string; price_minor: number; stock: number; barcode: string | null; tracking: string; pack_barcode: string | null; units_per_pack: number; compatible_models: string | null };
-const cashierProducts = 'SELECT id, name, price_minor, stock, barcode, tracking, pack_barcode, units_per_pack, compatible_models FROM products WHERE active = 1';
+type CashierProduct = { id: number; name: string; price_minor: number; stock: number; barcode: string | null; tracking: string; pack_barcode: string | null; units_per_pack: number; compatible_models: string | null; quantity_scale: number };
 const asCashierProduct = ({ price_minor, ...product }: CashierProduct) => ({ ...product, price: moneyString(price_minor) });
 
 business.get('/cashier/products', permit('invoices.create'), async c => {
   const query = z.string().trim().max(100).parse(c.req.query('q') ?? '');
+  const android = c.get('credential') === 'bearer' && c.req.header('X-Store-Client') === 'android';
+  const stock = android ? 'COALESCE((SELECT stock FROM retail_branch_stock WHERE branch_id = 1 AND product_id = products.id), 0)' : 'stock';
+  const cashierProducts = `SELECT id, name, price_minor, ${stock} AS stock, barcode, tracking, pack_barcode, units_per_pack,
+    compatible_models, quantity_scale, measurement_unit FROM products WHERE active = 1`
+    + (!android && c.req.query('measurement') === '1' ? '' : ' AND quantity_scale = 1');
   const db = c.env.DB;
   if (!query) {
-    const items = await db.prepare(cashierProducts + ' AND stock > 0 ORDER BY name, id LIMIT 12').all<CashierProduct>();
+    const items = await db.prepare(cashierProducts + ` AND ${stock} > 0 ORDER BY name, id LIMIT 12`).all<CashierProduct>();
     return c.json({ exact: false, data: items.results.map(asCashierProduct) });
   }
   const exact = await db.prepare(cashierProducts + ' AND (barcode = ? OR pack_barcode = ?)').bind(query, query).first<CashierProduct>();
   if (exact) return c.json({ exact: true, data: [asCashierProduct(exact)] });
   const items = await db.prepare(cashierProducts + ` AND (name LIKE ? ESCAPE '\\' OR variant_group LIKE ? ESCAPE '\\'
-    OR instr(lower(compatible_models), lower(?)) > 0) ORDER BY stock = 0, name, id LIMIT 20`)
+    OR instr(lower(compatible_models), lower(?)) > 0) ORDER BY ${stock} = 0, name, id LIMIT 20`)
     .bind(searchPrefix(query), searchPrefix(query), query).all<CashierProduct>();
   return c.json({ exact: false, data: items.results.map(asCashierProduct) });
 });
@@ -537,10 +557,11 @@ const installment = installmentMetadata.extend({
 
 const installmentBasket = `
   WITH basket AS (
-    SELECT COUNT(*) AS count, SUM(p.price_minor * json_extract(j.value, '$.quantity')) AS principal,
+    SELECT COUNT(*) AS count, SUM(${roundedLineSql('p.price_minor', "json_extract(j.value, '$.quantity')", 'p.quantity_scale')}) AS principal,
       GROUP_CONCAT(p.name, ', ') AS product_name,
       json_group_array(json_object('product_id', p.id, 'name', p.name, 'quantity', json_extract(j.value, '$.quantity'),
-        'unit_price_minor', p.price_minor, 'line_total_minor', p.price_minor * json_extract(j.value, '$.quantity'))) AS items
+        'quantity_scale', p.quantity_scale, 'unit_price_minor', p.price_minor,
+        'line_total_minor', ${roundedLineSql('p.price_minor', "json_extract(j.value, '$.quantity')", 'p.quantity_scale')})) AS items
     ${checkoutProducts}
   )
 `;
@@ -550,7 +571,7 @@ business.post('/installments', permit('installments.manage'), async c => {
   if (data.paid_minor > 0 && !hasPermission(c.get('actor'), 'installments.pay')) {
     return fail(403, 'FORBIDDEN', 'الدفعة الأولى تتطلب صلاحية السداد.');
   }
-  const items = JSON.stringify(data.items ?? []);
+  const items = JSON.stringify(await withStockQuantities(c.env.DB, data.items ?? []));
   return write(c, 'installment.create', data, (op, binds, actor) => [
     c.env.DB.prepare(`
       ${installmentBasket}
@@ -572,6 +593,7 @@ business.patch('/installments/:id', permit('installments.manage'), async c => {
   const installmentId = identifier(c);
   const itemCount = data.items?.length ?? 0;
   const financialEdit = data.items !== undefined || data.principal_minor !== undefined;
+  const items = await withStockQuantities(c.env.DB, data.items ?? []);
   return change(c, 'installment.update', installmentId, `
     ${installmentBasket}
     UPDATE installments SET due_date = ?, note = ?,
@@ -583,7 +605,7 @@ business.patch('/installments/:id', permit('installments.manage'), async c => {
       payment_date = CASE WHEN ? THEN ? ELSE payment_date END, updated_at = ${timestamp}
     WHERE id = ? AND voided_at IS NULL AND (? = 0 OR (invoice_id IS NULL
       AND (json_array_length(items_json) = 0 OR ? > 0 OR ? IS NOT NULL))) RETURNING *
-  `, JSON.stringify(data.items ?? []), data.due_date, data.note, itemCount, itemCount,
+  `, JSON.stringify(items), data.due_date, data.note, itemCount, itemCount,
   data.principal_minor ?? null, itemCount, data.product_name ?? null, itemCount, Number(financialEdit),
   Number(data.payment_date !== undefined), data.payment_date ?? null, installmentId, Number(financialEdit),
   itemCount, data.product_name ?? null);
@@ -792,10 +814,11 @@ const purchase = z.object({
 
 business.post('/purchases', permit('suppliers.manage'), async c => {
   const data = await body(c, purchase);
+  const items = data.items && await withStockQuantities(c.env.DB, data.items);
   if (data.due_date && data.due_date < data.purchase_date) return fail(422, 'RETAIL_DUE_DATE', 'تاريخ الاستحقاق لا يمكن أن يسبق تاريخ المستند.');
-  if (data.items) {
-    const merchandise = data.items.reduce((total, item) => total + BigInt(item.quantity) * BigInt(item.unit_cost_minor), 0n);
-    const landed = data.items.reduce((total, item) => total + BigInt(item.quantity) * BigInt(item.landed_unit_minor ?? 0), 0n);
+  if (items) {
+    const merchandise = items.reduce((total, item) => total + roundedLineMinor(item.unit_cost_minor, item.quantity, item.quantity_scale), 0n);
+    const landed = items.reduce((total, item) => total + roundedLineMinor(item.landed_unit_minor ?? 0, item.quantity, item.quantity_scale), 0n);
     if (merchandise !== BigInt(data.total_minor) || merchandise + landed > 900_000_000_000_000n) {
       return fail(422, 'PURCHASE_ORDER_TOTAL', 'إجمالي الفاتورة يجب أن يساوي قيمة بنودها، وتكلفة التخزين ضمن الحد المسموح.');
     }
@@ -811,7 +834,7 @@ business.post('/purchases', permit('suppliers.manage'), async c => {
       SELECT id, (SELECT id FROM suppliers WHERE id = ? AND active = 1), COALESCE(?, 'PUR-' || id), ?, ?, ?, ?, ?, ? FROM operation
     `).bind(...binds, data.supplier_id, data.reference ?? null, data.description, data.total_minor,
       data.purchase_date, data.payment_type, actor, data.due_date ?? null),
-    ...purchaseOrderStatements(c.env.DB, op, binds, data.items),
+    ...purchaseOrderStatements(c.env.DB, op, binds, items),
     c.env.DB.prepare(`
       WITH operation AS (SELECT ${op} AS id)
       INSERT INTO supplier_payments (id, purchase_id, amount_minor, payment_date, note, actor_id)
@@ -1226,9 +1249,11 @@ business.post('/wallet-profit-withdrawals', permit('wallets.cash'), permit('wall
 
 const damageSummaryColumns = `COALESCE(d.legacy_product_name, p.name) AS product_name,
   CASE WHEN d.legacy_damage_fingerprint IS NULL THEN p.barcode ELSE d.legacy_product_barcode END AS product_barcode,
+  p.quantity_scale, d.branch_id, b.name AS branch_name,
   r.id AS reversed_by, r.reason AS reversal_reason,
   EXISTS (SELECT 1 FROM damaged_stock_images img WHERE img.record_id = d.id) AS has_image`;
 const damageTables = `damaged_stock d JOIN products p ON p.id = d.product_id
+  LEFT JOIN retail_branches b ON b.id = d.branch_id
   LEFT JOIN damaged_stock_reversals r ON r.damage_id = d.id`;
 const damageOperationalColumns = `d.id, d.product_id, d.quantity, d.reason, d.actor_id, d.created_at, d.damaged_on, d.notes,
   d.legacy_damage_fingerprint, d.legacy_product_name, d.legacy_product_barcode, d.legacy_quantity,
@@ -1243,7 +1268,7 @@ function canReadDamageCost(c: ApiContext) {
 
 function damageColumns(includeCost: boolean) {
   const fields = includeCost
-    ? 'd.*, d.unit_cost_minor AS unit_value_minor, d.quantity * d.unit_cost_minor AS total_value_minor'
+    ? 'd.*, d.unit_cost_minor AS unit_value_minor, ' + roundedLineSql('d.unit_cost_minor', 'd.quantity', 'p.quantity_scale') + ' AS total_value_minor'
     : damageOperationalColumns;
   return fields + ', ' + damageSummaryColumns;
 }
@@ -1262,10 +1287,11 @@ business.get('/reports/damaged', permit('damaged.view'), async c => {
   const includeCost = canReadDamageCost(c);
   const totals = await c.env.DB.prepare(`
     SELECT COUNT(CASE WHEN r.id IS NULL THEN 1 END) AS entries,
-      COALESCE(SUM(CASE WHEN r.id IS NULL THEN d.quantity END), 0) AS units,
-      ${includeCost ? 'CAST(COALESCE(SUM(CASE WHEN r.id IS NULL THEN d.quantity * d.unit_cost_minor END), 0) AS TEXT) AS total_value_minor,' : ''}
+      COALESCE(SUM(CASE WHEN r.id IS NULL AND p.quantity_scale = 1 THEN d.quantity END), 0) AS units,
+      COALESCE(SUM(CASE WHEN r.id IS NULL AND p.quantity_scale = 1000 THEN d.quantity END), 0) AS length_mm,
+      ${includeCost ? 'CAST(COALESCE(SUM(CASE WHEN r.id IS NULL THEN ' + roundedLineSql('d.unit_cost_minor', 'd.quantity', 'p.quantity_scale') + ' END), 0) AS TEXT) AS total_value_minor,' : ''}
       COUNT(r.id) AS voided_entries
-    FROM damaged_stock d LEFT JOIN damaged_stock_reversals r ON r.damage_id = d.id
+    FROM ${damageTables}
     ${where(predicates)}
   `).bind(...values).first<{ entries: number; units: number; total_value_minor?: string; voided_entries: number }>();
   if (!includeCost) return ok(c, { ...range, ...totals });
@@ -1290,22 +1316,23 @@ business.get('/damaged/:id', permit('damaged.view'), async c => {
 });
 
 const damageInput = z.object({
-  quantity, reason, unit_value_minor: money.optional(), damaged_on: date.optional(), notes: note.optional(),
+  quantity: saleQuantity, reason, unit_value_minor: money.optional(), damaged_on: date.optional(), notes: note.optional(),
 }).strict();
 
 business.post('/damaged', permit('damaged.manage'), async c => {
-  const data = await body(c, damageInput.extend({ product_id: id }));
+  const data = await body(c, damageInput.extend({ product_id: id, branch_id: id.optional() }));
   if (data.unit_value_minor !== undefined && !hasPermission(c.get('actor'), 'products.cost.manage')) {
     return fail(403, 'COST_PERMISSION', 'إدخال قيمة وحدة الهالك يحتاج صلاحية إدارة التكلفة.');
   }
+  const [normalized] = await withStockQuantities(c.env.DB, [data]);
   return write(c, 'damage.create', data, (op, binds, actor) => [
     c.env.DB.prepare(`
-      WITH incoming AS (SELECT ? AS quantity, COALESCE(?, cost_minor) AS unit_value FROM products WHERE id = ?)
-      INSERT INTO damaged_stock (id, product_id, quantity, unit_cost_minor, reason, damaged_on, notes, actor_id)
-      VALUES (${op}, ?, ?, (SELECT CASE WHEN unit_value * quantity <= 900000000000000 THEN unit_value END FROM incoming),
-        ?, ?, ?, ?)
-    `).bind(data.quantity, data.unit_value_minor ?? null, data.product_id, ...binds, data.product_id,
-      data.quantity, data.reason, data.damaged_on ?? cairoDay(), data.notes ?? '', actor),
+      WITH incoming AS (SELECT ? AS quantity, quantity_scale, COALESCE(?, cost_minor) AS unit_value FROM products WHERE id = ?)
+      INSERT INTO damaged_stock (id, product_id, quantity, unit_cost_minor, reason, damaged_on, notes, actor_id, branch_id)
+      VALUES (${op}, ?, ?, (SELECT CASE WHEN ${roundedLineSql('unit_value', 'quantity', 'quantity_scale')} <= 900000000000000 THEN unit_value END FROM incoming),
+        ?, ?, ?, ?, ?)
+    `).bind(normalized.quantity, data.unit_value_minor ?? null, data.product_id, ...binds, data.product_id,
+      normalized.quantity, data.reason, data.damaged_on ?? cairoDay(), data.notes ?? '', actor, data.branch_id ?? 1),
   ]);
 });
 
@@ -1315,6 +1342,10 @@ business.post('/damaged/:id/correct', permit('damaged.manage'), async c => {
   if (data.unit_value_minor !== undefined && !hasPermission(c.get('actor'), 'products.cost.manage')) {
     return fail(403, 'COST_PERMISSION', 'تعديل قيمة وحدة الهالك يحتاج صلاحية إدارة التكلفة.');
   }
+  const scale = await c.env.DB.prepare('SELECT p.quantity_scale FROM damaged_stock d JOIN products p ON p.id = d.product_id WHERE d.id = ?')
+    .bind(damageId).first<number>('quantity_scale');
+  if (scale === null) return fail(404, 'not_found', 'سجل الهالك غير موجود.');
+  const corrected = toStockQuantity(data.quantity, scale);
   return write(c, 'damage.correct', { damageId, ...data }, (op, binds, actor) => [
     c.env.DB.prepare(`
       WITH original AS (SELECT * FROM damaged_stock WHERE id = ?)
@@ -1324,7 +1355,7 @@ business.post('/damaged/:id/correct', permit('damaged.manage'), async c => {
         COALESCE(?, (SELECT unit_cost_minor FROM original)), (SELECT reason FROM original), ?,
         (SELECT damaged_on FROM original), COALESCE(?, (SELECT damaged_on FROM original), ?),
         (SELECT notes FROM original), COALESCE(?, (SELECT notes FROM original)), ?)
-    `).bind(damageId, ...binds, damageId, data.quantity, data.unit_value_minor ?? null, data.reason,
+    `).bind(damageId, ...binds, damageId, corrected, data.unit_value_minor ?? null, data.reason,
       data.damaged_on ?? null, cairoDay(), data.notes ?? null, actor),
   ]);
 });
@@ -1546,7 +1577,7 @@ for (const detail of businessDetails) {
     if (!entity.results[0]) return fail(404, 'NOT_FOUND', 'السجل المطلوب غير موجود.');
     const row = detail.table === 'installments' ? asInstallment(entity.results[0]) : entity.results[0];
     return ok(c, { ...row, payments: ledger.results,
-      ...(order ? { items: order.results, landed_cost_minor: order.results.reduce((sum, item) => sum + Number(item.quantity) * Number(item.landed_unit_minor), 0) } : {}),
+      ...(order ? { items: order.results, landed_cost_minor: order.results.reduce((sum, item) => sum + Number(item.landed_total_minor), 0) } : {}),
     });
   });
 }
@@ -1562,6 +1593,7 @@ business.route('/', purchaseReceiving(write));
 business.route('/', retailReturns(write));
 business.route('/', retailStocktakes(write));
 business.route('/', retailDevices(write));
+business.route('/', retailUsedInstall(write));
 business.route('/', retailProcurement(write));
 business.route('/', retailQuantityCosts(write));
 business.route('/', walletReporting);

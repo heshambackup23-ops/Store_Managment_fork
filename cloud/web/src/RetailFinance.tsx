@@ -7,17 +7,18 @@ import { tenderLabels } from './RetailShifts'
 import { RetailInventoryValuation } from './RetailInventoryValuation'
 import { dataText, Modal, Notice, PageTitle } from './ui'
 import type { Row } from './ui'
+import { displayQuantity, formatQuantity } from './measurement'
 
 const ages: Record<string, string> = { undated: 'بلا استحقاق مسجل', not_due: 'غير مستحق بعد', overdue_1_30: 'متأخر ١–٣٠ يومًا', overdue_31_60: '٣١–٦٠ يومًا', overdue_61_90: '٦١–٩٠ يومًا', overdue_90_plus: 'أكثر من ٩٠ يومًا' }
 const sourceLabels: Record<string, string> = { invoice: 'فاتورة', installment: 'قسط', wallet_debt: 'آجل محفظة', personal_debt: 'دين شخصي', maintenance: 'صيانة', purchase: 'شراء', supplier_opening: 'افتتاحي مورد' }
 const labels = { aging: 'أعمار الأرصدة', settlement: 'حركات القنوات غير النقدية', margin: 'هامش البضاعة المثبت', valuation: 'قيمة المخزون المثبتة', audit: 'سجل تدقيق المتجر' }
 type View = keyof typeof labels
 type Report = { items: Row[]; totals?: Record<string, number> | Row[]; from?: string; to?: string; as_of?: string }
-type Column = [string, string, ('money' | 'number' | 'method' | 'source' | 'bucket')?]
+type Column = [string, string, ('money' | 'number' | 'method' | 'source' | 'bucket' | 'length')?]
 
 const agingColumns: Column[] = [['party', 'الطرف', undefined], ['source', 'المصدر', 'source'], ['id', 'رقم المستند', 'number'], ['due_date', 'الاستحقاق', undefined], ['outstanding_minor', 'المتبقي', 'money'], ['bucket', 'الفترة', 'bucket']]
 const settlementColumns: Column[] = [['method', 'الوسيلة', 'method'], ['register_name', 'الدرج', undefined], ['reference', 'المرجع', undefined], ['delta_minor', 'الصافي', 'money'], ['created_at', 'توقيت القيد', undefined]]
-const marginColumns: Column[] = [['category', 'الفئة', undefined], ['net_sales_minor', 'صافي المبيعات', 'money'], ['verified_sales_minor', 'مبيعات بتكلفة مثبتة', 'money'], ['verified_cost_minor', 'تكلفة مثبتة', 'money'], ['verified_margin_minor', 'الهامش المثبت', 'money'], ['unverified_quantity', 'قطع بلا تكلفة مثبتة', 'number']]
+const marginColumns: Column[] = [['category', 'الفئة', undefined], ['net_sales_minor', 'صافي المبيعات', 'money'], ['verified_sales_minor', 'مبيعات بتكلفة مثبتة', 'money'], ['verified_cost_minor', 'تكلفة مثبتة', 'money'], ['verified_margin_minor', 'الهامش المثبت', 'money'], ['unverified_quantity', 'قطع بلا تكلفة مثبتة', 'number'], ['unverified_length_mm', 'أمتار بلا تكلفة مثبتة', 'length']]
 const auditColumns: Column[] = [['actor_name', 'الموظف'], ['action', 'الإجراء'], ['entity_type', 'نوع السجل'], ['entity_id', 'رقم السجل', 'number'], ['created_at', 'توقيت القيد']]
 
 function exportReport(rows: Row[], columns: Column[], filename: string) {
@@ -27,7 +28,8 @@ function exportReport(rows: Row[], columns: Column[], filename: string) {
     return '"' + safe.replaceAll('"', '""') + '"'
   }
   const lines = [columns.map(([, title]) => csv(title)).join(','), ...rows.map(row => columns.map(([key, , type]) =>
-    type === 'money' ? decimal(row[key]) : type === 'number' && Number.isSafeInteger(row[key]) ? String(row[key]) : csv(row[key])).join(','))]
+    type === 'money' ? decimal(row[key]) : type === 'length' ? String(displayQuantity(row[key], 1000))
+      : type === 'number' && Number.isSafeInteger(row[key]) ? String(row[key]) : csv(row[key])).join(','))]
   const url = URL.createObjectURL(new Blob(['\uFEFF', lines.join('\r\n'), '\r\n'], { type: 'text/csv;charset=utf-8' }))
   const link = document.createElement('a')
   link.href = url; link.download = filename
@@ -84,6 +86,7 @@ export function RetailFinance({ user }: { user: User }) {
   function render(value: unknown, kind: Column[2]) {
     if (kind === 'money') return money(value)
     if (kind === 'number') return integer(value)
+    if (kind === 'length') return formatQuantity(value, 1000)
     if (kind === 'method') return tenderLabels[String(value) as keyof typeof tenderLabels] ?? dataText(value)
     if (kind === 'source') return sourceLabels[String(value)] ?? dataText(value)
     if (kind === 'bucket') return ages[String(value)] ?? dataText(value)

@@ -269,15 +269,22 @@ async function initialize(db) {
 }
 
 function protectTarget(tables, actor) {
-  const builtIn = new Set(['settings', 'roles', 'role_permissions', 'users'])
+  const builtIn = new Set(['settings', 'roles', 'role_permissions', 'users', 'retail_branches', 'retail_ledger_accounts'])
   const occupied = tables.filter((table) => !builtIn.has(table)).map((table) => `EXISTS (SELECT 1 FROM "${table}")`)
   const invalid = [
     ...occupied,
+    "(SELECT count(*) FROM retail_branches) <> 1 OR NOT EXISTS (SELECT 1 FROM retail_branches WHERE id = 1 AND code = 'HQ' AND active = 1)",
     '(SELECT count(*) FROM users) <> 1',
     `NOT EXISTS (SELECT 1 FROM users WHERE id = ${actor} AND active = 1 AND role_id = 1)`,
   ]
+  // D1 limits expression depth. Keep the empty-target checks balanced as new tables are added.
+  const joinChecks = (checks) => {
+    if (checks.length === 1) return '(' + checks[0] + ')'
+    const mid = Math.floor(checks.length / 2)
+    return '(' + joinChecks(checks.slice(0, mid)) + ' OR\n  ' + joinChecks(checks.slice(mid)) + ')'
+  }
   return `CREATE TABLE hilal_restore_guard (empty_target INTEGER NOT NULL CHECK (empty_target = 1));
-INSERT INTO hilal_restore_guard VALUES (CASE WHEN ${invalid.join('\n  OR ')} THEN 0 ELSE 1 END);
+INSERT INTO hilal_restore_guard VALUES (CASE WHEN ${joinChecks(invalid)} THEN 0 ELSE 1 END);
 DROP TABLE hilal_restore_guard;`
 }
 

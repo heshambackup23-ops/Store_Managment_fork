@@ -1,8 +1,10 @@
 import { useEffect, useState } from 'react'
 import { integer, request } from './api'
 import { Notice } from './ui'
+import { formatQuantity } from './measurement'
 
 type Row = { category_id?: number | null; category?: string; quantity_units: number; unvalued_quantity_units: number;
+  length_mm: number; unvalued_length_mm: number;
   available_devices: number; unvalued_available_devices: number; held_devices: number; unvalued_held_devices: number;
   missing_devices: number; quantity_value: string; available_device_value: string; held_device_value: string }
 type Valuation = { as_of: string; items: Row[]; totals: Row }
@@ -56,16 +58,18 @@ export function RetailInventoryValuation({ canFilter }: { canFilter: boolean }) 
       <div className="metric-grid">
         <div className="panel metric"><p>قيمة المتاح المثبتة</p><strong>{amount(BigInt(report.totals.quantity_value) + BigInt(report.totals.available_device_value))}</strong></div>
         <div className="panel metric"><p>قيمة المعزول المثبتة</p><strong>{amount(report.totals.held_device_value)}</strong></div>
-        <div className="panel metric"><p>متاح بلا تكلفة مثبتة</p><strong>{integer(report.totals.unvalued_quantity_units + report.totals.unvalued_available_devices)} قطعة</strong></div>
+        <div className="panel metric"><p>متاح بلا تكلفة مثبتة</p><strong>{integer(report.totals.unvalued_quantity_units + report.totals.unvalued_available_devices)} قطعة
+          {report.totals.unvalued_length_mm > 0 && <> · {formatQuantity(report.totals.unvalued_length_mm, 1000)}</>}</strong></div>
         <div className="panel metric"><p>معزول بلا تكلفة مثبتة</p><strong>{integer(report.totals.unvalued_held_devices)} قطعة</strong></div>
       </div>
       {report.items.length ? <div className="table-scroll"><table>
-        <thead><tr>{['الفئة', 'عدد كمي', 'قيمة الكمي', 'أجهزة متاحة', 'قيمتها المثبتة', 'أجهزة معزولة', 'قيمتها المثبتة', 'مفقود بالجرد', 'بلا تكلفة مثبتة'].map(label => <th key={label} scope="col">{label}</th>)}</tr></thead>
+        <thead><tr>{['الفئة', 'القطع والأطوال', 'قيمة الكمي', 'أجهزة متاحة', 'قيمتها المثبتة', 'أجهزة معزولة', 'قيمتها المثبتة', 'مفقود بالجرد', 'بلا تكلفة مثبتة'].map(label => <th key={label} scope="col">{label}</th>)}</tr></thead>
         <tbody>{report.items.map(row => <tr key={row.category_id ?? 'uncategorized'}>
-          <th scope="row">{row.category}</th><td>{integer(row.quantity_units)}</td><td>{amount(row.quantity_value)}</td>
+          <th scope="row">{row.category}</th><td>{integer(row.quantity_units)} قطعة{row.length_mm > 0 && <> · {formatQuantity(row.length_mm, 1000)}</>}</td><td>{amount(row.quantity_value)}</td>
           <td>{integer(row.available_devices)}</td><td>{amount(row.available_device_value)}</td>
           <td>{integer(row.held_devices)}</td><td>{amount(row.held_device_value)}</td><td>{integer(row.missing_devices)}</td>
-          <td>{integer(row.unvalued_quantity_units + row.unvalued_available_devices + row.unvalued_held_devices)}</td>
+          <td>{integer(row.unvalued_quantity_units + row.unvalued_available_devices + row.unvalued_held_devices)} قطعة
+            {row.unvalued_length_mm > 0 && <> · {formatQuantity(row.unvalued_length_mm, 1000)}</>}</td>
         </tr>)}</tbody>
       </table></div> : <p>لا توجد أرصدة مخزون مطابقة.</p>}
       {total > 25 && <nav className="pagination" aria-label="صفحات تقييم المخزون"><button className="secondary" disabled={page === 1} onClick={() => setPage(page - 1)}>السابق</button>

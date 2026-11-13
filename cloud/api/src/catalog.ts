@@ -7,6 +7,7 @@ import {
 import type { ApiContext, ApiEnv } from './http'
 import { emailSchema } from './auth'
 import { retailTracking, warrantyBasis, warrantyGuarantor } from './retail-devices'
+import { measurementUnit, quantityScale, toStockQuantity } from './retail-measurement'
 
 export const catalog = new Hono<ApiEnv>()
 export const catalogPermissions = ['categories', 'products', 'customers']
@@ -28,7 +29,8 @@ const product = z.object({
   barcode: z.string().trim().min(1).max(120).nullable().optional(),
   price_minor: minorUnits,
   cost_minor: minorUnits.optional(),
-  low_stock_threshold: z.number().int().min(0).max(1000000000).optional(),
+  low_stock_threshold: z.number().min(0).max(1000000000).optional(),
+  measurement_unit: measurementUnit.optional(),
   tracking: retailTracking.optional(),
   warranty_months: z.number().int().min(0).max(120).optional(),
   warranty_basis: warrantyBasis.optional(),
@@ -45,11 +47,14 @@ const categoryColumns = `categories.id, name, description, created_at, updated_a
 const customerColumns = 'id, name, phone, email, address, notes, created_at, updated_at'
 const productColumns = `p.id, p.name, p.description, p.notes, p.category_id, c.name AS category_name,
   p.barcode, p.price_minor, p.cost_minor, p.stock, p.low_stock_threshold, p.active, p.tracking, p.warranty_months,
-  p.warranty_basis, p.warranty_guarantor,
+  p.warranty_basis, p.warranty_guarantor, p.measurement_unit, p.quantity_scale,
   p.variant_group, p.variant_color, p.variant_size, p.compatible_models, p.units_per_pack, p.pack_barcode,
   EXISTS(SELECT 1 FROM product_images i WHERE i.product_id = p.id) AS has_image,
   printf('%d.%02d', p.price_minor / 100, p.price_minor % 100) AS price, p.created_at, p.updated_at`
 const productTable = 'products p LEFT JOIN categories c ON p.category_id = c.id'
+const mainBranchStock = 'COALESCE((SELECT stock FROM retail_branch_stock WHERE branch_id = 1 AND product_id = p.id), 0)'
+const androidProductColumns = productColumns.replace('p.stock,', mainBranchStock + ' AS stock,')
+const isAndroid = (c: ApiContext) => c.get('credential') === 'bearer' && c.req.header('X-Store-Client') === 'android'
 const prefixOperator = "LIKE ? ESCAPE '\\'"
 
 function productView(c: ApiContext, row: Record<string, unknown>) {
@@ -117,6 +122,8 @@ catalog.get('/products', permit('products.view'), async (c) => {
   }).parse(c.req.query())
   const predicates = []
   const parameters = []
+  const android = isAndroid(c)
+  if (android) predicates.push('p.quantity_scale = 1')
   let order = 'p.id DESC'
   if (filter.active !== 'all') {
     predicates.push('p.active = ?')
@@ -131,7 +138,7 @@ catalog.get('/products', permit('products.view'), async (c) => {
     parameters.push(filter.category_id)
   }
   if (filter.in_stock !== undefined) {
-    predicates.push(filter.in_stock === 'true' ? 'p.stock > 0' : 'p.stock = 0')
+    predicates.push((android ? mainBranchStock : 'p.stock') + (filter.in_stock === 'true' ? ' > 0' : ' = 0'))
   }
   if (filter.q) {
     const literal = '?' + (parameters.length + 3)
@@ -141,16 +148,26 @@ catalog.get('/products', permit('products.view'), async (c) => {
     parameters.push(searchPrefix(filter.q), searchPrefix(filter.q), filter.q)
     order = `${barcodeMatch} DESC, ${order}`
   }
-  return selectPage(c, productColumns, productTable, predicates.length ? 'WHERE ' + predicates.join(' AND ') : '',
+  return selectPage(c, android ? androidProductColumns : productColumns, productTable, predicates.length ? 'WHERE ' + predicates.join(' AND ') : '',
     parameters, order, row => productView(c, row))
 })
 
-catalog.get('/products/:id', permit('products.view'), async (c) =>
-  ok(c, productView(c, await find(c, productColumns, productTable, identifier.parse(c.req.param('id')), 'p.id'))))
+catalog.get('/products/:id', permit('products.view'), async (c) => {
+  const id = identifier.parse(c.req.param('id'))
+  if (!isAndroid(c)) return ok(c, productView(c, await find(c, productColumns, productTable, id, 'p.id')))
+  const row = await c.env.DB.prepare(`SELECT ${androidProductColumns} FROM ${productTable} WHERE p.id = ? AND p.quantity_scale = 1`)
+    .bind(id).first()
+  if (!row) return fail(404, 'not_found', 'الصنف غير متاح في تطبيق أندرويد الحالي.')
+  return ok(c, productView(c, row))
+})
 
 catalog.post('/products', permit('products.create'), async (c) => {
   const values = await body(c, product)
   if (values.cost_minor !== undefined && !hasPermission(c.get('actor'), 'products.cost.manage')) return fail(403, 'COST_PERMISSION', 'إدخال تكلفة المنتج يحتاج صلاحية مستقلة.')
+  const scale = quantityScale(values.measurement_unit ?? 'piece')
+  if (values.low_stock_threshold !== undefined || scale > 1) {
+    values.low_stock_threshold = toStockQuantity(values.low_stock_threshold ?? 5, scale, 1_000_000_000)
+  }
   const keys = Object.keys(values)
   const db = c.env.DB
   const saved = await auditedWrite(c,
@@ -162,7 +179,19 @@ catalog.post('/products', permit('products.create'), async (c) => {
 catalog.patch('/products/:id', permit('products.update'), async (c) => {
   const id = identifier.parse(c.req.param('id'))
   const values = await body(c, product.partial())
+  if (isAndroid(c)) {
+    const scale = await c.env.DB.prepare('SELECT quantity_scale FROM products WHERE id = ?').bind(id).first<number>('quantity_scale')
+    if (scale === null) return fail(404, 'not_found', 'السجل غير موجود.')
+    if (scale !== 1 || values.measurement_unit === 'meter') {
+      return fail(422, 'RETAIL_MEASUREMENT_CLIENT', 'أدر الأصناف المباعة بالمتر من واجهة الويب.')
+    }
+  }
   if (values.cost_minor !== undefined && !hasPermission(c.get('actor'), 'products.cost.manage')) return fail(403, 'COST_PERMISSION', 'تعديل تكلفة المنتج يحتاج صلاحية مستقلة.')
+  if (values.low_stock_threshold !== undefined) {
+    const scale = await c.env.DB.prepare('SELECT quantity_scale FROM products WHERE id = ?').bind(id).first<number>('quantity_scale')
+    if (scale === null) return fail(404, 'not_found', 'السجل غير موجود.')
+    values.low_stock_threshold = toStockQuantity(values.low_stock_threshold, scale, 1_000_000_000)
+  }
   const result = await auditedWrite(c, patchStatement(c.env.DB, 'products', values, id), 'update', 'product', id)
   notFoundIfUnchanged(result)
   return ok(c, productView(c, await find(c, productColumns, productTable, id, 'p.id')))
@@ -171,7 +200,8 @@ catalog.patch('/products/:id', permit('products.update'), async (c) => {
 catalog.delete('/products/:id', permit('products.delete'), async (c) => {
   const id = identifier.parse(c.req.param('id'))
   const result = await auditedWrite(c,
-    c.env.DB.prepare(`UPDATE products SET active = 0, updated_at = ${timestamp} WHERE id = ? AND active = 1`).bind(id),
+    c.env.DB.prepare(`UPDATE products SET active = 0, updated_at = ${timestamp} WHERE id = ? AND active = 1
+      ${isAndroid(c) ? 'AND quantity_scale = 1' : ''}`).bind(id),
     'archive', 'product', id)
   notFoundIfUnchanged(result)
   return ok(c, { id })
@@ -188,7 +218,8 @@ export function imageType(bytes: ArrayBuffer) {
 
 catalog.get('/products/:id/image', permit('products.view'), async (c) => {
   const id = identifier.parse(c.req.param('id'))
-  const row = await c.env.DB.prepare('SELECT content, media_type FROM product_images WHERE product_id = ?')
+  const row = await c.env.DB.prepare('SELECT content, media_type FROM product_images WHERE product_id = ?'
+    + (isAndroid(c) ? ' AND EXISTS (SELECT 1 FROM products p WHERE p.id = product_id AND p.quantity_scale = 1)' : ''))
     .bind(id).first<{ content: number[] | ArrayBuffer; media_type: string }>()
   if (!row) fail(404, 'not_found', 'لا توجد صورة لهذا المنتج.')
   const data = Array.isArray(row.content) ? Uint8Array.from(row.content) : row.content
@@ -201,7 +232,7 @@ catalog.put('/products/:id/image', permit('products.update'), async (c) => {
   const mediaType = imageType(content)
   const result = await auditedWrite(c, c.env.DB.prepare(`
     INSERT INTO product_images (product_id, media_type, content)
-    SELECT id, ?, ? FROM products WHERE id = ?
+    SELECT id, ?, ? FROM products WHERE id = ? ${isAndroid(c) ? 'AND quantity_scale = 1' : ''}
     ON CONFLICT(product_id) DO UPDATE SET media_type = excluded.media_type,
       content = excluded.content, updated_at = ${timestamp}
   `).bind(mediaType, content, id), 'update_image', 'product', id)
@@ -211,7 +242,8 @@ catalog.put('/products/:id/image', permit('products.update'), async (c) => {
 
 catalog.delete('/products/:id/image', permit('products.update'), async (c) => {
   const id = identifier.parse(c.req.param('id'))
-  const result = await auditedWrite(c, c.env.DB.prepare('DELETE FROM product_images WHERE product_id = ?').bind(id),
+  const result = await auditedWrite(c, c.env.DB.prepare('DELETE FROM product_images WHERE product_id = ?'
+    + (isAndroid(c) ? ' AND EXISTS (SELECT 1 FROM products p WHERE p.id = product_id AND p.quantity_scale = 1)' : '')).bind(id),
     'delete_image', 'product', id)
   notFoundIfUnchanged(result)
   return ok(c, { id })

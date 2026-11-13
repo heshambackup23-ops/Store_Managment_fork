@@ -3,14 +3,16 @@ import { z } from 'zod';
 import type { write } from './business';
 import { body, fail, identifier, page, paginated, permit, type ApiEnv } from './http';
 import { retailDeviceInput } from './retail-devices';
+import { saleQuantity, withStockQuantities } from './retail-measurement';
 
 const reference = z.string().trim().min(1).max(100);
 const reason = z.string().trim().min(1).max(1000);
 const receiptInput = z.object({
   reference,
+  branch_id: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
   items: z.array(z.object({
     product_id: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
-    quantity: z.number().int().min(1).max(1_000_000),
+    quantity: saleQuantity,
     devices: z.array(retailDeviceInput).max(200).optional(),
   }).strict()).min(1).max(40).refine(items => new Set(items.map(item => item.product_id)).size === items.length),
   received_on: z.iso.date().optional(),
@@ -38,8 +40,9 @@ export function purchaseReceiving(writeOperation: typeof write) {
         SELECT r.*, v.id AS reversed_by, v.reason AS reversal_reason, v.created_at AS reversed_at,
           (SELECT json_group_array(json_object(
             'product_id', i.product_id, 'product_name', i.product_name,
-            'product_barcode', i.product_barcode, 'quantity', i.quantity, 'devices', json(i.devices_json)))
-           FROM purchase_stock_receipt_items i WHERE i.receipt_id = r.id) AS items_json
+            'product_barcode', i.product_barcode, 'quantity', i.quantity, 'quantity_scale', p.quantity_scale,
+            'devices', json(i.devices_json)))
+           FROM purchase_stock_receipt_items i JOIN products p ON p.id = i.product_id WHERE i.receipt_id = r.id) AS items_json
         FROM purchase_stock_receipts r LEFT JOIN purchase_stock_reversals v ON v.receipt_id = r.id
         WHERE r.purchase_id = ? ORDER BY r.id DESC LIMIT ? OFFSET ?
       `).bind(purchaseId, paging.limit, paging.offset),
@@ -76,17 +79,18 @@ export function purchaseReceiving(writeOperation: typeof write) {
     if (items.reduce((total, item) => total + (item.devices?.length ?? 0), 0) > 200) {
       return fail(422, 'retail_receipt_device_limit', 'سجّل ما يصل إلى 200 جهاز في كل سند استلام.');
     }
+    const normalized = await withStockQuantities(c.env.DB, items, 409);
     return writeOperation(c, 'purchase.stock.receive', { ...data, purchaseId, items }, (op, binds, actor) => [
       c.env.DB.prepare(`
-        INSERT INTO purchase_stock_receipts (id, purchase_id, reference, received_on, note, actor_id)
-        VALUES (${op}, ?, ?, ?, ?, ?)
-      `).bind(...binds, purchaseId, data.reference, data.received_on ?? today, data.note, actor),
+        INSERT INTO purchase_stock_receipts (id, purchase_id, reference, received_on, note, actor_id, branch_id)
+        VALUES (${op}, ?, ?, ?, ?, ?, ?)
+      `).bind(...binds, purchaseId, data.reference, data.received_on ?? today, data.note, actor, data.branch_id ?? 1),
       c.env.DB.prepare(`
         INSERT INTO purchase_stock_receipt_items (receipt_id, product_id, product_name, product_barcode, quantity, devices_json)
         SELECT ${op}, json_extract(j.value, '$.product_id'), p.name, p.barcode, json_extract(j.value, '$.quantity'),
           COALESCE(json_extract(j.value, '$.devices'), '[]')
         FROM json_each(?) j LEFT JOIN products p ON p.id = json_extract(j.value, '$.product_id')
-      `).bind(...binds, JSON.stringify(items)),
+      `).bind(...binds, JSON.stringify(normalized)),
     ]);
   });
 

@@ -5,7 +5,8 @@ import { allowed, formatDate, money, readMoney, request } from './api'
 import type { User } from './api'
 import { ActionDialog, Notice, PageTitle } from './ui'
 import type { ActionDialogProps, Row } from './ui'
-import { RetailOrderFields } from './RetailOrderFields'
+import { orderTotal, RetailOrderFields } from './RetailOrderFields'
+import { BranchSelect } from './RetailBranches'
 import type { OrderItem } from './RetailOrderFields'
 
 export const tenderLabels = { cash: 'نقدي', card: 'بطاقة', wallet: 'محفظة', bank_transfer: 'تحويل بنكي' }
@@ -16,6 +17,7 @@ export const blankTender = (): TenderDraft => ({ method: 'cash', amount: '', ref
 
 export type Shift = {
   id: number; register_name: string; actor_id: number; actor_name: string; opening_minor: number;
+  branch_id?: number; branch_name?: string;
   opened_at: string; business_day: string; status: 'open' | 'closed' | 'pending_approval' | 'approved';
   expected_minor: number; observed_minor: number | null; difference_minor: number | null;
   close_reason: string; approval_reason: string; closed_at: string | null;
@@ -94,7 +96,7 @@ export function useOpenShift(user: User) {
 export function ShiftContext({ value }: { value: ReturnType<typeof useOpenShift> }) {
   if (value.loading) return <p className="muted" role="status">جارٍ تحميل الوردية…</p>
   if (value.error) return <Notice error>{value.error}</Notice>
-  if (value.shift) return <p>الوردية المفتوحة · <strong>{value.shift.register_name}</strong></p>
+  if (value.shift) return <p>الوردية المفتوحة · <strong>{value.shift.register_name}</strong>{value.shift.branch_name && ' · ' + value.shift.branch_name}</p>
   return <p>{value.required ? 'يلزم فتح وردية قبل تسجيل العملية.' : 'العملية خارج وردية.'} {value.canOperate && <Link to="/retail-shifts">فتح وردية</Link>}</p>
 }
 
@@ -105,8 +107,8 @@ export function RetailActionDialog({ user, ...props }: ActionDialogProps & { use
   const mode = props.action.retailTender
   function prepare(body: Row) {
     const amount = mode === 'purchase' && body.payment_type === 'cash' ? Number(body.total_minor) : Number(mode === 'purchase' ? body.paid_minor ?? 0 : body.amount_minor)
-    const order = mode === 'purchase' && items.length ? { ...body, items: items.map(({ name: _, ...item }) => item) } : body
-    if (order !== body && items.reduce((sum, item) => sum + item.quantity * item.unit_cost_minor, 0) !== Number(body.total_minor)) {
+    const order = mode === 'purchase' && items.length ? { ...body, items: items.map(({ name: _, scale: _scale, ...item }) => item) } : body
+    if (order !== body && orderTotal(items) !== Number(body.total_minor)) {
       throw new Error('إجمالي الشراء لازم يساوي مجموع بنود أمر الشراء. الشحن الموزع يُحسب ضمن تكلفة المخزون.')
     }
     if (amount && shift.required && !shift.shift) throw new Error('افتح وردية قبل تسجيل هذه الدفعة.')
@@ -147,6 +149,7 @@ export function RetailShifts({ user }: { user: User }) {
   const [shifts, setShifts] = useState<Shift[]>([])
   const [required, setRequired] = useState<boolean>()
   const [register, setRegister] = useState('')
+  const [branch, setBranch] = useState(1)
   const [opening, setOpening] = useState('')
   const [selected, setSelected] = useState<number>()
   const [observed, setObserved] = useState('')
@@ -225,14 +228,15 @@ export function RetailShifts({ user }: { user: User }) {
       <p>{required ? 'الوردية مطلوبة للعمليات التي يدعمها دفتر الورديات.' : 'الوردية اختيارية حاليًا.'}</p>
       <button className="secondary" disabled={busy}>{required ? 'اجعل الوردية اختيارية' : 'اطلب وردية للعمليات'}</button>
     </form>}
-    {canOperate && !shifts.some(shift => shift.actor_id === user.id && shift.status === 'open') && <form className="panel form-card section-space" onSubmit={event => action(event, '/retail/shifts', () => ({ register_name: register.trim(), opening_minor: readMoney(opening) }), 'تم فتح الوردية.')}>
+    {canOperate && !shifts.some(shift => shift.actor_id === user.id && shift.status === 'open') && <form className="panel form-card section-space" onSubmit={event => action(event, '/retail/shifts', () => ({ register_name: register.trim(), opening_minor: readMoney(opening), branch_id: branch }), 'تم فتح الوردية.')}>
+      <BranchSelect label="فرع الوردية" value={branch} set={setBranch} disabled={busy} />
       <h2>فتح وردية</h2>
       <label className="field">اسم الدرج<input required value={register} maxLength={100} disabled={busy} onChange={event => setRegister(event.target.value)} /></label>
       <label className="field">العهدة الافتتاحية بالجنيه<input required value={opening} inputMode="decimal" disabled={busy} onChange={event => setOpening(event.target.value)} /></label>
       <button className="primary" disabled={busy}>افتح الوردية</button>
     </form>}
     {details && details.id === selected && <section className="panel panel-inner form-section section-space" aria-label="تفاصيل الوردية">
-      <h2>{details.register_name} · {shiftStatusLabel(details)}</h2>
+      <h2>{details.register_name} · {details.branch_name && details.branch_name + ' · '}{shiftStatusLabel(details)}</h2>
       <dl className="invoice-summary">
         <div><dt>الكاشير</dt><dd>{details.actor_name}</dd></div><div><dt>العهدة</dt><dd>{money(details.opening_minor)}</dd></div>
         <div><dt>النقدية المتوقعة</dt><dd>{money(details.expected_minor)}</dd></div><div><dt>النقدية المعدودة</dt><dd>{money(details.observed_minor)}</dd></div>

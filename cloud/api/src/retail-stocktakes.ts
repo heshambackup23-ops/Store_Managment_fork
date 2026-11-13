@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import type { write } from './business';
 import { retailSerialInventory } from './retail-serial-inventory';
+import { toStockQuantity } from './retail-measurement';
 import { body, fail, hasPermission, identifier, ok, permit, searchPrefix, searchText, selectPage, timestamp, type ApiContext, type ApiEnv } from './http';
 
 const count = 'inventory.stocktake.count';
@@ -11,7 +12,8 @@ export const stocktakePermissions = [count, approve];
 const reason = z.string().trim().max(1000).refine(value => !value.includes('\0')).default('');
 const countInput = z.strictObject({
   product_id: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
-  observed_quantity: z.number().int().min(0).max(1_000_000_000),
+  branch_id: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
+  observed_quantity: z.number().min(0).max(1_000_000_000),
   reason,
 });
 const approvalInput = z.strictObject({ reason });
@@ -29,7 +31,7 @@ export function retailStocktakes(writeOperation: typeof write) {
     const q = searchText.optional().parse(c.req.query('q'));
     const tracking = z.enum(['quantity', 'tracked']).optional().parse(c.req.query('tracking'));
     const scope = tracking === 'quantity' ? " AND tracking = 'quantity'" : tracking === 'tracked' ? " AND tracking <> 'quantity'" : '';
-    return selectPage(c, 'id, name, barcode, tracking', 'products',
+    return selectPage(c, 'id, name, barcode, tracking, quantity_scale', 'products',
       "WHERE active = 1" + scope + (q ? " AND (barcode = ? OR name LIKE ? ESCAPE '\\')" : ''),
       q ? [q, searchPrefix(q)] : [], 'name, id');
   });
@@ -40,22 +42,27 @@ export function retailStocktakes(writeOperation: typeof write) {
     if (!mayApprove && !hasPermission(actor, count)) return fail(403, 'forbidden', 'ليست لديك صلاحية للجرد.');
     const status = statusFilter.parse(c.req.query('status'));
     const product = identifier.optional().parse(c.req.query('product_id'));
-    return selectPage(c, '*', 'retail_stocktake_records', 'WHERE 1 = 1'
-      + (mayApprove ? '' : ' AND actor_id = ?') + (status ? ' AND status = ?' : '') + (product ? ' AND product_id = ?' : ''),
-    [...(mayApprove ? [] : [actor.id]), ...(status ? [status] : []), ...(product ? [product] : [])], 'id DESC');
+    return selectPage(c, 's.*', 'retail_stocktake_records s', 'WHERE 1 = 1'
+      + (mayApprove ? '' : ' AND s.actor_id = ?') + (status ? ' AND s.status = ?' : '') + (product ? ' AND s.product_id = ?' : ''),
+    [...(mayApprove ? [] : [actor.id]), ...(status ? [status] : []), ...(product ? [product] : [])], 's.id DESC');
   });
 
   routes.post('/retail/stocktakes', permit(count), async c => {
     const data = await body(c, countInput);
+    const branch = data.branch_id ?? 1;
+    const scale = await c.env.DB.prepare('SELECT quantity_scale FROM products WHERE id = ?').bind(data.product_id).first<number>('quantity_scale');
+    if (scale === null) return fail(422, 'RETAIL_MEASUREMENT_PRODUCT', 'الصنف المحدد غير موجود.');
+    const observed = toStockQuantity(data.observed_quantity, scale, 1_000_000_000);
     return writeOperation(c, 'inventory.stocktake.count', data, (op, binds, actor) => [
       c.env.DB.prepare(`INSERT INTO retail_stocktakes (id, product_id, product_name, tracking, expected_quantity,
-        observed_quantity, last_movement_id, reason, actor_id, actor_name, created_at)
+        observed_quantity, last_movement_id, reason, actor_id, actor_name, created_at, branch_id, last_transfer_id)
         VALUES (${op}, ?, (SELECT name FROM products WHERE id = ? AND active = 1),
           (SELECT tracking FROM products WHERE id = ? AND active = 1),
-          (SELECT stock FROM products WHERE id = ? AND active = 1), ?,
-          COALESCE((SELECT MAX(id) FROM inventory_movements WHERE product_id = ?), 0), ?, ?, ?, ${timestamp})`)
+          COALESCE((SELECT stock FROM retail_branch_stock WHERE product_id = ? AND branch_id = ?), 0), ?,
+          COALESCE((SELECT MAX(id) FROM inventory_movements WHERE product_id = ?), 0), ?, ?, ?, ${timestamp}, ?,
+          COALESCE((SELECT MAX(id) FROM retail_branch_transfers WHERE product_id = ?), 0))`)
         .bind(...binds, data.product_id, data.product_id, data.product_id, data.product_id,
-          data.observed_quantity, data.product_id, data.reason, actor, c.get('actor').name),
+          branch, observed, data.product_id, data.reason, actor, c.get('actor').name, branch, data.product_id),
     ], id => stocktakeResponse(c, id));
   });
 

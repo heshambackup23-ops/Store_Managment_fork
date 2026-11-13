@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState } from 'react'
 import type { FormEvent, ReactNode } from 'react'
 import { allowed, integer, readMoney, request } from './api'
 import type { Pagination, User } from './api'
+import { displayQuantity, formatQuantity, measurementLabel, quantityScale, quantityStep, stockQuantity, validQuantity } from './measurement'
 
 export type Row = Record<string, unknown>
 
@@ -21,6 +22,7 @@ export interface Field {
   nullable?: boolean
   initial?: string | (() => string)
   min?: number
+  step?: number | 'any'
   placeholder?: string
   read?: (row: Row) => string
   visible?: (values: Record<string, string>) => boolean
@@ -97,7 +99,10 @@ function initialValues(fields: Field[], row?: Row): Record<string, string> {
     if (row && field.read) return [field.name, field.read(row)]
     if (field.kind === 'date' && typeof value === 'string') return [field.name, value.slice(0, 10)]
     if (field.kind === 'check' && value !== undefined) return [field.name, value ? 'true' : 'false']
-    if ((field.kind === 'multi' || field.kind === 'items') && Array.isArray(value)) return [field.name, JSON.stringify(value)]
+    if (field.kind === 'items' && Array.isArray(value)) return [field.name, JSON.stringify(value.map(item => ({
+      ...item, quantity: displayQuantity(item.quantity, item.quantity_scale), scale: item.quantity_scale,
+    })))]
+    if (field.kind === 'multi' && Array.isArray(value)) return [field.name, JSON.stringify(value)]
     const initial = typeof field.initial === 'function' ? field.initial() : field.initial
     return [field.name, value === null || value === undefined ? initial || '' : String(value)]
   }))
@@ -181,26 +186,38 @@ export function FormInput({ field, value, set, disabled }: { field: Field; value
                 {field.options?.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
               </select>
             : <input id={inputId} name={field.name} disabled={disabled} type={kind === 'money' || kind === 'signed-money' ? 'text' : kind} inputMode={kind === 'money' || kind === 'signed-money' ? 'decimal' : undefined}
-                min={field.min} step={kind === 'number' ? 1 : undefined} required={field.required} placeholder={field.placeholder}
+                min={field.min} step={kind === 'number' ? field.step ?? 1 : undefined} required={field.required} placeholder={field.placeholder}
                 autoComplete={kind === 'password' ? 'new-password' : undefined}
                 value={value} onChange={event => set(event.target.value)} />}
     </label>
   )
 }
 
-type ItemInput = { product_id: number; quantity: number }
+type ItemInput = { product_id: number; quantity: number; scale?: number; name?: string }
 const catalogItem: Field = { name: 'product_id', label: 'المنتج', kind: 'reference', reference: { path: '/products' } }
 
 function ItemsInput({ label, value, set, disabled }: { label: string; value: string; set: (value: string) => void; disabled?: boolean }) {
   const [product, setProduct] = useState('')
   const [quantity, setQuantity] = useState('1')
   const [error, setError] = useState('')
+  const [selected, setSelected] = useState<{ id: string; name: string; scale: number }>()
   const items: ItemInput[] = value ? JSON.parse(value) : []
+  const current = selected?.id === product ? selected : undefined
+  const scale = current?.scale ?? 1
+
+  useEffect(() => {
+    if (!product) return
+    const abort = new AbortController()
+    request<Row>('/products/' + product, { signal: abort.signal }).then(({ data }) => {
+      if (!abort.signal.aborted) setSelected({ id: product, name: String(data.name), scale: quantityScale(data.quantity_scale) })
+    }).catch(reason => { if (!abort.signal.aborted) setError(reason.message) })
+    return () => abort.abort()
+  }, [product])
 
   function add() {
     const productId = Number(product)
     const count = Number(quantity)
-    if (!Number.isSafeInteger(productId) || productId <= 0 || !Number.isSafeInteger(count) || count < 1 || count > 1_000_000) {
+    if (!current || !validQuantity(count, scale)) {
       setError('اختر منتجًا وأدخل كمية صحيحة.')
       return
     }
@@ -209,19 +226,20 @@ function ItemsInput({ label, value, set, disabled }: { label: string; value: str
       return
     }
     setError('')
-    set(JSON.stringify([...items, { product_id: productId, quantity: count }]))
+    set(JSON.stringify([...items, { product_id: productId, quantity: count, scale, name: current.name }]))
     setProduct('')
     setQuantity('1')
   }
 
   return <fieldset className="multi-select" disabled={disabled}>
     <legend>{label}</legend>
-    <FormInput field={catalogItem} value={product} set={setProduct} disabled={disabled} />
-    <label>الكمية<input type="number" min="1" max="1000000" value={quantity} onChange={event => setQuantity(event.target.value)} /></label>
-    <button className="secondary" type="button" disabled={items.length >= 40} onClick={add}>إضافة بند</button>
+    <FormInput field={catalogItem} value={product} set={id => { setProduct(id); setError('') }} disabled={disabled} />
+    <label>الكمية ({measurementLabel(scale)})<input type="number" min={quantityStep(scale)} step={quantityStep(scale)}
+      max={1000000 / scale} value={quantity} onChange={event => setQuantity(event.target.value)} /></label>
+    <button className="secondary" type="button" disabled={items.length >= 40 || !current} onClick={add}>إضافة بند</button>
     {error && <Notice error>{error}</Notice>}
     {items.length > 0 && <ul className="dash-list">{items.map(item => <li key={item.product_id}>
-      <span>المنتج {integer(item.product_id)} · الكمية {integer(item.quantity)}</span>
+      <span>{item.name ?? 'المنتج ' + integer(item.product_id)} · {formatQuantity(stockQuantity(item.quantity, item.scale), item.scale)}</span>
       <button className="link-button" type="button" onClick={() => set(JSON.stringify(items.filter(row => row.product_id !== item.product_id)))}>إزالة</button>
     </li>)}</ul>}
   </fieldset>
@@ -243,8 +261,9 @@ function encodeField(field: Field, value: string): unknown {
   }
   if (field.kind === 'number' || field.kind === 'reference') {
     const number = Number(value)
-    if (!Number.isSafeInteger(number) || (field.min !== undefined && number < field.min)) {
-      throw new Error('أدخل رقمًا صحيحًا في حقل ' + field.label + '.')
+    const allowsFraction = field.kind === 'number' && (field.step === 'any' || (field.step !== undefined && field.step < 1))
+    if (!(allowsFraction ? Number.isFinite(number) : Number.isSafeInteger(number)) || (field.min !== undefined && number < field.min)) {
+      throw new Error('أدخل قيمة صحيحة في حقل ' + field.label + '.')
     }
     return number
   }

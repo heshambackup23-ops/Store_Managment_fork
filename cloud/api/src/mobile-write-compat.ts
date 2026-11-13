@@ -4,7 +4,7 @@ import { write } from './business'
 import { imageType } from './catalog'
 import { auditedWrite, body, fail, hasPermission, identifier, notFoundIfUnchanged, ok, readBytes, timestamp } from './http'
 import type { ApiContext, ApiEnv } from './http'
-import { legacyInvoice } from './mobile-compat'
+import { legacyInvoice, requireLegacyInvoice } from './mobile-compat'
 import { mobileWalletDamage } from './mobile-wallet-damage'
 import { mobileModuleWrites } from './mobile-module-writes'
 import { retailTenderStatements } from './retail-shifts'
@@ -44,10 +44,12 @@ function requirePermission(c: ApiContext, permission: string) {
 
 async function mobileProduct(c: ApiContext, id: number, status: 200 | 201 = 200) {
   const row = await c.env.DB.prepare(`
-    SELECT p.id, p.name, p.description, p.notes, p.barcode, p.stock, p.category_id, c.name AS category_name,
+    SELECT p.id, p.name, p.description, p.notes, p.barcode, COALESCE(b.stock, 0) AS stock, p.category_id, c.name AS category_name,
       printf('%d.%02d', p.price_minor / 100, p.price_minor % 100) AS price, p.updated_at,
       EXISTS(SELECT 1 FROM product_images WHERE product_id = p.id) AS has_image
-    FROM products p LEFT JOIN categories c ON p.category_id = c.id WHERE p.id = ?
+    FROM products p LEFT JOIN categories c ON p.category_id = c.id
+    LEFT JOIN retail_branch_stock b ON b.branch_id = 1 AND b.product_id = p.id
+    WHERE p.id = ? AND p.quantity_scale = 1
   `).bind(id).first()
   if (!row) fail(404, 'not_found', 'المنتج غير موجود.')
   return ok(c, {
@@ -89,12 +91,17 @@ mobileWriteCompatibility.put('/products/:id', async (c, next) => {
   const delta = data.expected_stock === undefined ? 0 : data.stock - data.expected_stock
   if (delta) requirePermission(c, 'inventory.manage')
   const db = c.env.DB
-  const expected = data.expected_stock === undefined || delta !== 0 ? data.expected_stock ?? data.stock : null
+  const product = await db.prepare('SELECT quantity_scale FROM products WHERE id = ?').bind(id).first<number>('quantity_scale')
+  if (product === null) return fail(404, 'not_found', 'المنتج غير موجود.')
+  if (product !== 1) return fail(422, 'RETAIL_MEASUREMENT_CLIENT', 'أدر الأصناف المباعة بالمتر من واجهة الويب.')
+  const expected = data.expected_stock ?? data.stock
+  const compareStock = data.expected_stock === undefined || delta !== 0
   return write(c, 'mobile.product.update', { id, ...data }, (op, binds, actor) => [
     db.prepare(`
       INSERT INTO mobile_product_operations (operation_id, product_id)
-      VALUES (${op}, (SELECT id FROM products WHERE id = ? AND (? IS NULL OR stock = ?)))
-    `).bind(...binds, id, expected, expected),
+      VALUES (${op}, (SELECT p.id FROM products p LEFT JOIN retail_branch_stock b ON b.branch_id = 1 AND b.product_id = p.id
+        WHERE p.id = ? AND p.quantity_scale = 1 AND (? = 0 OR COALESCE(b.stock, 0) = ?)))
+    `).bind(...binds, id, Number(compareStock), expected),
     db.prepare(`
       UPDATE products SET name = ?, price_minor = ?, description = ?, notes = ?, barcode = ?, category_id = ?, updated_at = ${timestamp}
       WHERE id = ?
@@ -120,7 +127,7 @@ mobileWriteCompatibility.post('/products/:id/image', async (c, next) => {
   const db = c.env.DB
   const saved = await auditedWrite(c, db.prepare(`
     INSERT INTO product_images (product_id, media_type, content)
-    SELECT id, ?, ? FROM products WHERE id = ?
+    SELECT id, ?, ? FROM products WHERE id = ? AND quantity_scale = 1
     ON CONFLICT(product_id) DO UPDATE SET media_type = excluded.media_type, content = excluded.content, updated_at = ${timestamp}
   `).bind(format, content, id), 'update_image', 'product', id)
   notFoundIfUnchanged(saved)
@@ -137,6 +144,7 @@ mobileWriteCompatibility.post('/invoices/:id/pay', async (c, next) => {
   requirePermission(c, 'invoices.pay')
   requirePermission(c, 'invoices.view')
   const id = identifier.parse(c.req.param('id'))
+  await requireLegacyInvoice(c, id)
   const data = await body(c, invoicePayment)
   const db = c.env.DB
   return write(c, 'mobile.invoice.payment', { id, ...data }, (op, binds, actor) => [
@@ -153,6 +161,7 @@ mobileWriteCompatibility.post('/invoices/:id/refund', async (c, next) => {
   requirePermission(c, 'invoices.refund')
   requirePermission(c, 'invoices.view')
   const id = identifier.parse(c.req.param('id'))
+  await requireLegacyInvoice(c, id)
   const reason = 'استرجاع عبر تطبيق أندرويد'
   const db = c.env.DB
   return write(c, 'mobile.invoice.refund', { id }, (op, binds, actor) => [

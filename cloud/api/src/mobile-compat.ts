@@ -25,17 +25,26 @@ const invoiceAmounts = `r.id, COALESCE(r.legacy_invoice_number, CAST(r.id AS TEX
   COALESCE((SELECT sum(quantity) FROM invoice_items WHERE invoice_id = r.id), 0) AS quantity,
   ${decimal('r.net_total_minor')} AS total_amount, ${decimal('r.net_paid_minor')} AS paid_amount,
   ${decimal('r.outstanding_minor')} AS remaining_amount`
+const androidInvoice = `r.branch_id = 1 AND NOT EXISTS (
+  SELECT 1 FROM invoice_items x WHERE x.invoice_id = r.id AND x.quantity_scale <> 1
+)`
 
 export async function legacyInvoice(c: ApiContext, id: number) {
   const record = await c.env.DB.prepare(`SELECT ${invoiceAmounts}, ${itemJson} AS items_json
-    FROM invoices r LEFT JOIN customers c ON c.id = r.customer_id WHERE r.id = ?`).bind(id).first()
+    FROM invoices r LEFT JOIN customers c ON c.id = r.customer_id WHERE r.id = ? AND ${androidInvoice}`).bind(id).first()
   if (!record) fail(404, 'not_found', 'الفاتورة غير موجودة.')
   const { items_json, ...rest } = record
   return { ...rest, items: JSON.parse(String(items_json)) }
 }
 
+export async function requireLegacyInvoice(c: ApiContext, id: number) {
+  const row = await c.env.DB.prepare(`SELECT id FROM invoices r WHERE id = ? AND ${androidInvoice}`).bind(id).first()
+  if (!row) return fail(404, 'not_found', 'الفاتورة غير متاحة في تطبيق أندرويد الحالي.')
+}
+
 const reads: Record<string, ReadContract> = {
-  invoices: { permission: 'invoices.view', fields: invoiceAmounts, from: 'invoices r LEFT JOIN customers c ON c.id = r.customer_id', search: "COALESCE(r.legacy_customer_name, c.name, '')", details: true },
+  invoices: { permission: 'invoices.view', fields: invoiceAmounts, from: 'invoices r LEFT JOIN customers c ON c.id = r.customer_id',
+    search: "COALESCE(r.legacy_customer_name, c.name, '')", details: true, where: androidInvoice },
   installments: { permission: 'installments.view', from: 'installments r JOIN customers c ON c.id = r.customer_id', search: 'c.name', details: true, fields: `
     r.id, r.invoice_id, r.customer_id, c.name AS customer,
     COALESCE(NULLIF(r.product_name, ''), (SELECT group_concat(product_name, '، ') FROM invoice_items WHERE invoice_id = r.invoice_id), '') AS product_name,

@@ -4,13 +4,14 @@ import { allowed, formatDate, money, request } from './api'
 import type { User } from './api'
 import { ActionDialog, DataModule, dataText, idOf, Notice, PageTitle } from './ui'
 import type { Action, Column, ModuleConfig, Row } from './ui'
-import { countColumn, dateColumn, moneyColumn, required } from './core'
+import { dateColumn, moneyColumn, required } from './core'
 import { businessModules, supplierPayment, walletTransaction } from './commerce'
 import { walletProviderLabel } from './wallet-providers'
 import { RetailReceipt } from './RetailReceipt'
 import { deviceLabel } from './RetailDevices'
 import { RetailActionDialog, SharedDrawerDialog } from './RetailShifts'
 import { RetailPurchaseSummary } from './RetailSupplierReturns'
+import { formatQuantity } from './measurement'
 
 export function WalletCashier({ user }: { user: User }) {
   const [wallets, setWallets] = useState<Row[]>([])
@@ -166,7 +167,8 @@ export function DamageDetail() {
       <section className="panel panel-inner form-section section-space">
         <dl className="invoice-summary">
           <div><dt>المنتج</dt><dd>{dataText(result.product_name)}</dd></div>
-          <div><dt>الكمية</dt><dd>{dataText(result.quantity)}</dd></div>
+          <div><dt>الفرع</dt><dd>{dataText(result.branch_name)}</dd></div>
+          <div><dt>الكمية</dt><dd>{formatQuantity(result.quantity, result.quantity_scale)}</dd></div>
           {'unit_value_minor' in result && <div><dt>قيمة الوحدة</dt><dd>{money(result.unit_value_minor)}</dd></div>}
           {'verified_inventory_loss_minor' in result && <div><dt>تكلفة الهالك المثبتة</dt><dd>{result.verified_inventory_loss_minor == null ? 'غير مثبتة' : money(result.verified_inventory_loss_minor)}</dd></div>}
           {result.legacy_stock_before != null && <div><dt>الرصيد وقت تسجيل الهالك</dt>
@@ -179,7 +181,8 @@ export function DamageDetail() {
       </section>
       <DetailTable title="التصحيحات المرتبطة" rows={result.corrections} columns={[
         { key: 'id', label: 'رقم التصحيح' }, dateColumn('created_at', 'تاريخ التسجيل'),
-        countColumn('previous_quantity', 'الكمية السابقة'), countColumn('quantity', 'الكمية الجديدة'),
+        { key: 'previous_quantity', label: 'الكمية السابقة', render: row => formatQuantity(row.previous_quantity, result.quantity_scale) },
+        { key: 'quantity', label: 'الكمية الجديدة', render: row => formatQuantity(row.quantity, result.quantity_scale) },
         ...('unit_value_minor' in result ? [moneyColumn('unit_value_minor', 'قيمة الوحدة')] : []), { key: 'reason', label: 'السبب' },
       ]} />
     </>}
@@ -270,7 +273,7 @@ export function PurchaseReceipts({ user }: { user: User }) {
       { key: 'reference', label: 'مرجع الاستلام' },
       dateColumn('received_on', 'تاريخ الاستلام'),
       { key: 'items', label: 'الأصناف', render: row => Array.isArray(row.items)
-        ? <ul>{row.items.map(item => <li key={item.product_id}>{String(item.name ?? item.product_name ?? item.product_id)} × {item.quantity}
+        ? <ul>{row.items.map(item => <li key={item.product_id}>{String(item.name ?? item.product_name ?? item.product_id)} × {formatQuantity(item.quantity, item.quantity_scale)}
           {Array.isArray(item.devices) && item.devices.length > 0 && <small> · {item.devices.map(deviceLabel).join('، ')}</small>}</li>)}</ul> : '—' },
       { key: 'note', label: 'الملاحظات' },
       { key: 'reversed_by', label: 'الحالة', render: row => row.reversed_by || row.reversed_at ? 'معكوس' : 'مستلم' },

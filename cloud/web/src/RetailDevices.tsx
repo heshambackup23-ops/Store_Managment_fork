@@ -9,7 +9,11 @@ export type Tracking = 'quantity' | 'serial' | 'imei'
 export type Device = {
   id: number; product_id: number; product_name: string; serial_number?: string | null;
   imei1?: string | null; imei2?: string | null; status: string; receipt_id?: number | null;
+  branch_id?: number;
+  used_acquisition_id?: number | null; used_grade?: 'excellent' | 'good' | 'fair' | null;
+  used_battery_percent?: number | null; used_accessories?: string | null; used_defects?: string | null;
 }
+const usedGrades = { excellent: 'ممتاز', good: 'جيد', fair: 'مقبول' }
 export const trackingOf = (value: unknown): Tracking => value === 'serial' || value === 'imei' ? value : 'quantity'
 export const deviceLabel = (device: Device) => [device.serial_number, device.imei1, device.imei2].filter(Boolean).join(' / ') || '#' + device.id
 const states: Record<string, string> = { available: 'متاح', sold: 'مباع', quarantined: 'معزول للفحص', quarantine: 'معزول للفحص',
@@ -22,8 +26,8 @@ const eventLabels = { delivered: 'إثبات تسليم', installed: 'إثبات
 const warrantyBasis = { sale: 'الفاتورة', delivery: 'التسليم', installation: 'التركيب' }
 const warrantyStates = { none: 'بدون ضمان مسجل', pending: 'بانتظار تاريخ البدء', active: 'سارٍ', expired: 'منتهي', returned: 'مرتجع' }
 
-export function DevicePicker({ productId, purchaseId, productName, quantity, selected, change, disabled }: {
-  productId: number; purchaseId?: number; productName: string; quantity: number; selected: number[]; change: (ids: number[]) => void; disabled?: boolean
+export function DevicePicker({ productId, purchaseId, branchId, productName, quantity, selected, change, disabled }: {
+  productId: number; purchaseId?: number; branchId?: number; productName: string; quantity: number; selected: number[]; change: (ids: number[]) => void; disabled?: boolean
 }) {
   const [search, setSearch] = useState('')
   const [query, setQuery] = useState('')
@@ -35,6 +39,7 @@ export function DevicePicker({ productId, purchaseId, productName, quantity, sel
     const controller = new AbortController()
     const filter = new URLSearchParams({ product_id: String(productId), status: 'available', per_page: '50' })
     if (purchaseId) filter.set('purchase_id', String(purchaseId))
+    if (branchId) filter.set('branch_id', String(branchId))
     if (query) filter.set('q', query)
     request<Device[]>('/retail/devices?' + filter, { signal: controller.signal }).then(result => {
       if (controller.signal.aborted) return
@@ -44,7 +49,7 @@ export function DevicePicker({ productId, purchaseId, productName, quantity, sel
       setError('')
     }).catch(error => { if (!controller.signal.aborted) setError(error.message) })
     return () => controller.abort()
-  }, [productId, purchaseId, query])
+  }, [productId, purchaseId, branchId, query])
   return <fieldset className="panel panel-inner form-section" disabled={disabled}>
     <legend>{productName} · حدد {quantity} قطعة</legend>
     <label className="field">بحث بالرقم التسلسلي أو IMEI
@@ -60,6 +65,10 @@ export function DevicePicker({ productId, purchaseId, productName, quantity, sel
       {rows.map(device => <label className="check-field" key={device.id}>
         <input type="checkbox" checked={selected.includes(device.id)} disabled={selected.length >= quantity && !selected.includes(device.id)}
           onChange={event => change(event.target.checked ? [...selected, device.id] : selected.filter(id => id !== device.id))} /> <bdi>{deviceLabel(device)}</bdi>
+        {device.used_grade && <span> · مستعمل {usedGrades[device.used_grade]}
+          {device.used_battery_percent != null && ' · البطارية ' + device.used_battery_percent + '%'}
+          {device.used_accessories && ' · الملحقات: ' + device.used_accessories}
+          {device.used_defects && ' · العيوب: ' + device.used_defects}</span>}
       </label>)}
       {selected.filter(id => !rows.some(row => row.id === id)).map(id => <button key={id} type="button" className="link-button" onClick={() => change(selected.filter(value => value !== id))}>إزالة {cached[id] ? deviceLabel(cached[id]) : '#' + id}</button>)}
     </div>
@@ -85,6 +94,7 @@ type DeviceDetailData = Device & {
   repairs?: { id: number; item: string; status: string; requested_date: string }[];
   purchase_id?: number | null;
   inventory_intake_id?: number | null; intake_source_reference?: string | null;
+  installation_id?: number | null;
 }
 
 export function DeviceDetail({ user }: { user: User }) {
@@ -168,7 +178,11 @@ export function DeviceDetail({ user }: { user: User }) {
         <h2>{device.product_name}</h2>
         <p><bdi>{deviceLabel(device)}</bdi> · {states[device.status] ?? device.status}</p>
         {device.purchase_id && <Link to={'/purchases/' + device.purchase_id + '/receipts'}>استلام المورد</Link>}
-        {device.inventory_intake_id && <p>محضر افتتاح أو جرد رقم {device.inventory_intake_id} · <bdi>{device.intake_source_reference}</bdi></p>}
+        {device.used_acquisition_id
+          ? <p><Link to={'/retail-used-phones?q=' + encodeURIComponent(device.imei1 ?? '')}>شراء هاتف مستعمل رقم {device.used_acquisition_id}</Link>
+            {device.used_grade && ' · ' + usedGrades[device.used_grade]}</p>
+          : device.inventory_intake_id && <p>محضر افتتاح أو جرد رقم {device.inventory_intake_id} · <bdi>{device.intake_source_reference}</bdi></p>}
+        {device.installation_id && <p><Link to={'/retail-installations?job=' + device.installation_id}>أمر تركيب رقم {device.installation_id}</Link></p>}
         {(device.sales ?? []).map(sale => <article className="form-section" key={sale.invoice_id}>
           <p><Link to={'/invoices/' + sale.invoice_id}>فاتورة {sale.invoice_id}</Link> · {formatDate(sale.invoice_date)}
             {sale.warranty_status && <> · {warrantyStates[sale.warranty_status]}</>}</p>

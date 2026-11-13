@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
-import { allowed, integer, money, readMoney, request } from './api'
+import { allowed, money, readMoney, request } from './api'
 import type { User } from './api'
 import { Modal, Notice } from './ui'
+import { formatQuantity } from './measurement'
 
-type Position = { id: number; name: string; stock: number; inventory_value_minor: number | null; last_movement_id: number | null;
+type Position = { id: number; name: string; stock: number; quantity_scale?: number; inventory_value_minor: number | null; last_movement_id: number | null;
   opening_valuations: { id: number; value_minor: number; reason: string }[] }
 
 export function RetailQuantityCost({ productId, user, close }: { productId: string; user: User; close: () => void }) {
@@ -40,7 +41,7 @@ export function RetailQuantityCost({ productId, user, close }: { productId: stri
       {error && <Notice error>{error}</Notice>}
       {!position && !error && <Notice>جارٍ تحميل التقييم…</Notice>}
       {position && <>
-        <p>{position.name} · {integer(position.stock)} قطعة · {position.inventory_value_minor === null ? 'التكلفة تحتاج مستندًا معتمدًا' : money(position.inventory_value_minor)}</p>
+        <p>{position.name} · {formatQuantity(position.stock, position.quantity_scale)} · {position.inventory_value_minor === null ? 'التكلفة تحتاج مستندًا معتمدًا' : money(position.inventory_value_minor)}</p>
         {canSet && position.stock > 0 && position.inventory_value_minor === null && <form className="form-section" onSubmit={record}>
           <label className="field">إجمالي القيمة المعتمدة بالجنيه<input value={total} required inputMode="decimal" disabled={busy} onChange={event => setTotal(event.target.value)} /></label>
           <label className="field">المستند أو سبب اعتماد التكلفة<textarea value={reason} required maxLength={500} disabled={busy} onChange={event => setReason(event.target.value)} /></label>

@@ -3,6 +3,7 @@ import { z } from 'zod';
 import type { write } from './business';
 import { body, fail, identifier, ok, permit, timestamp, type ApiContext, type ApiEnv } from './http';
 import { retailTenderInput, retailTenderStatements } from './retail-shifts';
+import { roundedLineSql, saleQuantity, withStockQuantities } from './retail-measurement';
 
 const recordId = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
 const reason = z.string().trim().min(1).max(1000).refine(value => !value.includes('\0'));
@@ -11,7 +12,7 @@ const returnInput = z.strictObject({
   expected_returned_minor: z.number().int().min(0).max(900_000_000_000_000).optional(),
   items: z.array(z.strictObject({
     product_id: recordId,
-    quantity: z.number().int().min(1).max(1_000_000),
+    quantity: saleQuantity,
     disposition: z.enum(['resale', 'quarantine']),
     device_ids: z.array(recordId).max(200).default([]),
   })).min(1).max(80),
@@ -45,7 +46,8 @@ const returnRows = `
   SELECT r.id, r.invoice_id, r.actor_id, r.total_minor, r.returned_minor, r.debt_reduction_minor,
     r.reason, r.created_at, (
       SELECT json_group_array(json_object('product_id', line.product_id, 'product_name', i.product_name,
-        'quantity', line.quantity, 'disposition', line.disposition, 'unit_price_minor', line.unit_price_minor,
+        'quantity', line.quantity, 'quantity_scale', i.quantity_scale,
+        'disposition', line.disposition, 'unit_price_minor', line.unit_price_minor,
         'devices', json(COALESCE((SELECT json_group_array(json_object('id', d.id, 'serial_number', d.serial_number,
           'imei1', d.imei1, 'imei2', d.imei2)) FROM retail_return_devices rd JOIN retail_devices d ON d.id = rd.device_id
           WHERE rd.return_id = line.return_id AND rd.product_id = line.product_id AND rd.disposition = line.disposition), '[]'))))
@@ -76,7 +78,7 @@ export function retailReturns(writeOperation: typeof write) {
       db.prepare(`SELECT id, net_total_minor AS total_minor, net_paid_minor AS paid_minor, outstanding_minor,
         net_status AS status, retail_return_minor, retail_refunded_minor
         FROM invoices WHERE id = ?`).bind(invoiceId),
-      db.prepare(`SELECT i.product_id, i.product_name, i.unit_price_minor, i.quantity AS sold_quantity,
+      db.prepare(`SELECT i.product_id, i.product_name, i.unit_price_minor, i.quantity AS sold_quantity, i.quantity_scale,
         CASE WHEN h.refunded_at IS NOT NULL THEN i.quantity ELSE COALESCE(SUM(ri.quantity), 0) END AS returned_quantity,
         CASE WHEN h.refunded_at IS NOT NULL THEN 0 ELSE i.quantity - COALESCE(SUM(ri.quantity), 0) END AS refundable_quantity,
         p.tracking, (p.tracking <> 'quantity' AND NOT EXISTS (
@@ -103,22 +105,30 @@ export function retailReturns(writeOperation: typeof write) {
     const data = await body(c, returnInput);
     const items = data.items.map(item => ({ ...item, device_ids: [...item.device_ids].sort((a, b) => a - b) }))
       .sort((a, b) => a.product_id - b.product_id || a.disposition.localeCompare(b.disposition));
-    const requestedItems = JSON.stringify(items);
     const db = c.env.DB;
+    const requestedItems = JSON.stringify(await withStockQuantities(db, items));
+    const prior = 'COALESCE(previous.sum_quantity, 0)';
     return writeOperation(c, 'invoice.return', { invoiceId, ...data, items }, (op, binds, actor) => [
       db.prepare(`
         WITH basket AS (
-          SELECT COALESCE(SUM(i.unit_price_minor * MIN(requested.quantity, i.quantity)), 0) AS total
+          SELECT COALESCE(SUM(
+            ${roundedLineSql('i.unit_price_minor', prior + ' + MIN(requested.quantity, i.quantity)', 'i.quantity_scale')}
+            - ${roundedLineSql('i.unit_price_minor', prior, 'i.quantity_scale')}
+          ), 0) AS total
           FROM (SELECT json_extract(value, '$.product_id') AS product_id, SUM(json_extract(value, '$.quantity')) AS quantity
             FROM json_each(?) GROUP BY 1) requested
           JOIN invoice_items i ON i.invoice_id = ? AND i.product_id = requested.product_id
+          LEFT JOIN (SELECT invoice_id, product_id, SUM(quantity) AS sum_quantity
+            FROM retail_return_items WHERE invoice_id = ? GROUP BY invoice_id, product_id) previous
+            ON previous.invoice_id = i.invoice_id AND previous.product_id = i.product_id
         ), debt AS (
           SELECT total, MIN(total, COALESCE((SELECT outstanding_minor FROM invoices WHERE id = ?), 0)) AS reduction FROM basket
         )
         INSERT INTO retail_returns (id, invoice_id, actor_id, total_minor, returned_minor, debt_reduction_minor, expected_returned_minor,
           reason, requested_items, created_at)
         SELECT ${op}, ?, ?, total, total - reduction, reduction, ?, ?, ?, ${timestamp} FROM debt
-      `).bind(requestedItems, invoiceId, invoiceId, ...binds, invoiceId, actor, data.expected_returned_minor ?? null, data.reason, requestedItems),
+      `).bind(requestedItems, invoiceId, invoiceId, invoiceId, ...binds, invoiceId, actor,
+        data.expected_returned_minor ?? null, data.reason, requestedItems),
       ...retailTenderStatements(db, op, binds, actor, 'partial_refund', data),
     ], returnId => returnResponse(c, returnId));
   });

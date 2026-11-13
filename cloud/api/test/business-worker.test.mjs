@@ -1082,7 +1082,7 @@ test('Worker and local D1 enforce financial rules through the mounted API', asyn
     const approve = (id, options) => post(`${paths.counts}/${id}/approve`, { reason: 'confirmed after review' }, options);
     assertStatus(await adjust(5), 201);
     const lookup = assertStatus(await request(paths.lookup + '?q=BLIND-001', counter), 200);
-    assert.deepEqual(lookup, [{ id: product.id, name: 'Blind counted fixture', barcode: 'BLIND-001', tracking: 'quantity' }]);
+    assert.deepEqual(lookup, [{ id: product.id, name: 'Blind counted fixture', barcode: 'BLIND-001', tracking: 'quantity', quantity_scale: 1 }]);
     assertStatus(await request('/products/' + product.id, counter), 403);
     assertStatus(await request(paths.counts, { identity: 1 }), 403);
     const stale = assertStatus(await record(4), 201);

@@ -2,13 +2,13 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import type { write } from './business';
 import { body, fail, identifier, permit, selectPage, type ApiEnv } from './http';
+import { roundedLineSql, saleQuantity, withStockQuantities } from './retail-measurement';
 
 const id = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
-const quantity = z.number().int().min(1).max(1_000_000);
 const unitCost = z.number().int().min(0).max(100_000_000_000);
 const orderItem = z.strictObject({
   product_id: id,
-  quantity,
+  quantity: saleQuantity,
   unit_cost_minor: unitCost,
   landed_unit_minor: unitCost.optional(),
 });
@@ -16,7 +16,8 @@ export const purchaseOrderItems = z.array(orderItem).min(1).max(40)
   .refine(items => new Set(items.map(item => item.product_id)).size === items.length);
 const returnInput = z.strictObject({
   reason: z.string().trim().min(1).max(1000),
-  items: z.array(z.strictObject({ product_id: id, quantity, device_ids: z.array(id).max(200).optional() }))
+  branch_id: id.optional(),
+  items: z.array(z.strictObject({ product_id: id, quantity: saleQuantity, device_ids: z.array(id).max(200).optional() }))
     .min(1).max(40).refine(items => {
       const devices = items.flatMap(item => item.device_ids ?? []);
       return new Set(items.map(item => item.product_id)).size === items.length &&
@@ -53,12 +54,14 @@ export function retailProcurement(writeOperation: typeof write) {
 
   routes.get('/purchases/:id/returns', permit('suppliers.view'), c => {
     const purchaseId = identifier.parse(c.req.param('id'));
-    return selectPage(c, `r.id, r.purchase_id, r.credit_minor, r.unapplied_credit_minor, r.vendor_reference,
+    return selectPage(c, `r.id, r.purchase_id, r.branch_id, r.credit_minor, r.unapplied_credit_minor, r.vendor_reference,
       r.reason, r.actor_id, r.created_at,
       (SELECT json_group_array(json_object('product_id', i.product_id, 'product_name', o.product_name, 'quantity', i.quantity,
+        'quantity_scale', p.quantity_scale,
         'unit_cost_minor', i.unit_cost_minor, 'device_ids', json((SELECT json_group_array(d.device_id)
         FROM supplier_stock_return_devices d WHERE d.return_id = i.return_id AND d.product_id = i.product_id))))
       FROM supplier_stock_return_items i JOIN purchase_order_items o ON o.purchase_id = i.purchase_id AND o.product_id = i.product_id
+      JOIN products p ON p.id = i.product_id
       WHERE i.return_id = r.id) AS items_json`, 'supplier_stock_returns r', 'WHERE r.purchase_id = ?', [purchaseId],
     'r.id DESC', ({ items_json, ...row }) => ({ ...row, items: JSON.parse(String(items_json)) }));
   });
@@ -71,16 +74,19 @@ export function retailProcurement(writeOperation: typeof write) {
     if (!await db.prepare('SELECT 1 FROM purchases WHERE id = ?').bind(purchaseId).first()) {
       return fail(404, 'not_found', 'فاتورة الشراء غير موجودة.');
     }
-    const rows = JSON.stringify(items);
+    const rows = JSON.stringify(await withStockQuantities(db, items));
     return writeOperation(c, 'purchase.stock.return', { purchaseId, ...data, items }, (op, binds, actor) => [
       db.prepare(`
         WITH credit AS (
-          SELECT COALESCE(SUM(o.unit_cost_minor * json_extract(j.value, '$.quantity')), 0) AS amount
-          FROM json_each(?) j JOIN purchase_order_items o ON o.purchase_id = ? AND o.product_id = json_extract(j.value, '$.product_id')
+          SELECT COALESCE(SUM(
+            ${roundedLineSql('o.unit_cost_minor', "o.returned_quantity + json_extract(j.value, '$.quantity')", 'o.quantity_scale')}
+            - ${roundedLineSql('o.unit_cost_minor', 'o.returned_quantity', 'o.quantity_scale')}
+          ), 0) AS amount
+          FROM json_each(?) j JOIN purchase_order_progress o ON o.purchase_id = ? AND o.product_id = json_extract(j.value, '$.product_id')
         )
-        INSERT INTO supplier_stock_returns (id, purchase_id, credit_minor, reason, requested_items, actor_id)
-        SELECT ${op}, ?, amount, ?, ?, ? FROM credit
-      `).bind(rows, purchaseId, ...binds, purchaseId, data.reason, rows, actor),
+        INSERT INTO supplier_stock_returns (id, purchase_id, credit_minor, reason, requested_items, actor_id, branch_id)
+        SELECT ${op}, ?, amount, ?, ?, ?, ? FROM credit
+      `).bind(rows, purchaseId, ...binds, purchaseId, data.reason, rows, actor, data.branch_id ?? 1),
     ]);
   });
 

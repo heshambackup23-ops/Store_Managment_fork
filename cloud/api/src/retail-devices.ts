@@ -45,10 +45,14 @@ export const retailDeviceErrors: ReadonlyArray<readonly [string, string]> = [
 ];
 
 const deviceStatus = 'COALESCE(a.effective_status, d.status)';
-const deviceColumns = `d.id, d.product_id, d.receipt_id, d.inventory_intake_id, d.serial_number, d.imei1, d.imei2,
-  d.created_at, ${deviceStatus} AS status, p.name AS product_name, p.tracking`;
+const deviceColumns = `d.id, d.product_id, d.receipt_id, d.inventory_intake_id, d.serial_number, d.imei1, d.imei2, d.branch_id,
+  d.created_at, ${deviceStatus} AS status, p.name AS product_name, p.tracking,
+  u.id AS used_acquisition_id, inspection.grade AS used_grade, inspection.battery_percent AS used_battery_percent,
+  inspection.accessories AS used_accessories, inspection.defects AS used_defects`;
 const devicesTable = `retail_devices d JOIN products p ON p.id = d.product_id
-  LEFT JOIN retail_active_device_dispositions a ON a.device_id = d.id`;
+  LEFT JOIN retail_active_device_dispositions a ON a.device_id = d.id
+  LEFT JOIN retail_used_phone_acquisitions u ON u.inspection_id = d.inventory_intake_id
+  LEFT JOIN retail_used_phone_inspections inspection ON inspection.id = u.inspection_id`;
 
 const dispositionReason = z.string().trim().min(1).max(1000);
 const dispositionReturnId = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
@@ -83,6 +87,7 @@ export function retailDevices(writeOperation: typeof write) {
     const query = z.object({
       product_id: identifier.optional(),
       purchase_id: identifier.optional(),
+      branch_id: identifier.optional(),
       status: retailDeviceStatuses.optional(),
       q: z.string().trim().max(100).optional(),
     }).parse(c.req.query());
@@ -90,13 +95,14 @@ export function retailDevices(writeOperation: typeof write) {
     const parameters: (number | string)[] = [];
     const actor = c.get('actor');
     if (!hasPermission(actor, 'inventory.view')) {
-      if (!hasPermission(actor, 'invoices.create') || query.product_id === undefined || query.purchase_id !== undefined ||
+      if (!(hasPermission(actor, 'invoices.create') || hasPermission(actor, 'retail.branches.transfer')) || query.product_id === undefined || query.purchase_id !== undefined ||
         query.status !== 'available') {
         return fail(403, 'forbidden', 'ليست لديك صلاحية لعرض سجل الأجهزة.');
       }
       clauses.push('p.active = 1');
     }
     if (query.product_id !== undefined) { clauses.push('d.product_id = ?'); parameters.push(query.product_id); }
+    if (query.branch_id !== undefined) { clauses.push('d.branch_id = ?'); parameters.push(query.branch_id); }
     if (query.purchase_id !== undefined) {
       clauses.push('d.receipt_id IN (SELECT id FROM purchase_stock_receipts WHERE purchase_id = ?)');
       parameters.push(query.purchase_id);
@@ -118,7 +124,11 @@ export function retailDevices(writeOperation: typeof write) {
     const canReadCost = hasPermission(actor, 'products.cost.view') || hasPermission(actor, 'products.cost.manage');
     const canReadSupplier = hasPermission(actor, 'suppliers.view') || hasPermission(actor, 'suppliers.manage');
     const [devices, sales, events, returns, quarantine, dispositions, repairs] = await db.batch<Record<string, unknown>>([
-      db.prepare(`SELECT ${deviceColumns}, r.purchase_id, d.intake_cost_minor, v.source_reference AS intake_source_reference FROM ${devicesTable}
+      db.prepare(`SELECT ${deviceColumns}, r.purchase_id, d.intake_cost_minor, v.source_reference AS intake_source_reference,
+        ${hasPermission(actor, 'retail.installations.manage') && hasPermission(actor, 'retail.installations.view')
+          ? '(SELECT j.id FROM retail_installation_positions j WHERE j.device_id = d.id ORDER BY j.id DESC LIMIT 1)'
+          : 'NULL'} AS installation_id
+        FROM ${devicesTable}
         LEFT JOIN purchase_stock_receipts r ON r.id = d.receipt_id
         LEFT JOIN retail_device_inventory_reviews v ON v.id = d.inventory_intake_id WHERE d.id = ?`).bind(id),
       db.prepare(`SELECT w.*, i.invoice_date FROM retail_device_sale_warranty w JOIN invoices i ON i.id = w.invoice_id

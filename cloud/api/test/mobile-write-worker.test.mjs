@@ -107,6 +107,39 @@ test('Android product and invoice writes preserve stock, permissions and safe re
   assert.equal(check(await call(refundPath, { method: 'POST', key: refundKey }), 200).status, 'refunded')
   assert.equal(await db.prepare('SELECT stock FROM products WHERE id = ?').bind(product.id).first('stock'), 8)
   assert.equal(await db.prepare("SELECT count(*) AS count FROM audit_logs WHERE action = 'mobile.invoice.refund'").first('count'), 1)
+
+  const branch = check(await call('/retail/branches', { method: 'POST', android: false,
+    data: { name: 'Second fixture branch', code: 'AND-02' } }), 201)
+  const transfer = { from_branch_id: 1, to_branch_id: branch.id, product_id: product.id, quantity: 8, reason: 'Fixture branch stock' }
+  check(await call('/retail/branch-transfers', { method: 'POST', android: false, data: transfer }), 201)
+  assert.equal(check(await call('/products/' + product.id), 200).stock, 0)
+  assert.equal(check(await call('/products/' + product.id, { android: false }), 200).stock, 8)
+  assert.deepEqual(check(await call('/products?in_stock=true&q=LEGACY-5'), 200), [])
+  assert.equal(check(await call('/cashier/products?q=LEGACY-5'), 200)[0].stock, 0)
+  check(await call('/products/' + product.id, { method: 'PUT', data: { ...data, stock: 9, expected_stock: 8 } }), 409)
+  assert.equal(check(await call('/products/' + product.id, { method: 'PUT', data: { ...data, stock: 1, expected_stock: 0 } }), 200).stock, 1)
+  assert.equal(check(await call('/products/' + product.id, { android: false }), 200).stock, 9)
+  const branchInvoice = check(await call('/invoices', { method: 'POST', android: false, data: {
+    items: [{ product_id: product.id, quantity: 1 }], paid_minor: 1234, branch_id: branch.id,
+  } }), 201)
+  check(await call('/invoices/' + branchInvoice.id), 404)
+  check(await call('/invoices/' + branchInvoice.id + '/refund', { method: 'POST' }), 404)
+
+  const cable = check(await call('/products', { method: 'POST', android: false,
+    data: { name: 'Meter cable', barcode: 'MOBILE-METER', price_minor: 100, measurement_unit: 'meter' } }), 201)
+  check(await call('/inventory/adjustments', { method: 'POST', android: false, data: { product_id: cable.id, delta: 2.5, note: 'Fixture cable' } }), 201)
+  assert.deepEqual(check(await call('/products?q=MOBILE-METER'), 200), [])
+  check(await call('/products/' + cable.id), 404)
+  check(await call('/products/' + cable.id, { method: 'PUT', data: { ...data, barcode: 'MOBILE-METER', stock: 3 } }), 422)
+  assert.deepEqual(check(await call('/cashier/products?q=MOBILE-METER&measurement=1'), 200), [])
+  assert.deepEqual(check(await call('/damaged/products?q=MOBILE-METER'), 200), [])
+  check(await call('/damaged', { method: 'POST', data: { product_id: cable.id, quantity: 1, reason: 'Fixture', damaged_on: '2026-01-01' } }), 422)
+  const meteredInvoice = check(await call('/invoices', { method: 'POST', android: false, data: {
+    items: [{ product_id: cable.id, quantity: 1.25 }], paid_minor: 125,
+  } }), 201)
+  check(await call('/invoices/' + meteredInvoice.id), 404)
+  check(await call('/invoices/' + meteredInvoice.id + '/pay', { method: 'POST', data: {} }), 404)
+  check(await call('/invoices/' + meteredInvoice.id + '/refund', { method: 'POST' }), 404)
 })
 
 test('Android wallet and damaged stock DTOs, permissions and ledger effects', async t => {

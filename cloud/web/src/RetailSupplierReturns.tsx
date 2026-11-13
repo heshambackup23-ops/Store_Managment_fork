@@ -2,10 +2,12 @@ import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
 import { money, request } from './api'
 import { DevicePicker } from './RetailDevices'
+import { BranchSelect } from './RetailBranches'
 import { Modal, Notice } from './ui'
 import type { Row } from './ui'
+import { displayQuantity, formatQuantity, measurementLabel, quantityStep } from './measurement'
 
-type PurchaseItem = { product_id: number; product_name: string; quantity: number; unit_cost_minor: number; inventory_unit_cost_minor: number; received_quantity: number; remaining_quantity: number; returned_quantity: number; tracking?: string }
+type PurchaseItem = { product_id: number; product_name: string; quantity: number; quantity_scale?: number; unit_cost_minor: number; inventory_unit_cost_minor: number; received_quantity: number; remaining_quantity: number; returned_quantity: number; tracking?: string }
 type Purchase = { items: PurchaseItem[]; gross_total_minor?: number; net_total_minor?: number; supplier_credit_minor?: number; paid_minor: number }
 type Selected = { quantity: number; deviceIds: number[] }
 
@@ -28,7 +30,9 @@ export function RetailPurchaseSummary({ purchaseId, revision, canReturn, onSaved
     <h2>بنود أمر الشراء</h2>
     <p>قيمة الشراء {money(purchase.gross_total_minor)} · إشعارات المورد الدائنة {money(purchase.supplier_credit_minor)} · المتبقي {money(Number(purchase.net_total_minor ?? purchase.gross_total_minor) - purchase.paid_minor)}</p>
     <div className="table-scroll"><table><thead><tr>{['الصنف', 'مطلوب', 'مستلم', 'باقي الاستلام', 'مردود'].map(label => <th key={label} scope="col">{label}</th>)}</tr></thead>
-      <tbody>{purchase.items.map(item => <tr key={item.product_id}><th scope="row">{item.product_name}</th><td>{item.quantity}</td><td>{item.received_quantity}</td><td>{item.remaining_quantity}</td><td>{item.returned_quantity}</td></tr>)}</tbody></table></div>
+      <tbody>{purchase.items.map(item => <tr key={item.product_id}><th scope="row">{item.product_name}</th>
+        {[item.quantity, item.received_quantity, item.remaining_quantity, item.returned_quantity].map((value, position) =>
+          <td key={position}>{formatQuantity(value, item.quantity_scale)}</td>)}</tr>)}</tbody></table></div>
     {canReturn && purchase.items.some(item => item.received_quantity > item.returned_quantity) && <button className="secondary" onClick={() => setOpen(true)}>مرتجع إلى المورد</button>}
     {history.length > 0 && <ul className="dash-list" aria-label="إشعارات المورد الدائنة">{history.map(row => <li key={String(row.id)}>إشعار دائن {String(row.id)} · {money(row.credit_minor)} · {String(row.reason)}
       {Boolean(row.vendor_reference) && <> · المرجع <bdi>{String(row.vendor_reference)}</bdi></>}
@@ -39,6 +43,7 @@ export function RetailPurchaseSummary({ purchaseId, revision, canReturn, onSaved
 }
 
 function SupplierReturnDialog({ purchaseId, items, close, done }: { purchaseId: number; items: PurchaseItem[]; close: () => void; done: () => void }) {
+  const [branch, setBranch] = useState(1)
   const [selected, setSelected] = useState<Record<number, Selected>>({})
   const [tracking, setTracking] = useState<Record<number, string>>({})
   const [reason, setReason] = useState('')
@@ -61,19 +66,22 @@ function SupplierReturnDialog({ purchaseId, items, close, done }: { purchaseId: 
         return { product_id: Number(id), quantity: row.quantity, device_ids: row.deviceIds.length ? row.deviceIds : undefined }
       })
       if (!lines.length) throw new Error('حدد الأصناف المرتجعة.')
-      await request(`/purchases/${purchaseId}/returns`, { method: 'POST', financial: true, body: { reason: reason.trim(), items: lines } })
+      await request(`/purchases/${purchaseId}/returns`, { method: 'POST', financial: true, body: { reason: reason.trim(), branch_id: branch, items: lines } })
       done()
     } catch (error) { setError(error instanceof Error ? error.message : 'تعذّر حفظ مرتجع المورد.') }
     finally { setBusy(false) }
   }
   return <Modal title="مرتجع إلى المورد" close={() => { if (!busy) close() }}><form className="modal-form" onSubmit={submit}>
+    <BranchSelect label="فرع رد البضاعة" value={branch} set={id => { setBranch(id); setSelected({}) }} disabled={busy} />
     {items.filter(item => item.received_quantity > item.returned_quantity).map(item => {
       const value = selected[item.product_id] ?? { quantity: 0, deviceIds: [] }
       return <fieldset className="panel panel-inner" key={item.product_id} disabled={busy || !tracking[item.product_id]}><legend>{item.product_name}</legend>
-        <label className="field">كمية رد {item.product_name}<input type="number" min={0} max={item.received_quantity - item.returned_quantity} value={value.quantity || ''} onChange={event => {
+        <label className="field">كمية رد {item.product_name} ({measurementLabel(item.quantity_scale)})
+          <input type="number" min={0} step={quantityStep(item.quantity_scale)}
+          max={displayQuantity(item.received_quantity - item.returned_quantity, item.quantity_scale)} value={value.quantity || ''} onChange={event => {
           const quantity = Number(event.target.value); setSelected(previous => ({ ...previous, [item.product_id]: { quantity, deviceIds: value.deviceIds.slice(0, quantity) } }))
         }} /></label>
-        {tracking[item.product_id] !== 'quantity' && value.quantity > 0 && <DevicePicker productId={item.product_id} purchaseId={purchaseId} productName={item.product_name}
+        {tracking[item.product_id] !== 'quantity' && value.quantity > 0 && <DevicePicker productId={item.product_id} purchaseId={purchaseId} branchId={branch} productName={item.product_name}
           quantity={value.quantity} selected={value.deviceIds} change={deviceIds => setSelected(previous => ({ ...previous, [item.product_id]: { ...value, deviceIds } }))} />}
       </fieldset>
     })}

@@ -8,9 +8,11 @@ import type { Device } from './RetailDevices'
 import { blankTender, ShiftContext, TenderFields, tendersForAmount, useOpenShift } from './RetailShifts'
 import { FormInput, Modal, Notice } from './ui'
 
+import { displayQuantity, formatQuantity, lineMinor, quantityStep, stockQuantity, validQuantity } from './measurement'
+
 type Disposition = 'resale' | 'quarantine'
 type ReturnLine = {
-  product_id: number; product_name: string; sold_quantity: number; refundable_quantity: number;
+  product_id: number; product_name: string; sold_quantity: number; refundable_quantity: number; returned_quantity: number; quantity_scale?: number;
   unit_price_minor: number; devices?: Device[]; tracking?: string; quarantine_only?: boolean | number;
 }
 type RetailReturn = { id: number; total_minor: number; returned_minor: number; debt_reduction_minor: number; reason: string; created_at: string;
@@ -72,10 +74,18 @@ function ReturnDialog({ endpoint, data, user, close, done }: { endpoint: string;
     return (Object.keys(dispositions) as Disposition[]).flatMap(disposition => {
       const devices = Object.entries(selection.devices).filter(([, value]) => value === disposition).map(([id]) => Number(id))
       const quantity = devices.length || selection[disposition]
-      return quantity ? [{ product_id: line.product_id, quantity, disposition, device_ids: devices.length ? devices : undefined, unit_price_minor: line.unit_price_minor }] : []
+      return quantity ? [{ product_id: line.product_id, quantity, disposition, device_ids: devices.length ? devices : undefined }] : []
     })
   })
-  const total = selectedItems.reduce((sum, item) => sum + item.quantity * item.unit_price_minor, 0)
+  const drafts = data.items.map(line => {
+    const amounts = selectedItems.filter(item => item.product_id === line.product_id).map(item => item.quantity)
+    const quantity = amounts.reduce((sum, value) => sum + stockQuantity(value, line.quantity_scale), 0)
+    const valid = quantity <= line.refundable_quantity && amounts.every(value => validQuantity(value, line.quantity_scale))
+    const returned = line.returned_quantity
+    return { valid, minor: lineMinor(line.unit_price_minor, returned + quantity, line.quantity_scale)
+      - lineMinor(line.unit_price_minor, returned, line.quantity_scale) }
+  })
+  const total = drafts.reduce((sum, line) => sum + line.minor, 0)
   const payout = Math.max(0, total - data.outstanding_minor)
 
   async function submit(event: FormEvent) {
@@ -83,11 +93,10 @@ function ReturnDialog({ endpoint, data, user, close, done }: { endpoint: string;
     if (busy || !selectedItems.length) return
     setBusy(true); setError('')
     try {
-      const invalid = data.items.some(line => selectedItems.filter(item => item.product_id === line.product_id).reduce((sum, item) => sum + item.quantity, 0) > line.refundable_quantity)
-      if (invalid) throw new Error('كمية المرتجع تتجاوز المتبقي من أحد الأصناف.')
+      if (drafts.some(line => !line.valid)) throw new Error('راجع وحدة الكمية وحدّ المتاح للمرتجع لكل صنف.')
       if (payout && shift.required && !shift.shift) throw new Error('افتح وردية لتسجيل المبلغ المردود.')
       await request(endpoint, { method: 'POST', financial: true, body: {
-        reason: reason.trim(), expected_returned_minor: payout, items: selectedItems.map(({ unit_price_minor: _, ...item }) => item),
+        reason: reason.trim(), expected_returned_minor: payout, items: selectedItems,
         ...(shift.shift ? { shift_id: shift.shift.id, payments: tendersForAmount(tenders, payout) } : {}),
       } })
       done()
@@ -98,7 +107,7 @@ function ReturnDialog({ endpoint, data, user, close, done }: { endpoint: string;
   return <Modal title="مرتجع أصناف" close={() => { if (!busy) close() }}>
     <form className="modal-form" onSubmit={submit}>
       {data.items.filter(line => line.refundable_quantity > 0).map(line => <fieldset className="panel panel-inner form-section" key={line.product_id} disabled={busy}>
-        <legend>{line.product_name} · المتاح للرد {line.refundable_quantity}</legend>
+        <legend>{line.product_name} · المتاح للرد {formatQuantity(line.refundable_quantity, line.quantity_scale)}</legend>
         {line.devices?.length ? line.devices.filter(device => !device.status || device.status === 'sold').map(device => <label className="field" key={device.id}>
           <bdi>{deviceLabel(device)}</bdi><select value={selected[line.product_id]?.devices[device.id] || ''} onChange={event => {
             const disposition = event.target.value as Disposition | ''
@@ -106,7 +115,8 @@ function ReturnDialog({ endpoint, data, user, close, done }: { endpoint: string;
           }}><option value="">اتركه في الفاتورة</option><option value="resale">سليم للبيع</option><option value="quarantine">عزل للفحص</option></select>
         </label>) : <div className="form-grid">{(Object.keys(dispositions) as Disposition[]).filter(disposition => !line.quarantine_only || disposition === 'quarantine').map(disposition => <label className="field" key={disposition}>
           {dispositions[disposition]} · {line.product_name}
-          <input type="number" min={0} max={line.refundable_quantity} value={selected[line.product_id]?.[disposition] || ''}
+          <input type="number" min={0} step={quantityStep(line.quantity_scale)} max={displayQuantity(line.refundable_quantity, line.quantity_scale)}
+            value={selected[line.product_id]?.[disposition] || ''}
             onChange={event => { const quantity = Number(event.target.value); change(line.product_id, before => ({ ...before, [disposition]: quantity })) }} />
         </label>)}</div>}
       </fieldset>)}

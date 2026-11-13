@@ -1,14 +1,18 @@
 import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
-import { allowed, formatDate, integer, request } from './api'
+import { allowed, formatDate, request } from './api'
 import type { User } from './api'
 import { Notice, PageTitle } from './ui'
 import { RetailSerialStocktakes } from './RetailSerialStocktakes'
+import { BranchSelect } from './RetailBranches'
+import { displayQuantity, formatQuantity, measurementLabel, quantityStep } from './measurement'
 
-type Product = { id: number; name: string; barcode?: string; tracking: string }
+type Product = { id: number; name: string; barcode?: string; tracking: string; quantity_scale?: number }
 type Count = {
   id: number; product_id: number; product_name: string; tracking: string; expected_quantity: number; observed_quantity: number;
   difference_quantity: number; status: string; actor_id: number; actor_name: string; reason?: string; created_at: string;
+  quantity_scale?: number;
+  branch_name?: string;
 }
 const states: Record<string, string> = { matched: 'مطابق', pending_approval: 'بانتظار الاعتماد', report_only: 'فرق بأجهزة متتبعة', approved: 'تسوية معتمدة', stale: 'يتطلب إعادة العد' }
 
@@ -16,6 +20,7 @@ export function RetailStocktakes({ user }: { user: User }) {
   const canCount = allowed(user, 'inventory.stocktake.count')
   const canApprove = allowed(user, 'inventory.stocktake.approve')
   const [rows, setRows] = useState<Count[]>([])
+  const [branch, setBranch] = useState(1)
   const [query, setQuery] = useState('')
   const [products, setProducts] = useState<Product[]>([])
   const [id, setId] = useState('')
@@ -29,6 +34,7 @@ export function RetailStocktakes({ user }: { user: User }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
+  const scale = products.find(product => String(product.id) === id)?.quantity_scale
 
   useEffect(() => {
     const abort = new AbortController()
@@ -66,11 +72,14 @@ export function RetailStocktakes({ user }: { user: User }) {
         <label className="field">اسم الصنف أو الباركود<input type="search" value={query} onChange={event => setQuery(event.target.value)} /></label>
         <button className="secondary">اعرض الأصناف للعدّ</button>
       </form>
-      <form className="form-section" onSubmit={event => save(event, '/retail/stocktakes', { product_id: Number(id), observed_quantity: Number(observed), reason: reason.trim() || undefined }, 'تم تسجيل العدد الفعلي.') }>
+      <form className="form-section" onSubmit={event => save(event, '/retail/stocktakes', { product_id: Number(id), branch_id: branch, observed_quantity: Number(observed), reason: reason.trim() || undefined }, 'تم تسجيل العدد الفعلي.') }>
+        <BranchSelect label="فرع الجرد" value={branch} set={setBranch} disabled={busy} />
         <label className="field">الصنف<select value={id} required onChange={event => setId(event.target.value)}><option value="">اختر صنفًا</option>
           {products.map(product => <option key={product.id} value={product.id}>{product.name} {product.barcode && ` · ${product.barcode}`}</option>)}
         </select></label>
-        <label className="field">العدد الفعلي<input type="number" min={0} max={1000000000} value={observed} required onChange={event => setObserved(event.target.value)} /></label>
+        <label className="field">الكمية الفعلية ({measurementLabel(scale)})
+          <input type="number" min={0} step={quantityStep(scale)} max={displayQuantity(1000000000, scale)}
+            value={observed} required onChange={event => setObserved(event.target.value)} /></label>
         <label className="field">الملاحظة<textarea value={reason} maxLength={500} onChange={event => setReason(event.target.value)} /></label>
         <button className="primary" disabled={busy || !id}>سجّل العدّ</button>
       </form>
@@ -79,8 +88,8 @@ export function RetailStocktakes({ user }: { user: User }) {
       <h2>سجل الجرد الكمي</h2>
       {!rows.length ? <p>لا توجد نتائج جرد.</p> : <div className="table-scroll"><table>
         <thead><tr>{['الصنف', 'الدفتري', 'الفعلي', 'الفرق', 'الحالة', 'العدّ والتاريخ', 'الإجراء'].map(label => <th key={label} scope="col">{label}</th>)}</tr></thead>
-        <tbody>{rows.map(row => <tr key={row.id}><th scope="row">{row.product_name}</th><td>{integer(row.expected_quantity)}</td><td>{integer(row.observed_quantity)}</td>
-          <td>{integer(row.difference_quantity)}</td><td>{states[row.status] ?? row.status}</td><td>{row.actor_name} · {formatDate(row.created_at)}{row.reason && ' · ' + row.reason}</td>
+        <tbody>{rows.map(row => <tr key={row.id}><th scope="row">{row.product_name}{row.branch_name && <small> · {row.branch_name}</small>}</th><td>{formatQuantity(row.expected_quantity, row.quantity_scale)}</td><td>{formatQuantity(row.observed_quantity, row.quantity_scale)}</td>
+          <td>{formatQuantity(row.difference_quantity, row.quantity_scale)}</td><td>{states[row.status] ?? row.status}</td><td>{row.actor_name} · {formatDate(row.created_at)}{row.reason && ' · ' + row.reason}</td>
           <td>{canApprove && row.status === 'pending_approval' && row.actor_id !== user.id && <button className="link-button" onClick={() => setSelected(row.id)}>راجع الجرد {row.id}</button>}</td></tr>)}</tbody>
       </table></div>}
       {selected && <form className="form-section" onSubmit={event => save(event, `/retail/stocktakes/${selected}/approve`, { reason: decision.trim() || undefined }, 'تم اعتماد التسوية.') }>
