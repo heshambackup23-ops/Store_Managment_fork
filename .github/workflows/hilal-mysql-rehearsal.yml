@@ -43,8 +43,6 @@ jobs:
       CACHE_STORE: array
       SESSION_DRIVER: array
       QUEUE_CONNECTION: sync
-      MYSQL_SERVICE_ID: ${{ job.services.mysql.id }}
-      MYSQL_ROOT_FIXTURE: hilal-mysql-root-ci-fixture
     steps:
       - uses: actions/checkout@v4
         with:
@@ -67,6 +65,9 @@ jobs:
           php artisan migrate --force --no-interaction
       - name: Seed, dump and restore the original schema in isolated MySQL
         shell: bash
+        env:
+          MYSQL_SERVICE_ID: ${{ job.services.mysql.id }}
+          MYSQL_ROOT_FIXTURE: hilal-mysql-root-ci-fixture
         run: |
           mkdir -p "$RUNNER_TEMP/hilal-source-evidence"
           source_dump="$RUNNER_TEMP/hilal-source-evidence/hilal-original.synthetic.sql"
