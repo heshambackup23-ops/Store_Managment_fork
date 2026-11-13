@@ -38,6 +38,14 @@ const productFields: Field[] = [
   { ...required('cost_minor', 'التكلفة بالجنيه', 'money'), read: row => decimal(row.cost_minor) },
   { ...optional('category_id', 'التصنيف', 'reference'), reference: { path: '/categories' }, min: 1 },
   optional('barcode', 'الباركود'),
+  optional('variant_group', 'الموديل أو مجموعة المتغيرات'), optional('variant_color', 'اللون'), optional('variant_size', 'المقاس'),
+  optional('compatible_models', 'الأجهزة المتوافقة', 'textarea'),
+  { ...required('tracking', 'تتبّع المخزون', 'select'), initial: 'quantity', options: [
+    { value: 'quantity', label: 'بالكمية' }, { value: 'serial', label: 'بالرقم التسلسلي' }, { value: 'imei', label: 'برقم IMEI' },
+  ] },
+  { ...optional('warranty_months', 'مدة الضمان بالشهور', 'number'), min: 0, initial: '0', visible: values => values.tracking !== 'quantity' },
+  { ...optional('units_per_pack', 'عدد القطع في العبوة', 'number'), min: 1, visible: values => values.tracking === 'quantity' },
+  { ...optional('pack_barcode', 'باركود العبوة'), visible: values => values.tracking === 'quantity' },
   optional('description', 'الوصف', 'textarea'),
   optional('notes', 'ملاحظات', 'textarea'),
   { ...required('low_stock_threshold', 'حد المخزون المنخفض', 'number'), min: 0, initial: '0' },
@@ -162,9 +170,14 @@ export function Products({ user }: { user: User }) {
   const [image, setImage] = useState<Row>()
   const [label, setLabel] = useState<Row>()
   const [version, setVersion] = useState(0)
+  const productConfig = coreModules.products
+  const withoutCost = (action: Action) => ({ ...action, fields: action.fields?.filter(field => field.name !== 'cost_minor') })
+  const config = allowed(user, 'products.cost.manage') ? productConfig : {
+    ...productConfig, create: productConfig.create && withoutCost(productConfig.create), actions: productConfig.actions?.map(withoutCost),
+  }
   return (
     <>
-      <DataModule key={version} config={coreModules.products} user={user} rowActions={row => (
+      <DataModule key={version} config={config} user={user} rowActions={row => (
         <>
           {allowed(user, 'products.update') && <button className="link-button" onClick={() => setImage(row)}>الصورة</button>}
           {Boolean(row.barcode) && <button className="link-button" onClick={() => setLabel(row)}>الملصق</button>}
@@ -188,6 +201,13 @@ const moduleNames: Record<string, string> = {
 }
 
 function permissionLabel(value: string) {
+  if (value === 'retail.shifts.operate') return 'ورديات الكاشير — فتح وإقفال'
+  if (value === 'retail.shifts.approve') return 'ورديات الكاشير — اعتماد الفروق'
+  if (value === 'products.cost.view') return 'المنتجات — عرض التكلفة والهامش'
+  if (value === 'products.cost.manage') return 'المنتجات — تعديل التكلفة'
+  if (value === 'invoices.discount') return 'الفواتير — السماح بخصم السعر'
+  if (value === 'inventory.stocktake.count') return 'المخزون — تسجيل الجرد'
+  if (value === 'inventory.stocktake.approve') return 'المخزون — اعتماد تسوية الجرد'
   const [module, action] = value.split('.')
   return (moduleNames[module] || module) + ' — ' + (permissionNames[action] || action || '')
 }

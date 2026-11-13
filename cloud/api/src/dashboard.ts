@@ -52,19 +52,21 @@ dashboard.get('/dashboard', async (c) => {
     queries.push(db.prepare(`
       SELECT
         (SELECT count(*) FROM invoices WHERE refunded_at IS NULL) AS invoices,
-        CAST((SELECT coalesce(sum(total_minor), 0) FROM invoices WHERE refunded_at IS NULL) AS TEXT) AS sales_minor,
+        CAST((SELECT coalesce(sum(net_total_minor), 0) FROM invoices WHERE refunded_at IS NULL) AS TEXT) AS sales_minor,
         CAST((SELECT coalesce(sum(total_minor), 0) FROM invoices WHERE created_at >= ?)
-          - (SELECT coalesce(sum(total_minor), 0) FROM invoice_refunds WHERE created_at >= ?) AS TEXT) AS daily_sales_minor,
+          - (SELECT coalesce(sum(total_minor), 0) FROM invoice_refunds WHERE created_at >= ?)
+          - (SELECT coalesce(sum(total_minor), 0) FROM retail_returns WHERE created_at >= ?) AS TEXT) AS daily_sales_minor,
         CAST((SELECT coalesce(sum(total_minor), 0) FROM invoices WHERE created_at >= ?)
-          - (SELECT coalesce(sum(total_minor), 0) FROM invoice_refunds WHERE created_at >= ?) AS TEXT) AS weekly_sales_minor
-    `).bind(daily, daily, weekly, weekly))
+          - (SELECT coalesce(sum(total_minor), 0) FROM invoice_refunds WHERE created_at >= ?)
+          - (SELECT coalesce(sum(total_minor), 0) FROM retail_returns WHERE created_at >= ?) AS TEXT) AS weekly_sales_minor
+    `).bind(daily, daily, daily, weekly, weekly, weekly))
   }
   if (hasPermission(user, 'wallets.view')) {
     queries.push(db.prepare(`SELECT count(*) AS wallets, CAST(coalesce(sum(balance_minor), 0) AS TEXT)
       AS wallet_balance_minor FROM wallets WHERE active = 1`))
   }
   if (hasPermission(user, 'installments.view')) {
-    queries.push(db.prepare('SELECT count(*) AS installments FROM installments WHERE status = \'open\''))
+    queries.push(db.prepare('SELECT count(*) AS installments FROM installments WHERE net_status = \'open\''))
   }
   if (hasPermission(user, 'debts.view')) {
     queries.push(db.prepare(`SELECT CAST(coalesce(sum(principal_minor - paid_minor), 0) AS TEXT)

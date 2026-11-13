@@ -21,11 +21,10 @@ const itemJson = `(SELECT json_group_array(json_object('product_id', product_id,
     FROM invoice_items WHERE invoice_id = r.id)`
 const invoiceAmounts = `r.id, COALESCE(r.legacy_invoice_number, CAST(r.id AS TEXT)) AS invoice_number, COALESCE(r.legacy_customer_name, c.name, 'عميل نقدي') AS customer,
   COALESCE(r.invoice_date, date(r.created_at)) AS invoice_date, NULLIF(r.notes, '') AS notes, r.created_at,
-  CASE WHEN r.refunded_at IS NOT NULL THEN 'refunded' WHEN r.total_minor = r.paid_minor THEN 'paid'
-       WHEN r.paid_minor = 0 THEN 'unpaid' ELSE 'partial' END AS status,
+  CASE WHEN r.net_status <> 'open' THEN r.net_status WHEN r.net_paid_minor = 0 THEN 'unpaid' ELSE 'partial' END AS status,
   COALESCE((SELECT sum(quantity) FROM invoice_items WHERE invoice_id = r.id), 0) AS quantity,
-  ${decimal('r.total_minor')} AS total_amount, ${decimal('r.paid_minor')} AS paid_amount,
-  ${decimal('CASE WHEN r.refunded_at IS NOT NULL THEN 0 ELSE r.total_minor - r.paid_minor END')} AS remaining_amount`
+  ${decimal('r.net_total_minor')} AS total_amount, ${decimal('r.net_paid_minor')} AS paid_amount,
+  ${decimal('r.outstanding_minor')} AS remaining_amount`
 
 export async function legacyInvoice(c: ApiContext, id: number) {
   const record = await c.env.DB.prepare(`SELECT ${invoiceAmounts}, ${itemJson} AS items_json
@@ -40,11 +39,11 @@ const reads: Record<string, ReadContract> = {
   installments: { permission: 'installments.view', from: 'installments r JOIN customers c ON c.id = r.customer_id', search: 'c.name', details: true, fields: `
     r.id, r.invoice_id, r.customer_id, c.name AS customer,
     COALESCE(NULLIF(r.product_name, ''), (SELECT group_concat(product_name, '، ') FROM invoice_items WHERE invoice_id = r.invoice_id), '') AS product_name,
-    ${decimal('r.principal_minor')} AS product_price, r.due_date AS next_payment_date, r.payment_date,
-    ${decimal('r.paid_minor')} AS paid_amount, ${decimal('r.principal_minor - r.paid_minor')} AS remaining,
+    ${decimal('r.net_principal_minor')} AS product_price, r.due_date AS next_payment_date, r.payment_date,
+    ${decimal('r.paid_minor')} AS paid_amount, ${decimal('r.net_principal_minor - r.paid_minor')} AS remaining,
     COALESCE((SELECT sum(quantity) FROM invoice_items WHERE invoice_id = r.invoice_id),
       (SELECT sum(json_extract(value, '$.quantity')) FROM json_each(r.items_json)), 1) AS quantity,
-    r.items_json, CASE WHEN r.voided_at IS NOT NULL THEN 'refunded' WHEN r.paid_minor = r.principal_minor THEN 'complete'
+    r.items_json, CASE WHEN r.voided_at IS NOT NULL THEN 'refunded' WHEN r.net_status = 'paid' THEN 'complete'
          WHEN r.marked_overdue = 1 OR r.due_date < date('now') THEN 'overdue' ELSE 'pending' END AS status` },
   maintenance: { permission: 'maintenance.view', from: 'maintenance_requests r', search: 'r.item', details: true, where: 'r.archived_at IS NULL',
     fields: `r.id, r.item AS name, r.customer_name AS owner, r.phone, r.address, r.problem AS description,
@@ -54,8 +53,10 @@ const reads: Record<string, ReadContract> = {
     r.id, r.name, r.phone, r.address, r.email, ${decimal('r.opening_minor')} AS opening_balance,
     ${decimal('r.balance_minor')} AS balance, r.purchases_count` },
   sales: { permission: 'reports.view', search: 'r.name', where: 'r.sold_quantity > 0',
-    from: `(SELECT p.id,p.name,SUM(x.quantity) AS sold_quantity FROM products p JOIN invoice_items x ON x.product_id=p.id
-      JOIN invoices i ON i.id=x.invoice_id AND i.refunded_at IS NULL GROUP BY p.id,p.name) r`,
+    from: `(SELECT p.id, p.name, SUM(x.quantity - COALESCE((SELECT SUM(r.quantity) FROM retail_return_items r
+      WHERE r.invoice_id = x.invoice_id AND r.product_id = x.product_id), 0)) AS sold_quantity
+      FROM products p JOIN invoice_items x ON x.product_id = p.id JOIN invoices i ON i.id = x.invoice_id
+      WHERE i.refunded_at IS NULL GROUP BY p.id, p.name) r`,
     fields: 'r.id, r.name, r.sold_quantity' },
   'personal-debts': { permission: 'debts.view', from: 'personal_debts r LEFT JOIN debt_voids v ON v.debt_id = r.id',
     search: 'r.person_name', details: true, where: "r.direction = 'payable' AND v.id IS NULL", fields: `

@@ -35,6 +35,7 @@ export interface Action {
   confirmation?: string
   danger?: boolean
   financial?: boolean
+  retailTender?: 'amount' | 'purchase'
   initialFromRow?: boolean
   visible?: (row: Row) => boolean
   transform?: (body: Row, row?: Row) => Row
@@ -248,8 +249,8 @@ function encodeField(field: Field, value: string): unknown {
   return field.kind === 'password' ? value : value.trim()
 }
 
-export function ActionDialog({ action, row, close, done }: {
-  action: Action; row?: Row; close: () => void; done: () => void
+export function ActionDialog({ action, row, close, done, extra, prepare, waiting }: {
+  action: Action; row?: Row; close: () => void; done: () => void; extra?: ReactNode; prepare?: (body: Row) => Row; waiting?: boolean
 }) {
   const fields = action.fields || []
   const [values, setValues] = useState(() => initialValues(fields, action.method === 'PATCH' || action.initialFromRow ? row : undefined))
@@ -266,7 +267,8 @@ export function ActionDialog({ action, row, close, done }: {
     try {
       const method = action.method || 'POST'
       const body = Object.fromEntries(visible.map(field => [field.name, encodeField(field, values[field.name] || '')]))
-      const result = await request<Row>(action.endpoint(row), { method, body: method === 'DELETE' ? undefined : action.transform?.(body, row) ?? body, financial: action.financial })
+      const transformed = action.transform?.(body, row) ?? body
+      const result = await request<Row>(action.endpoint(row), { method, body: method === 'DELETE' ? undefined : prepare?.(transformed) ?? transformed, financial: action.financial })
       const secret = result.data?.access_key
       if (typeof secret === 'string') setAccessKey(secret)
       else done()
@@ -284,9 +286,10 @@ export function ActionDialog({ action, row, close, done }: {
         {action.confirmation && <p>{action.confirmation}</p>}
         {visible.map(field => <FormInput key={field.name} field={field} value={values[field.name] || ''} disabled={busy}
           set={value => setValues(previous => ({ ...previous, [field.name]: value }))} />)}
+        {extra}
         {error && <Notice error>{error}</Notice>}
         <div className="form-actions">
-          <button className={action.danger ? 'danger' : 'primary'} disabled={busy}>{busy ? 'جارٍ التنفيذ…' : action.label}</button>
+          <button className={action.danger ? 'danger' : 'primary'} disabled={busy || waiting}>{busy ? 'جارٍ التنفيذ…' : action.label}</button>
           <button className="secondary" type="button" disabled={busy} onClick={close}>إلغاء</button>
         </div>
       </form>
@@ -294,8 +297,11 @@ export function ActionDialog({ action, row, close, done }: {
   )
 }
 
-export function DataModule({ config, user, extra, rowActions, onChange }: {
-  config: ModuleConfig; user: User; extra?: ReactNode; rowActions?: (row: Row) => ReactNode; onChange?: () => void
+export type ActionDialogProps = { action: Action; row?: Row; close: () => void; done: () => void }
+
+export function DataModule({ config, user, extra, rowActions, onChange, renderAction }: {
+  config: ModuleConfig; user: User; extra?: ReactNode; rowActions?: (row: Row) => ReactNode; onChange?: () => void;
+  renderAction?: (props: ActionDialogProps) => ReactNode;
 }) {
   const [input, setInput] = useState('')
   const [query, setQuery] = useState('')
@@ -377,8 +383,12 @@ export function DataModule({ config, user, extra, rowActions, onChange }: {
           </section>
         </>
       )}
-      {selected && <ActionDialog action={selected.action} row={selected.row} close={() => setSelected(undefined)}
-        done={() => { setSelected(undefined); setSuccess('تم تنفيذ الإجراء.'); setVersion(current => current + 1); onChange?.() }} />}
+      {selected && (() => {
+        const props = { ...selected, close: () => setSelected(undefined), done: () => {
+          setSelected(undefined); setSuccess('تم تنفيذ الإجراء.'); setVersion(current => current + 1); onChange?.()
+        } }
+        return renderAction ? renderAction(props) : <ActionDialog {...props} />
+      })()}
     </>
   )
 }

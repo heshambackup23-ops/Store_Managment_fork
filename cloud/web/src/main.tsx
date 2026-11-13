@@ -8,6 +8,10 @@ import { businessModules, CommerceModule, DamageReport, InvoiceDetail, Pos, Sale
 import { coreModules, Dashboard, Notifications, Products, Profile, Roles, Settings, Staff } from './core'
 import { CustomerLedger, DamageDetail, PurchaseReceipts, SupplierDetail, WalletCashier } from './detail'
 import { WalletReconciliation } from './WalletReconciliation'
+import { RetailShifts } from './RetailShifts'
+import { DeviceDetail, DeviceList } from './RetailDevices'
+import { RetailStocktakes } from './RetailStocktakes'
+import { RetailFinance } from './RetailFinance'
 import { DataModule, idOf, Notice, PageTitle } from './ui'
 import { WalletLedger } from './WalletOperations'
 import './styles.css'
@@ -21,12 +25,16 @@ const navGroups: { title: string; items: NavigationItem[] }[] = [
   ] },
   { title: 'المبيعات والمخزون', items: [
     { path: '/pos', label: 'نقطة البيع', permission: 'invoices.create' },
+    { path: '/retail-shifts', label: 'ورديات الكاشير', permission: 'retail.shifts.operate' },
     { path: '/invoices', label: 'الفواتير', permission: 'invoices.view' },
     { path: '/products', label: 'المنتجات', permission: 'products.view' },
     { path: '/categories', label: 'التصنيفات', permission: 'categories.view' },
     { path: '/inventory', label: 'حركات المخزون', permission: 'inventory.view' },
+    { path: '/retail-stocktakes', label: 'جرد المخزون', permission: 'inventory.stocktake.count' },
+    { path: '/retail-devices', label: 'الأجهزة المتتبعة', permission: 'inventory.view' },
     { path: '/damaged', label: 'الهالك', permission: 'damaged.view' },
     { path: '/reports', label: 'تقارير المبيعات', permission: 'reports.view' },
+    { path: '/retail-finance', label: 'تقارير مالية للمتجر', permission: 'reports.view' },
   ] },
   { title: 'الحسابات والخدمات', items: [
     { path: '/customers', label: 'العملاء', permission: 'customers.view' },
@@ -161,7 +169,9 @@ function Shell({ user, update, clear, theme, toggle }: {
   const location = useLocation()
   const sidebar = useRef<HTMLElement>(null)
   const menu = useRef<HTMLButtonElement>(null)
-  const groups = navGroups.map(group => ({ ...group, items: group.items.filter(item => allowed(user, item.permission)) })).filter(group => group.items.length > 0)
+  const groups = navGroups.map(group => ({ ...group, items: group.items.filter(item => allowed(user, item.permission) ||
+    item.path === '/retail-shifts' && allowed(user, 'retail.shifts.approve') ||
+    item.path === '/retail-stocktakes' && allowed(user, 'inventory.stocktake.approve')) })).filter(group => group.items.length > 0)
   const home = '/dashboard'
   const protect = (permission: string, element: ReactNode) => allowed(user, permission) ? element : <Notice error>ليست لديك صلاحية عرض هذه الصفحة.</Notice>
 
@@ -235,9 +245,14 @@ function Shell({ user, update, clear, theme, toggle }: {
               <Route key={name} path={'/' + name} element={<CommerceModule name={name} user={user} />} />)}
             <Route path="/wallet-transactions" element={protect('wallets.view', <WalletLedger user={user} config={businessModules['wallet-transactions']} />)} />
             <Route path="/pos" element={<Pos key="sale" user={user} />} />
+            <Route path="/retail-shifts" element={allowed(user, 'retail.shifts.operate') || allowed(user, 'retail.shifts.approve') ? <RetailShifts user={user} /> : <Notice error>ليست لديك صلاحية عرض الورديات.</Notice>} />
+            <Route path="/retail-devices" element={protect('inventory.view', <DeviceList />)} />
+            <Route path="/retail-stocktakes" element={allowed(user, 'inventory.stocktake.count') || allowed(user, 'inventory.stocktake.approve') ? <RetailStocktakes user={user} /> : <Notice error>ليست لديك صلاحية عرض الجرد.</Notice>} />
+            <Route path="/retail-devices/:id" element={protect('inventory.view', <DeviceDetail user={user} />)} />
             <Route path="/pos/reissue/:invoiceId" element={<Pos key="reissue" user={user} />} />
             <Route path="/invoices/:id" element={protect('invoices.view', <InvoiceDetail user={user} />)} />
             <Route path="/reports" element={protect('reports.view', <SalesReport />)} />
+            <Route path="/retail-finance" element={protect('reports.view', <RetailFinance user={user} />)} />
             <Route path="/wallet-report" element={protect('wallets.cash', <WalletReport user={user} />)} />
             <Route path="/wallet-reconciliation" element={protect('wallets.cash', <WalletReconciliation />)} />
             <Route path="/wallet-cashier" element={protect('wallets.view', <WalletCashier user={user} />)} />

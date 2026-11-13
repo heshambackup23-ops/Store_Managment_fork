@@ -2,14 +2,16 @@ import { Hono } from 'hono'
 import { z } from 'zod'
 import {
   auditedWrite, body, fail, identifier, notFoundIfUnchanged, ok, patchStatement,
-  permit, readBytes, searchPrefix, searchText, selectPage, timestamp,
+  hasPermission, permit, readBytes, searchPrefix, searchText, selectPage, timestamp,
 } from './http'
 import type { ApiContext, ApiEnv } from './http'
 import { emailSchema } from './auth'
+import { retailTracking } from './retail-devices'
 
 export const catalog = new Hono<ApiEnv>()
 export const catalogPermissions = ['categories', 'products', 'customers']
   .flatMap((module) => ['view', 'create', 'update', 'delete'].map((operation) => `${module}.${operation}`))
+  .concat('products.cost.view', 'products.cost.manage')
 
 const title = z.string().trim().min(1).max(200)
 const description = z.string().trim().max(2000).nullable().optional()
@@ -27,6 +29,12 @@ const product = z.object({
   price_minor: minorUnits,
   cost_minor: minorUnits.optional(),
   low_stock_threshold: z.number().int().min(0).max(1000000000).optional(),
+  tracking: retailTracking.optional(),
+  warranty_months: z.number().int().min(0).max(120).optional(),
+  variant_group: title.nullish(), variant_color: title.nullish(), variant_size: title.nullish(),
+  compatible_models: description,
+  units_per_pack: z.number().int().min(1).max(1_000_000).optional(),
+  pack_barcode: z.string().trim().min(1).max(120).nullish(),
   active: z.union([z.boolean(), z.literal(0), z.literal(1)]).transform(Number).optional(),
 }).strict()
 
@@ -34,15 +42,18 @@ const categoryColumns = `categories.id, name, description, created_at, updated_a
   (SELECT count(*) FROM products p WHERE p.category_id = categories.id AND p.active = 1) AS products_count`
 const customerColumns = 'id, name, phone, email, address, notes, created_at, updated_at'
 const productColumns = `p.id, p.name, p.description, p.notes, p.category_id, c.name AS category_name,
-  p.barcode, p.price_minor, p.cost_minor, p.stock, p.low_stock_threshold, p.active,
+  p.barcode, p.price_minor, p.cost_minor, p.stock, p.low_stock_threshold, p.active, p.tracking, p.warranty_months,
+  p.variant_group, p.variant_color, p.variant_size, p.compatible_models, p.units_per_pack, p.pack_barcode,
   EXISTS(SELECT 1 FROM product_images i WHERE i.product_id = p.id) AS has_image,
   printf('%d.%02d', p.price_minor / 100, p.price_minor % 100) AS price, p.created_at, p.updated_at`
 const productTable = 'products p LEFT JOIN categories c ON p.category_id = c.id'
 const prefixOperator = "LIKE ? ESCAPE '\\'"
 
-function productView(row: Record<string, unknown>) {
+function productView(c: ApiContext, row: Record<string, unknown>) {
+  const { cost_minor, ...product } = row
   return {
-    ...row,
+    ...product,
+    ...(hasPermission(c.get('actor'), 'products.cost.view') || hasPermission(c.get('actor'), 'products.cost.manage') ? { cost_minor } : {}),
     category: row.category_id ? { id: row.category_id, name: row.category_name } : null,
     image_url: row.has_image ? `/api/v1/products/${row.id}/image` : null,
   }
@@ -108,8 +119,8 @@ catalog.get('/products', permit('products.view'), async (c) => {
     parameters.push(Number(filter.active === 'true'))
   }
   if (filter.barcode) {
-    predicates.push('p.barcode = ?')
-    parameters.push(filter.barcode)
+    predicates.push('(p.barcode = ? OR p.pack_barcode = ?)')
+    parameters.push(filter.barcode, filter.barcode)
   }
   if (filter.category_id) {
     predicates.push('p.category_id = ?')
@@ -119,31 +130,33 @@ catalog.get('/products', permit('products.view'), async (c) => {
     predicates.push(filter.in_stock === 'true' ? 'p.stock > 0' : 'p.stock = 0')
   }
   if (filter.q) {
-    predicates.push(`(p.name ${prefixOperator} OR p.barcode = ?)`)
-    parameters.push(searchPrefix(filter.q), filter.q)
+    predicates.push(`(p.name ${prefixOperator} OR p.variant_group ${prefixOperator} OR p.barcode = ? OR p.pack_barcode = ?)`)
+    parameters.push(searchPrefix(filter.q), searchPrefix(filter.q), filter.q, filter.q)
   }
-  return selectPage(c, productColumns, productTable, predicates.length ? 'WHERE ' + predicates.join(' AND ') : '', parameters, 'p.id DESC', productView)
+  return selectPage(c, productColumns, productTable, predicates.length ? 'WHERE ' + predicates.join(' AND ') : '', parameters, 'p.id DESC', row => productView(c, row))
 })
 
 catalog.get('/products/:id', permit('products.view'), async (c) =>
-  ok(c, productView(await find(c, productColumns, productTable, identifier.parse(c.req.param('id')), 'p.id'))))
+  ok(c, productView(c, await find(c, productColumns, productTable, identifier.parse(c.req.param('id')), 'p.id'))))
 
 catalog.post('/products', permit('products.create'), async (c) => {
   const values = await body(c, product)
+  if (values.cost_minor !== undefined && !hasPermission(c.get('actor'), 'products.cost.manage')) return fail(403, 'COST_PERMISSION', 'إدخال تكلفة المنتج يحتاج صلاحية مستقلة.')
   const keys = Object.keys(values)
   const db = c.env.DB
   const saved = await auditedWrite(c,
     db.prepare(`INSERT INTO products (${keys.join(', ')}) VALUES (${keys.map(() => '?').join(', ')})`).bind(...Object.values(values)),
     'create', 'product', null)
-  return ok(c, productView(await find(c, productColumns, productTable, saved.meta.last_row_id, 'p.id')), 201)
+  return ok(c, productView(c, await find(c, productColumns, productTable, saved.meta.last_row_id, 'p.id')), 201)
 })
 
 catalog.patch('/products/:id', permit('products.update'), async (c) => {
   const id = identifier.parse(c.req.param('id'))
   const values = await body(c, product.partial())
+  if (values.cost_minor !== undefined && !hasPermission(c.get('actor'), 'products.cost.manage')) return fail(403, 'COST_PERMISSION', 'تعديل تكلفة المنتج يحتاج صلاحية مستقلة.')
   const result = await auditedWrite(c, patchStatement(c.env.DB, 'products', values, id), 'update', 'product', id)
   notFoundIfUnchanged(result)
-  return ok(c, productView(await find(c, productColumns, productTable, id, 'p.id')))
+  return ok(c, productView(c, await find(c, productColumns, productTable, id, 'p.id')))
 })
 
 catalog.delete('/products/:id', permit('products.delete'), async (c) => {

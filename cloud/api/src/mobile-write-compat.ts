@@ -7,6 +7,7 @@ import type { ApiContext, ApiEnv } from './http'
 import { legacyInvoice } from './mobile-compat'
 import { mobileWalletDamage } from './mobile-wallet-damage'
 import { mobileModuleWrites } from './mobile-module-writes'
+import { retailTenderStatements } from './retail-shifts'
 
 export const mobileWriteCompatibility = new Hono<ApiEnv>()
 mobileWriteCompatibility.route('/', mobileWalletDamage)
@@ -141,8 +142,9 @@ mobileWriteCompatibility.post('/invoices/:id/pay', async (c, next) => {
   return write(c, 'mobile.invoice.payment', { id, ...data }, (op, binds, actor) => [
     db.prepare(`
       INSERT INTO invoice_payments (id, invoice_id, amount_minor, source_type, actor_id)
-      VALUES (${op}, ?, COALESCE(?, (SELECT total_minor - paid_minor FROM invoices WHERE id = ?)), 'payment', ?)
+      VALUES (${op}, ?, COALESCE(?, (SELECT outstanding_minor FROM invoices WHERE id = ?)), 'payment', ?)
     `).bind(...binds, id, data.amount ?? null, id, actor),
+    ...retailTenderStatements(db, op, binds, actor, 'invoice_payment', {}),
   ], async () => ok(c, await legacyInvoice(c, id)))
 })
 
@@ -159,5 +161,6 @@ mobileWriteCompatibility.post('/invoices/:id/refund', async (c, next) => {
       VALUES (${op}, ?, (SELECT total_minor FROM invoices WHERE id = ?),
         (SELECT paid_minor FROM invoices WHERE id = ?), ?, ?)
     `).bind(...binds, id, id, id, reason, actor),
+    ...retailTenderStatements(db, op, binds, actor, 'full_refund', {}),
   ], async () => ok(c, await legacyInvoice(c, id)))
 })

@@ -9,12 +9,12 @@ const sources = [
     permission: 'invoices.view',
     key: 'invoices_due_minor',
     sql: `
-      SELECT 'invoice' AS kind, i.id AS record_id, i.total_minor AS amount_minor, i.paid_minor,
-        CASE WHEN i.refunded_at IS NULL THEN i.total_minor - i.paid_minor ELSE 0 END AS remaining_minor,
-        i.status, i.created_at, NULL AS due_date, NULL AS related_invoice_id, NULL AS direction,
+      SELECT 'invoice' AS kind, i.id AS record_id, i.net_total_minor AS amount_minor, i.net_paid_minor AS paid_minor,
+        i.outstanding_minor AS remaining_minor,
+        i.net_status, i.created_at, NULL AS due_date, NULL AS related_invoice_id, NULL AS direction,
         CASE WHEN i.refunded_at IS NULL AND ((SELECT visible FROM visible_installments) = 0 OR NOT EXISTS (
           SELECT 1 FROM installments a WHERE a.invoice_id = i.id AND a.voided_at IS NULL
-        )) THEN i.total_minor - i.paid_minor ELSE 0 END AS balance_minor,
+        )) THEN i.outstanding_minor ELSE 0 END AS balance_minor,
         'invoices_due_minor' AS balance_key
       FROM invoices i WHERE i.customer_id = ?1
     `,
@@ -23,10 +23,10 @@ const sources = [
     permission: 'installments.view',
     key: 'installments_due_minor',
     sql: `
-      SELECT 'installment', a.id, a.principal_minor, a.paid_minor,
-        CASE WHEN a.voided_at IS NULL THEN a.principal_minor - a.paid_minor ELSE 0 END,
-        a.status, a.created_at, a.due_date, a.invoice_id, NULL,
-        CASE WHEN a.voided_at IS NULL THEN a.principal_minor - a.paid_minor ELSE 0 END, 'installments_due_minor'
+      SELECT 'installment', a.id, a.net_principal_minor, a.paid_minor,
+        CASE WHEN a.voided_at IS NULL THEN a.net_principal_minor - a.paid_minor ELSE 0 END,
+        a.net_status, a.created_at, a.due_date, a.invoice_id, NULL,
+        CASE WHEN a.voided_at IS NULL THEN a.net_principal_minor - a.paid_minor ELSE 0 END, 'installments_due_minor'
       FROM installments a WHERE a.customer_id = ?1
     `,
   },

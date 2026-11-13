@@ -108,7 +108,8 @@ test('invoice SQL preserves prices, current stock, linked balances, and post-cut
   db.exec(`
     INSERT INTO business_operations (actor_id,request_key,operation,fingerprint) VALUES (1,'ordinary','checkout','new');
     INSERT INTO invoices (id,total_minor,paid_minor,actor_id) VALUES (999,500,500,1);
-    INSERT INTO invoice_items VALUES (999,42,'Current name',1,500,0);
+    INSERT INTO invoice_items (invoice_id, product_id, product_name, quantity, unit_price_minor, unit_cost_minor)
+      VALUES (999,42,'Current name',1,500,0);
   `)
   assert.ok(db.prepare("SELECT id FROM business_operations WHERE request_key = 'ordinary'").get().id > 302)
   assert.equal(db.prepare('SELECT stock FROM products WHERE id = 42').get().stock, 8)

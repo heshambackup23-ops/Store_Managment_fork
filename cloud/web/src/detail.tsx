@@ -7,6 +7,10 @@ import type { Action, Column, ModuleConfig, Row } from './ui'
 import { countColumn, dateColumn, moneyColumn, required } from './core'
 import { businessModules, supplierPayment, walletTransaction } from './commerce'
 import { walletProviderLabel } from './wallet-providers'
+import { RetailReceipt } from './RetailReceipt'
+import { deviceLabel } from './RetailDevices'
+import { RetailActionDialog } from './RetailShifts'
+import { RetailPurchaseSummary } from './RetailSupplierReturns'
 
 export function WalletCashier({ user }: { user: User }) {
   const [wallets, setWallets] = useState<Row[]>([])
@@ -146,7 +150,7 @@ export function SupplierDetail({ user }: { user: User }) {
         moneyColumn('opening_applied_minor', 'المخصص للرصيد الافتتاحي'), { key: 'note', label: 'البيان' },
       ]} />
     </>}
-    {showPayment && result && <ActionDialog action={supplierPayment} row={result}
+    {showPayment && result && <RetailActionDialog user={user} action={supplierPayment} row={result}
       close={() => setShowPayment(false)} done={() => { setShowPayment(false); setRevision(value => value + 1) }} />}
   </>
 }
@@ -254,6 +258,8 @@ export function PurchaseReceipts({ user }: { user: User }) {
   const { id } = useParams()
   const endpoint = '/purchases/' + encodeURIComponent(id || '') + '/receipts'
   const canManage = allowed(user, 'suppliers.manage') && allowed(user, 'inventory.manage')
+  const [receiving, setReceiving] = useState(false)
+  const [revision, refresh] = useState(0)
   const config: ModuleConfig = {
     title: 'استلام أصناف الشراء',
     description: 'تضيف كل دفعة استلام كميات الأصناف إلى المخزون مع تسجيل مرجع الحركة.',
@@ -262,18 +268,11 @@ export function PurchaseReceipts({ user }: { user: User }) {
       { key: 'reference', label: 'مرجع الاستلام' },
       dateColumn('received_on', 'تاريخ الاستلام'),
       { key: 'items', label: 'الأصناف', render: row => Array.isArray(row.items)
-        ? row.items.map(item => String(item.name ?? item.product_name ?? item.product_id) + ' × ' + item.quantity).join('، ') : '—' },
+        ? <ul>{row.items.map(item => <li key={item.product_id}>{String(item.name ?? item.product_name ?? item.product_id)} × {item.quantity}
+          {Array.isArray(item.devices) && item.devices.length > 0 && <small> · {item.devices.map(deviceLabel).join('، ')}</small>}</li>)}</ul> : '—' },
       { key: 'note', label: 'الملاحظات' },
       { key: 'reversed_by', label: 'الحالة', render: row => row.reversed_by || row.reversed_at ? 'معكوس' : 'مستلم' },
     ],
-    create: canManage ? {
-      label: 'تسجيل استلام', endpoint: () => endpoint, financial: true, fields: [
-        required('reference', 'مرجع الاستلام'),
-        { name: 'received_on', label: 'تاريخ الاستلام', kind: 'date' },
-        { name: 'items', label: 'الأصناف المستلمة', kind: 'items', required: true },
-        { name: 'note', label: 'الملاحظات', kind: 'textarea' },
-      ],
-    } : undefined,
     actions: canManage ? [{
       label: 'عكس الاستلام', danger: true, financial: true,
       visible: row => !row.reversed_by && !row.reversed_at,
@@ -283,7 +282,10 @@ export function PurchaseReceipts({ user }: { user: User }) {
     }] : undefined,
   }
   return <>
-    <Link className="secondary section-space" to="/purchases">المشتريات</Link>
-    <DataModule config={config} user={user} />
+    <div className="form-actions section-space"><Link className="secondary" to="/purchases">المشتريات</Link>
+      {canManage && <button className="primary" onClick={() => setReceiving(true)}>تسجيل استلام</button>}</div>
+    <RetailPurchaseSummary purchaseId={Number(id)} revision={revision} canReturn={canManage} onSaved={() => refresh(value => value + 1)} />
+    <DataModule key={revision} config={config} user={user} onChange={() => refresh(value => value + 1)} />
+    {receiving && <RetailReceipt endpoint={endpoint} close={() => setReceiving(false)} done={() => { setReceiving(false); refresh(value => value + 1) }} />}
   </>
 }

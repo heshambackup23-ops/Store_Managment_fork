@@ -12,6 +12,8 @@ import { ApiError, fail, ok } from './http'
 import type { ApiEnv } from './http'
 import { mobileCompatibility } from './mobile-compat'
 import { mobileWriteCompatibility } from './mobile-write-compat'
+import { retailDeviceErrors } from './retail-devices'
+import { retailMargin } from './retail-margin'
 
 const app = new Hono<ApiEnv>()
 
@@ -50,6 +52,7 @@ api.route('/', customerLedger)
 api.route('/', adminRoutes([...catalogPermissions, ...adminPermissions, ...businessPermissions, 'backup.export']))
 api.route('/', notifications)
 api.route('/', business)
+api.route('/', retailMargin)
 api.route('/', backup)
 app.route('/api/v1', api)
 
@@ -66,6 +69,14 @@ app.onError((error, c) => {
     }, 422)
   }
   const message = error instanceof Error ? error.message : ''
+  if (message.includes('RETAIL_PACK_BARCODE') || message.includes('products.pack_barcode')) {
+    return c.json({ success: false, code: 'RETAIL_PACK_BARCODE', message: 'استخدم باركود عبوة فريدًا، وصنفًا بالكمية يحتوي على قطعتين على الأقل في العبوة.' }, 409)
+  }
+  const deviceRule = retailDeviceErrors.find(([code]) => message.includes(code))
+  if (deviceRule) {
+    const [code, message] = deviceRule
+    return c.json({ success: false, code, message }, 409)
+  }
   if (message.includes('last_active_superadmin')) {
     return c.json({ success: false, code: 'last_admin', message: 'يجب أن يبقى حساب مسؤول عام نشط واحد على الأقل.' }, 409)
   }

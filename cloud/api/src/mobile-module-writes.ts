@@ -5,6 +5,7 @@ import { body, fail, identifier, ok, timestamp } from './http'
 import type { ApiContext, ApiEnv } from './http'
 import { legacyInvoice, legacyRecord } from './mobile-compat'
 import { canonicalWrite, decimalMinor, isAndroid, requirePermission } from './mobile-wallet-damage'
+import { retailTenderStatements } from './retail-shifts'
 
 export const mobileModuleWrites = new Hono<ApiEnv>()
 const text = z.string().trim().max(1000).nullish()
@@ -221,8 +222,10 @@ for (const route of [
     return write(c, 'mobile.' + route.permission + '.pay', { id, ...data }, (op, binds, actor) => [
       db.prepare(`INSERT INTO ${route.payments} (id,${route.fk},amount_minor,actor_id${route.path === 'personal-debts' ? ',note' : ''})
         VALUES (${op}, (SELECT id FROM ${route.table} WHERE id = ?${route.path === 'personal-debts' ? " AND direction = 'payable'" : ''}),
-          COALESCE(?, (SELECT principal_minor - paid_minor FROM ${route.table} WHERE id = ?)), ?${route.path === 'personal-debts' ? ',?' : ''})`)
+          COALESCE(?, (SELECT ${route.table === 'installments' ? 'net_principal_minor' : 'principal_minor'} - paid_minor
+            FROM ${route.table} WHERE id = ?)), ?${route.path === 'personal-debts' ? ',?' : ''})`)
         .bind(...binds, id, data.amount ?? null, id, actor, ...(route.path === 'personal-debts' ? [data.notes ?? ''] : [])),
+      ...(route.path === 'installments' ? retailTenderStatements(db, op, binds, actor, 'installment_payment', {}) : []),
     ], async () => ok(c, await legacyRecord(c, route.path, id)))
   })
   mobileModuleWrites.delete('/' + route.path + '/:id', async (c, next) => {
