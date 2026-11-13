@@ -618,10 +618,16 @@ class StoreViewModel @Inject constructor(
         }
     }
 
-    fun refreshWalletCashier() {
-        viewModelScope.launch {
-            mutableWalletCashier.value = mutableWalletCashier.value.copy(isLoading = true, error = null)
-            when (val result = storeRepository.walletCashier()) {
+    private var walletCashierProvider: String? = null
+    private var walletCashierRequest: Job? = null
+
+    fun refreshWalletCashier(provider: String? = walletCashierProvider) {
+        val previous = mutableWalletCashier.value.takeIf { walletCashierProvider == provider }
+        walletCashierProvider = provider
+        walletCashierRequest?.cancel()
+        mutableWalletCashier.value = WalletCashierUiState(isLoading = true, data = previous?.data)
+        walletCashierRequest = viewModelScope.launch {
+            when (val result = storeRepository.walletCashier(provider)) {
                 is ApiResult.Success -> mutableWalletCashier.value = WalletCashierUiState(data = result.value)
                 is ApiResult.Failure -> {
                     mutableWalletCashier.value = WalletCashierUiState(error = result.error.message)

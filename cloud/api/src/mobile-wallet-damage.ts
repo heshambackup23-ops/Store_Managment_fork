@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { business, write } from './business'
 import { body, fail, hasPermission, identifier, ok, searchPrefix, searchText, selectPage, timestamp } from './http'
 import type { ApiContext, ApiEnv } from './http'
+import { walletProviderFilter, walletProviderScope } from './wallet-providers'
 
 export const mobileWalletDamage = new Hono<ApiEnv>()
 const canonical = new Hono<ApiEnv & { Bindings: { source: ApiContext } }>()
@@ -277,9 +278,12 @@ mobileWalletDamage.get('/wallet-cashier', async (c, next) => {
   if (!isAndroid(c)) return next()
   requirePermission(c, 'wallets.view')
   const db = c.env.DB
+  const provider = walletProviderFilter.parse(c.req.query('provider'))
+  const { clause, values } = walletProviderScope(provider, 'w.provider')
+  const filter = clause ? ' AND ' + clause : ''
   const [wallets, tx, outstanding] = await db.batch([
-    db.prepare('SELECT * FROM wallets WHERE active = 1 ORDER BY name, id'),
-    db.prepare(`SELECT CAST(t.id AS TEXT) AS uuid, t.wallet_id, w.name AS wallet_name, t.kind AS type,
+    db.prepare('SELECT * FROM wallets w WHERE active = 1' + filter + ' ORDER BY name, id').bind(...values),
+    db.prepare(`SELECT CAST(t.id AS TEXT) AS uuid, t.wallet_id, w.name AS wallet_name, w.provider AS wallet_provider, t.kind AS type,
       CASE WHEN r.id IS NOT NULL THEN 'reversed' ELSE 'completed' END AS status, t.amount_minor, t.commission_minor, t.fee_minor,
       NULLIF(t.counterparty, '') AS counterparty, c.name AS customer_name, t.created_at AS occurred_at,
       CASE WHEN d.id IS NOT NULL THEN 'deferred' ELSE 'cash' END AS payment_method,
@@ -288,7 +292,7 @@ mobileWalletDamage.get('/wallet-cashier', async (c, next) => {
       (r.id IS NULL AND COALESCE(d.paid_minor, 0) = 0) AS reversible
       FROM wallet_transactions t JOIN wallets w ON w.id = t.wallet_id
       LEFT JOIN wallet_transactions r ON r.reversal_of = t.id LEFT JOIN wallet_debts d ON d.wallet_transaction_id = t.id
-      LEFT JOIN customers c ON c.id = d.customer_id WHERE t.kind IN ('send','receive') ORDER BY t.id DESC LIMIT 50`),
+      LEFT JOIN customers c ON c.id = d.customer_id WHERE t.kind IN ('send','receive')${filter} ORDER BY t.id DESC LIMIT 50`).bind(...values),
     db.prepare('SELECT receivables_minor FROM wallet_financial_totals'),
   ])
   const actor = c.get('actor')

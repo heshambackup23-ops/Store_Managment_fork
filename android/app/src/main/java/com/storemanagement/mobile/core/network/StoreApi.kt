@@ -224,7 +224,7 @@ interface StoreApi {
     suspend fun deleteMaintenance(@Path("maintenance") id: Long): Response<Unit>
 
     @GET("v1/wallet-cashier")
-    suspend fun walletCashier(): ApiEnvelope<WalletCashierDto>
+    suspend fun walletCashier(@Query("provider") provider: String? = null): ApiEnvelope<WalletCashierDto>
 
     @POST("v1/wallet-cashier")
     suspend fun createWalletTransaction(

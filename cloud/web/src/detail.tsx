@@ -6,7 +6,7 @@ import { ActionDialog, DataModule, dataText, idOf, Notice, PageTitle } from './u
 import type { Action, Column, ModuleConfig, Row } from './ui'
 import { dateColumn, moneyColumn, required } from './core'
 import { businessModules, supplierPayment } from './commerce'
-import { walletProviderLabel } from './wallet-providers'
+import { walletManagementTitle, walletProviderFilterValue, walletProviderGroup, walletProviderLabel, walletProviderFilters } from './wallet-providers'
 import { RetailReceipt } from './RetailReceipt'
 import { deviceLabel } from './RetailDevices'
 import { RetailActionDialog, SharedDrawerDialog } from './RetailShifts'
@@ -18,29 +18,39 @@ export function WalletCashier({ user }: { user: User }) {
   const [wallets, setWallets] = useState<Row[]>([])
   const [params, setParams] = useSearchParams()
   const selectedId = params.get('wallet_id') ?? ''
+  const provider = walletProviderFilterValue(params.get('provider'))
   const [transfer, setTransfer] = useState<'send' | 'receive'>()
   const [revision, setRevision] = useState(0)
   const [balanceVersion, setBalanceVersion] = useState(0)
   const [loaded, setLoaded] = useState(false)
   const [error, setError] = useState('')
   const [success, setSuccess] = useState<{ walletId: string; transactionId?: number }>()
-  const chosen = wallets.find(row => String(row.id) === selectedId)
+  const chosen = wallets.find(row => String(row.id) === selectedId && (!provider || walletProviderGroup(row.provider) === provider))
+  const fawry = provider === 'fawry' || walletProviderGroup(chosen?.provider) === 'fawry'
   const canTransact = allowed(user, 'wallets.transact')
   const canReadCash = allowed(user, 'wallets.cash')
 
   useEffect(() => {
     const controller = new AbortController()
-    request<Row[]>('/wallets?per_page=100', { signal: controller.signal })
-      .then(result => {
+    const filters = new URLSearchParams({ per_page: '100', active: '1' })
+    if (provider) filters.set('provider', provider)
+    setLoaded(false)
+    Promise.all([
+      request<Row[]>('/wallets?' + filters, { signal: controller.signal }),
+      /^[1-9][0-9]*$/.test(selectedId) && Number.isSafeInteger(Number(selectedId))
+        ? request<Row[]>('/wallets?' + new URLSearchParams({ ...Object.fromEntries(filters), wallet_id: selectedId }), { signal: controller.signal })
+        : Promise.resolve(undefined),
+    ]).then(([result, selected]) => {
         if (!controller.signal.aborted) {
-          setWallets(result.data.filter(wallet => wallet.active))
+          const row = selected?.data[0]
+          setWallets(row && !result.data.some(wallet => wallet.id === row.id) ? [...result.data, row] : result.data)
           setError('')
         }
       })
       .catch(error => { if (!controller.signal.aborted) setError(error.message) })
       .finally(() => { if (!controller.signal.aborted) setLoaded(true) })
     return () => controller.abort()
-  }, [revision, balanceVersion])
+  }, [revision, balanceVersion, provider, selectedId])
 
   function launch(kind: 'send' | 'receive') {
     setSuccess(undefined)
@@ -48,9 +58,12 @@ export function WalletCashier({ user }: { user: User }) {
   }
 
   const transactions = businessModules['wallet-transactions']
+  const transactionFilters = new URLSearchParams()
+  if (provider) transactionFilters.set('provider', provider)
+  if (selectedId && /^[1-9][0-9]*$/.test(selectedId) && Number.isSafeInteger(Number(selectedId))) transactionFilters.set('wallet_id', selectedId)
   const config: ModuleConfig = {
     ...transactions, title: 'آخر المعاملات',
-    endpoint: transactions.endpoint + (chosen ? '?wallet_id=' + idOf(chosen) : ''),
+    endpoint: transactions.endpoint + (transactionFilters.size ? '?' + transactionFilters : ''),
     columns: transactions.columns.filter(column => canReadCash || column.key !== 'cash_delta_minor').map(column => {
       if (column.key === 'delta_minor') return { ...column, label: 'أثر رصيد المزود' }
       if (column.key === 'cash_delta_minor') return { ...column, label: 'أثر النقد في الدرج' }
@@ -59,18 +72,30 @@ export function WalletCashier({ user }: { user: User }) {
   }
 
   return <>
-    <PageTitle title="كاشير المحافظ" description="سجّل العملية في هلال بعد تأكيدها لدى المزود."
-      action={<Link className="secondary" to="/wallet-workspace">خدمات المحافظ</Link>} />
+    <PageTitle title={provider ? 'كاشير ' + walletProviderLabel(provider) : 'كاشير المحافظ'} description="سجّل العملية في هلال بعد تأكيدها لدى المزود."
+      action={<Link className="secondary" to="/wallet-workspace">{walletManagementTitle}</Link>} />
     {error && <Notice error>{error}</Notice>}
     {success && <Notice>تم تسجيل المعاملة وتحديث رصيد المزود. {success.transactionId &&
       <Link to={'/wallet-transactions?' + new URLSearchParams({ wallet_id: success.walletId, q: '#' + success.transactionId })}>
         اعرض القيد <bdi>#{success.transactionId}</bdi>
       </Link>}</Notice>}
     <section className="panel form-card section-space" aria-label="تنفيذ معاملة محفظة">
-      {!loaded ? <p role="status">جارٍ تحميل المحافظ…</p> : !wallets.length ? <p>لا توجد محافظ نشطة.</p> : <>
-        <label className="field">المحفظة
+      <label className="field">مزود الخدمة
+        <select value={provider ?? ''} onChange={event => setParams(event.target.value ? { provider: event.target.value } : {})}>
+          <option value="">كل المزودين</option>
+          {walletProviderFilters.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+        </select>
+      </label>
+      {!loaded ? <p role="status">جارٍ تحميل المحافظ…</p> : !wallets.length ? <>
+        <p>لا توجد حسابات نشطة{provider ? ' لهذا المزود' : ''}.</p>
+        {allowed(user, 'wallets.manage') && <Link className="secondary" to={'/wallets' + (provider ? '?provider=' + provider : '')}>إدارة الحسابات</Link>}
+      </> : <>
+        <label className="field">حساب المزود
           <select value={chosen ? selectedId : ''} onChange={event => {
-            setParams(event.target.value ? { wallet_id: event.target.value } : {}, { replace: true })
+            const next = new URLSearchParams(params)
+            if (event.target.value) next.set('wallet_id', event.target.value)
+            else next.delete('wallet_id')
+            setParams(next, { replace: true })
           }}>
             <option value="">اختر محفظة</option>
             {wallets.map(wallet => <option key={idOf(wallet)} value={String(wallet.id)}>{String(wallet.name)}</option>)}
@@ -78,17 +103,17 @@ export function WalletCashier({ user }: { user: User }) {
         </label>
         {selectedId && !chosen && <Notice error>المحفظة المحددة غير متاحة. اختر محفظة نشطة.</Notice>}
         {chosen && <p>{walletProviderLabel(chosen.provider)} · رصيد المحفظة لدى المزود <strong>{money(chosen.balance_minor)}</strong></p>}
-        <p className="muted">الإيداع: المحل يرسل من المحفظة ويستلم النقد أو يسجّله آجلًا. السحب: المحل يستقبل على المحفظة ويسلّم النقد للعميل.</p>
+        <p className="muted">{fawry ? 'اختر حركة تقلّل رصيد حساب التاجر أو تزيده حسب ما تم على فوري.' : 'في الإيداع يرسل المحل من المحفظة ويستلم النقد أو يسجّله آجلًا. في السحب يستقبل المحل على المحفظة ويسلّم النقد للعميل.'}</p>
         <p className="muted">راجع أثر المعاملة على رصيد المزود وعلى درج المحافظ أو درج البيع قبل التأكيد. تسجل دفعات شراء البضائع من نقطة البيع.</p>
         <div className="form-actions">
-          {canTransact && <><button className="primary" disabled={!chosen} onClick={() => launch('send')}>إيداع للعميل</button>
-            <button className="secondary" disabled={!chosen} onClick={() => launch('receive')}>سحب للعميل</button></>}
+          {canTransact && <><button className="primary" disabled={!chosen} onClick={() => launch('send')}>{fawry ? 'حركة تخصم من رصيد فوري' : 'إيداع للعميل'}</button>
+            <button className="secondary" disabled={!chosen} onClick={() => launch('receive')}>{fawry ? 'حركة تضيف إلى رصيد فوري' : 'سحب للعميل'}</button></>}
           <Link className="secondary" to="/wallet-debts">التحصيل الآجل</Link>
           {canReadCash && <Link className="secondary" to="/wallet-reconciliation">مطابقة الدرج والمحافظ</Link>}
         </div>
       </>}
     </section>
-    <DataModule key={revision + ':' + selectedId} config={config} user={user} onChange={() => setBalanceVersion(value => value + 1)}
+    <DataModule key={revision + ':' + transactionFilters} config={config} user={user} onChange={() => setBalanceVersion(value => value + 1)}
       renderAction={props => props.action.sharedDrawer ? <SharedDrawerDialog {...props} user={user} /> : <ActionDialog {...props} />} />
     {transfer && chosen && <WalletTransferDialog key={selectedId + ':' + transfer} user={user} wallet={chosen} kind={transfer}
       close={() => setTransfer(undefined)} done={transactionId => {

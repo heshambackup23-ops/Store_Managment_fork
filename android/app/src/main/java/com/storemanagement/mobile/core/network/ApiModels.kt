@@ -246,6 +246,7 @@ data class WalletCashierTransactionDto(
     val uuid: String,
     @SerialName("wallet_id") val walletId: Long,
     @SerialName("wallet_name") val walletName: String? = null,
+    @SerialName("wallet_provider") val walletProvider: String? = null,
     val type: String,
     val status: String,
     val amount: String,

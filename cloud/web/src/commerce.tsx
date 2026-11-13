@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { createPortal } from 'react-dom'
-import { Link, useNavigate, useParams } from 'react-router-dom'
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
+import { instaPayReferencePrefix } from '../../shared/payment-channel'
 import { allowed, apiUrl, decimal, formatDate, integer, money, readMoney, request, RequestError } from './api'
 import type { User } from './api'
 import { activeColumn, activeField, countColumn, createAction, dateColumn, editAction, moneyColumn, numberColumn, RecordImageDialog, required } from './core'
@@ -9,7 +10,7 @@ import { ActionDialog, DataModule, dataText, FormInput, idOf, Modal, Notice, Pag
 import type { Action, ActionDialogProps, Column, Field, ModuleConfig, Row } from './ui'
 import { WalletAudit, WalletPeriodReport } from './WalletPeriodReport'
 import { WalletPositions } from './WalletOperations'
-import { walletProviderLabel, walletProviderOptions, walletProviderPreset } from './wallet-providers'
+import { walletManagementTitle, walletProviderFilterValue, walletProviderFilters, walletProviderLabel, walletProviderOptions, walletProviderPreset } from './wallet-providers'
 import { blankTender, RetailActionDialog, SharedDrawerDialog, ShiftContext, tenderLabels, TenderFields, tendersForAmount, useOpenShift } from './RetailShifts'
 import { DevicePicker, trackingOf } from './RetailDevices'
 import { BranchSelect } from './RetailBranches'
@@ -99,7 +100,7 @@ const walletFields: Field[] = [
   required('name', 'اسم المحفظة'),
   {
     ...required('provider_type', 'مزود الخدمة', 'select'),
-    options: [...walletProviderOptions, { value: 'custom', label: 'مزود آخر أو غير محدد' }],
+    options: [...walletProviderFilters, { value: 'custom', label: 'مزود آخر أو غير محدد' }],
     read: row => walletProviderPreset(row.provider)?.value ?? 'custom',
   },
   {
@@ -108,8 +109,7 @@ const walletFields: Field[] = [
     read: row => walletProviderPreset(row.provider) ? '' : String(row.provider ?? ''),
   },
   {
-    name: 'phone', label: 'رقم المحفظة أو عنوان الدفع',
-    placeholder: 'رقم الهاتف أو عنوان إنستا باي',
+    name: 'phone', label: 'رقم المحفظة أو حساب المزود',
   },
   { name: 'holder_name', label: 'اسم صاحب الحساب' },
   ...amounts({
@@ -321,7 +321,9 @@ export const businessModules: Record<string, ModuleConfig> = {
     columns: [numberColumn, { key: 'name', label: 'المحفظة' }, { key: 'provider', label: 'المزود', render: row => walletProviderLabel(row.provider) },
       moneyColumn('balance_minor', 'رصيد المحفظة لدى المزود'), moneyColumn('transaction_limit_minor', 'حد المعاملة'), activeColumn],
     create: {
-      ...createAction('إضافة محفظة', '/wallets', 'wallets.manage', [...walletFields, { name: 'opening_minor', label: 'الرصيد الافتتاحي بالجنيه', kind: 'money' }], true),
+      ...createAction('إضافة محفظة', '/wallets', 'wallets.manage', [...walletFields.map(field => field.name === 'provider_type'
+        ? { ...field, options: [...walletProviderOptions, { value: 'custom', label: 'مزود آخر أو غير محدد' }] } : field),
+      { name: 'opening_minor', label: 'الرصيد الافتتاحي بالجنيه', kind: 'money' }], true),
       transform: walletProfile,
     },
     actions: [walletAdjustmentEntry, walletAdjustment, { ...editAction('/wallets', 'wallets.manage', [...walletFields, activeField]), transform: walletProfile }],
@@ -432,6 +434,8 @@ export function CommerceModule({ name, user }: { name: string; user: User }) {
   const [invoiceId, setInvoiceId] = useState('')
   const [range, setRange] = useState({ from: '', to: '' })
   const navigate = useNavigate()
+  const [routeParams, setRouteParams] = useSearchParams()
+  const walletProvider = name === 'wallets' ? walletProviderFilterValue(routeParams.get('provider')) : undefined
   const base = businessModules[name]
   const canReadCost = allowed(user, 'products.cost.view') || allowed(user, 'products.cost.manage')
   const canManageCost = allowed(user, 'products.cost.manage')
@@ -443,6 +447,10 @@ export function CommerceModule({ name, user }: { name: string; user: User }) {
     columns: canReadCost ? base.columns : base.columns.filter(column => !['unit_value_minor', 'total_value_minor'].includes(column.key)),
     create: !base.create || canManageCost ? base.create : damageAction(base.create),
     actions: canManageCost ? base.actions : base.actions?.map(damageAction),
+  } : name === 'wallets' && base.create && walletProvider && walletProvider !== 'instapay' ? {
+    ...base,
+    create: { ...base.create, fields: base.create.fields?.map(field => field.name === 'provider_type'
+      ? { ...field, initial: walletProvider } : field) },
   } : base
   const isInvoice = name === 'invoices'
   const hasImages = name === 'damaged' || name === 'maintenance'
@@ -452,6 +460,7 @@ export function CommerceModule({ name, user }: { name: string; user: User }) {
   if (filter) params.set('status', filter)
   if (range.from) params.set('from', range.from)
   if (range.to) params.set('to', range.to)
+  if (walletProvider) params.set('provider', walletProvider)
   const endpoint = config.endpoint + (params.size ? '?' + params : '')
   return <>
     <DataModule key={endpoint + ':' + imageVersion} user={user} config={{ ...config, endpoint }}
@@ -485,7 +494,15 @@ export function CommerceModule({ name, user }: { name: string; user: User }) {
         <label className="field">إلى تاريخ<input type="date" name="to" defaultValue={range.to} /></label>
         <button className="secondary">تطبيق التصفية</button>
         {name === 'damaged' && <Link className="secondary" to="/damage-report">تقرير الهالك</Link>}
-      </form> : undefined}
+      </form> : name === 'wallets' ? <div className="panel panel-inner form-actions section-space">
+        <Link className="secondary" to="/wallet-workspace">{walletManagementTitle}</Link>
+        <label className="field">مزود الخدمة<select value={walletProvider ?? ''} onChange={event => {
+          setRouteParams(event.target.value ? { provider: event.target.value } : {})
+        }}>
+          <option value="">كل المزودين</option>
+          {walletProviderFilters.map(provider => <option key={provider.value} value={provider.value}>{provider.label}</option>)}
+        </select></label>
+      </div> : undefined}
       rowActions={isInvoice
         ? row => <Link className="link-button" to={'/invoices/' + idOf(row)}>عرض وطباعة</Link>
         : name === 'wallets' && allowed(user, 'wallets.transact') ? row => Boolean(row.active)
@@ -587,10 +604,12 @@ function unitDiscount(item: CartItem) {
 
 export function Pos({ user }: { user: User }) {
   const { invoiceId } = useParams()
-  return <PosSession key={user.id + ':' + (invoiceId ?? 'sale')} user={user} invoiceId={invoiceId} />
+  const [params] = useSearchParams()
+  const instaPay = !invoiceId && params.get('channel') === 'instapay'
+  return <PosSession key={user.id + ':' + (invoiceId ?? 'sale') + ':' + instaPay} user={user} invoiceId={invoiceId} instaPay={instaPay} />
 }
 
-function PosSession({ user, invoiceId }: { user: User; invoiceId?: string }) {
+function PosSession({ user, invoiceId, instaPay }: { user: User; invoiceId?: string; instaPay: boolean }) {
   const storageKey = 'helal-pos-pending-v1:' + user.id + ':' + (invoiceId ?? 'sale')
   const [pendingSale, setPendingSale] = useState(() => readPendingSale(storageKey))
   const [original, setOriginal] = useState<Invoice>()
@@ -607,7 +626,8 @@ function PosSession({ user, invoiceId }: { user: User; invoiceId?: string }) {
   const [customer, setCustomer] = useState('')
   const [paid, setPaid] = useState('')
   const [cashReceived, setCashReceived] = useState('')
-  const [tenders, setTenders] = useState([blankTender()])
+  const initialTender = () => instaPay ? { ...blankTender(), method: 'bank_transfer' as const } : blankTender()
+  const [tenders, setTenders] = useState(() => [initialTender()])
   const [checkoutMode, setCheckoutMode] = useState('full')
   const [searching, setSearching] = useState(false)
   const [submitting, setSubmitting] = useState(false)
@@ -838,7 +858,11 @@ function PosSession({ user, invoiceId }: { user: User; invoiceId?: string }) {
     setInvoiceNotes(body.notes ?? '')
     setReissueReason(body.reason ?? '')
     setDiscountRequest(body.discount_request_id ? String(body.discount_request_id) : '')
-    setTenders(body.payments?.length ? body.payments.map(row => ({ method: row.method, amount: decimal(row.amount_minor), reference: row.reference ?? '' })) : [blankTender()])
+    setTenders(body.payments?.length ? body.payments.map(row => ({
+      method: row.method, amount: decimal(row.amount_minor),
+      reference: instaPay && row.method === 'bank_transfer' && row.reference?.startsWith(instaPayReferencePrefix)
+        ? row.reference.slice(instaPayReferencePrefix.length) : row.reference ?? '',
+    })) : [initialTender()])
   }
 
   async function submitSale(sale: PendingSale, retry = false) {
@@ -858,7 +882,7 @@ function PosSession({ user, invoiceId }: { user: User; invoiceId?: string }) {
       setCustomer('')
       setPaid('')
       setCashReceived('')
-      setTenders([blankTender()])
+      setTenders([initialTender()])
       setDocumentDate('')
       setDueDate('')
       setInvoiceNotes('')
@@ -917,11 +941,20 @@ function PosSession({ user, invoiceId }: { user: User; invoiceId?: string }) {
       if (amount > total) throw new Error('المبلغ المدفوع يتجاوز إجمالي الفاتورة.')
       if (amount < total && (!Number.isSafeInteger(customerId) || Number(customerId) < 1)) throw new Error('اختر عميلًا لتسجيل المبلغ المتبقي.')
       if (shiftContext.required && !shiftContext.shift) throw new Error('افتح وردية قبل تسجيل البيع.')
+      if (instaPay && !shiftContext.shift) throw new Error('افتح وردية لتسجيل تحويل إنستا باي.')
       if (shiftContext.error) throw new Error('تعذّر التحقق من حالة الوردية. حدّث الصفحة قبل تسجيل البيع.')
       if (cart.some(item => item.tracking && item.tracking !== 'quantity' && item.deviceIds?.length !== item.quantity)) {
         throw new Error('حدد رقم كل قطعة متتبعة قبل تأكيد البيع.')
       }
-      const payments = shiftContext.shift ? tendersForAmount(tenders, amount) : undefined
+      const paymentRows = instaPay && tenders.length === 1 && tenders[0].method === 'bank_transfer' && amount > 0
+        ? tenders.map(row => {
+          const reference = row.reference.trim().replace(/^InstaPay:\s*/i, '')
+          if (!reference || /[\p{Cc}\p{Cf}]/u.test(reference) || reference.length > 100 - instaPayReferencePrefix.length) {
+            throw new Error('أدخل مرجع تحويل إنستا باي كما يظهر في التطبيق.')
+          }
+          return { ...row, reference: instaPayReferencePrefix + reference }
+        }) : tenders
+      const payments = shiftContext.shift ? tendersForAmount(paymentRows, amount) : undefined
       const cashDue = payments?.filter(row => row.method === 'cash').reduce((sum, row) => sum + row.amount_minor, 0) ?? amount
       const received = cashDue > 0 && cashReceived.trim() ? readMoney(cashReceived) : cashDue
       if (received < cashDue) throw new Error('النقد المستلم أقل من حصة النقد في هذه الفاتورة.')
@@ -987,7 +1020,7 @@ function PosSession({ user, invoiceId }: { user: User; invoiceId?: string }) {
   const lockInputs = disabled || checkingStock || Boolean(invoiceId && !reissueLoaded)
   const checkoutBlocked = !cart.length || lockInputs || searching || invalidQuantity || invalidDiscount || invalidPaid || invalidReceived
     || received < cashDue || paidNow > total || Boolean(mixed && paidNow > 0 && shiftContext.shift && (allocated !== paidNow || tenderAmounts.some(value => !value)))
-    || shiftContext.loading || Boolean(shiftContext.error || (shiftContext.required && !shiftContext.shift)) || stockConflict
+    || shiftContext.loading || Boolean(shiftContext.error || ((shiftContext.required || instaPay) && !shiftContext.shift)) || stockConflict
 
   function nextSale() {
     setSale(undefined)
@@ -1032,6 +1065,7 @@ function PosSession({ user, invoiceId }: { user: User; invoiceId?: string }) {
             <BranchSelect label="فرع البيع" value={branch} disabled={Boolean(invoiceId || shiftContext.shift || shiftContext.loading || lockInputs || searching || cart.length)}
               set={id => { setSelectedBranch(id); setProducts([]); setQuery(''); setScanErrors([]); setSearchStatus(''); focusSearch() }} />
             <ShiftContext value={shiftContext} />
+            {instaPay && <span className="status-pill">تحويل بنكي عبر إنستا باي</span>}
           </div>
           <div className="pos-grid">
             <section className="panel panel-inner pos-catalog" aria-labelledby="pos-catalog-title">
@@ -1111,8 +1145,10 @@ function PosSession({ user, invoiceId }: { user: User; invoiceId?: string }) {
                     <div className="pos-allocation"><span>{allocated > paidNow ? 'زيادة التوزيع' : 'المتبقي للتوزيع'} <strong>{money(Math.abs(paidNow - allocated))}</strong></span>
                       {lastUnallocated >= 0 && allocated < paidNow && <button type="button" className="secondary" disabled={lockInputs}
                         onClick={() => setTenders(tenders.map((row, index) => index === lastUnallocated ? { ...row, amount: decimal(paidNow - allocated) } : row))}>أضف المتبقي</button>}</div>
-                  </> : tenderMethod !== 'cash' && <label className="field">مرجع الدفع (اختياري)
-                    <input value={tenders[0].reference} maxLength={100} disabled={lockInputs} onChange={event => setTenders([{ ...tenders[0], reference: event.target.value }])} />
+                  </> : tenderMethod !== 'cash' && <label className="field">{instaPay && tenderMethod === 'bank_transfer' ? 'مرجع تحويل إنستا باي' : 'مرجع الدفع (اختياري)'}
+                    <input value={tenders[0].reference} required={instaPay && tenderMethod === 'bank_transfer'}
+                      maxLength={instaPay && tenderMethod === 'bank_transfer' ? 100 - instaPayReferencePrefix.length : 100}
+                      disabled={lockInputs} onChange={event => setTenders([{ ...tenders[0], reference: event.target.value }])} />
                   </label>}
                 </>}
                 {cashDue > 0 && <label className="field">النقد المستلم بالجنيه (اختياري)

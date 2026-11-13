@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { instaPayReferencePrefix } from '../../shared/payment-channel';
 import { z } from 'zod';
 import { body, fail, hasPermission, identifier, ok, page, permit, type ApiContext, type ApiEnv } from './http';
 import type { write } from './business';
@@ -98,17 +99,23 @@ retailFinanceReports.get('/reports/aging', permit('reports.view'), async c => {
 
 const nonCashMethods = ['card', 'wallet', 'bank_transfer'] as const;
 const settlementQuery = z.object({ method: z.enum(nonCashMethods).optional(), shift_id: identifier.optional(),
-  status: z.enum(['pending', 'matched']).optional() });
+  status: z.enum(['pending', 'matched']).optional(), channel: z.literal('instapay').optional(),
+}).refine(query => query.channel !== 'instapay' || !query.method || query.method === 'bank_transfer');
 const timestampBoundary = (day: string) => new Date(cairoDayBoundary(day) * 1000).toISOString().slice(0, 19).replace('T', ' ');
 
 retailFinanceReports.get('/reports/tender-settlements', permit('reports.view'), permit('retail.shifts.approve'), async c => {
   const { from, to } = retailDateRange(c);
   const stopDay = new Date(Date.parse(to) + 86_400_000).toISOString().slice(0, 10);
-  const { method, shift_id: shiftId, status } = settlementQuery.parse(c.req.query());
+  const { method: requestedMethod, shift_id: shiftId, status, channel } = settlementQuery.parse(c.req.query());
+  const method = channel === 'instapay' ? 'bank_transfer' : requestedMethod;
   const paging = page(c);
   const clauses = ["t.method <> 'cash'", 't.created_at >= ?', 't.created_at < ?'];
   const values: (number | string)[] = [timestampBoundary(from), timestampBoundary(stopDay)];
   if (method) { clauses.push('t.method = ?'); values.push(method); }
+  if (channel === 'instapay') {
+    clauses.push('substr(t.reference, 1, ?) = ? AND length(t.reference) > ?');
+    values.push(instaPayReferencePrefix.length, instaPayReferencePrefix, instaPayReferencePrefix.length);
+  }
   if (shiftId) { clauses.push('t.shift_id = ?'); values.push(shiftId); }
   if (status) clauses.push(status === 'matched' ? 'm.operation_id IS NOT NULL' : 'm.operation_id IS NULL');
   const entries = `FROM retail_tender_ledger t JOIN retail_shifts s ON s.id = t.shift_id

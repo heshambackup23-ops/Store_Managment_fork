@@ -10,6 +10,18 @@ import org.junit.Test
 
 class RetailRulesTest {
     @Test
+    fun walletProviderAliasesAndInstaPayReferencesStayCanonical() {
+        assertTrue(WalletService.Fawry.matches(" Fawry-Pay "))
+        assertTrue(WalletService.Fawry.matches("فورى"))
+        assertTrue(WalletService.Vodafone.matches("Vodafone Cash"))
+        assertFalse(WalletService.Fawry.matches("instapay"))
+        assertEquals("InstaPay:000123", instaPayTenderReference(" 000123 "))
+        assertEquals("InstaPay:ABC", instaPayTenderReference("instapay: InstaPay:ABC"))
+        assertNull(instaPayTenderReference("InstaPay:"))
+        assertNull(instaPayTenderReference("A".repeat(92)))
+    }
+
+    @Test
     fun recognizesPlainAndLabeledDeviceScansWithoutUsingWebLinks() {
         assertEquals("490154203237518", retailScannedIdentifier(" ٤٩٠١٥٤٢٠٣٢٣٧٥١٨ "))
         assertEquals("490154203237518", retailScannedIdentifier("S/N: HILAL-IMEI\nIMEI 1: 490154203237518"))

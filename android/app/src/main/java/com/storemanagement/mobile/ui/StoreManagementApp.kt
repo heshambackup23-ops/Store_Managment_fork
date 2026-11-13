@@ -81,6 +81,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
@@ -89,6 +90,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Button
 import androidx.compose.runtime.Composable
@@ -156,6 +158,10 @@ import com.storemanagement.mobile.core.network.CashierCheckoutResponseDto
 import com.storemanagement.mobile.core.network.CashierProductDto
 import com.storemanagement.mobile.core.network.RetailCheckoutReceiptDto
 import com.storemanagement.mobile.ui.theme.StoreTheme
+import com.storemanagement.mobile.ui.theme.HilalNavigation
+import com.storemanagement.mobile.ui.theme.HilalNavigationContent
+import com.storemanagement.mobile.ui.theme.HilalNavigationMuted
+import com.storemanagement.mobile.ui.theme.HilalNavigationSelected
 import coil3.compose.AsyncImage
 import com.google.mlkit.vision.barcode.common.Barcode
 import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
@@ -325,7 +331,7 @@ private enum class StoreTab(val label: String, val permission: String?, val icon
 }
 
 private enum class MoreSection {
-    Home, Categories, Customers, Sales, Suppliers, Installments, Wallets, WalletCashier, ProductCashier,
+    Home, Categories, Customers, Sales, Suppliers, Installments, WalletWorkspace, Wallets, WalletCashier, ProductCashier,
     RetailShifts, RetailDevices, Damaged, Notifications, Maintenance, Profile, Backup,
 }
 internal enum class CashierAction { Settle, Reverse }
@@ -418,6 +424,11 @@ private fun StoreHomeScreen(
     var selectedInstallment by remember { mutableStateOf<InstallmentDto?>(null) }
     var selectedCategory by remember { mutableStateOf<CachedCategory?>(null) }
     var selectedCustomer by remember { mutableStateOf<CustomerDto?>(null) }
+    val canViewWallets = "page.wallets.view" in user.permissions
+    val canViewWalletCashier = "page.wallet_cashier.view" in user.permissions
+    val canOpenWalletWorkspace = canViewWallets || canViewWalletCashier
+    val canOpenPos = "page.invoices.manage" in user.permissions
+    val hilal = "hilal.android.v1" in user.permissions
     val availableTabs = remember(user.permissions) {
         StoreTab.entries.filter { it.permission == null || it.permission in user.permissions }
     }
@@ -439,11 +450,18 @@ private fun StoreHomeScreen(
     }
     val backupMessageHost = remember { SnackbarHostState() }
     LaunchedEffect(storeViewModel) { storeViewModel.backupMessage.collect { backupMessageHost.showSnackbar(it) } }
-    var moreSectionName by rememberSaveable { mutableStateOf(MoreSection.Home.name) }
+    var moreSectionName by rememberSaveable(user.id) { mutableStateOf(MoreSection.Home.name) }
+    var walletServiceName by rememberSaveable(user.id) { mutableStateOf<String?>(null) }
+    var walletWorkspaceFromDashboard by rememberSaveable(user.id) { mutableStateOf(false) }
+    var walletWorkspaceOwnsPos by rememberSaveable(user.id) { mutableStateOf(false) }
+    val walletService = WalletService.entries.firstOrNull { it.name == walletServiceName }
     val moreSection = MoreSection.entries.firstOrNull {
         it.name == moreSectionName && when (it) {
             MoreSection.RetailShifts -> canViewRetailShifts
             MoreSection.RetailDevices -> canViewRetailDevices
+            MoreSection.WalletWorkspace -> canOpenWalletWorkspace
+            MoreSection.Wallets -> canViewWallets
+            MoreSection.WalletCashier -> canViewWalletCashier
             else -> true
         }
     } ?: MoreSection.Home
@@ -469,8 +487,9 @@ private fun StoreHomeScreen(
             MoreSection.Sales -> "المبيعات"
             MoreSection.Suppliers -> "الموردون"
             MoreSection.Installments -> "الأقساط والديون"
-            MoreSection.Wallets -> "المحافظ"
-            MoreSection.WalletCashier -> "كاشير المحافظ"
+            MoreSection.WalletWorkspace -> walletWorkspaceTitle
+            MoreSection.Wallets -> walletService?.let { "أرصدة ${it.label}" } ?: "أرصدة المحافظ"
+            MoreSection.WalletCashier -> walletService?.let { "سجل ${it.label}" } ?: "كاشير المحافظ"
             MoreSection.ProductCashier -> "نقطة البيع"
             MoreSection.RetailShifts -> retailShiftTitle
             MoreSection.RetailDevices -> retailDeviceTitle
@@ -485,10 +504,18 @@ private fun StoreHomeScreen(
         activeTab.label
     }
 
-    BackHandler(enabled = activeTab == StoreTab.More && moreSection != MoreSection.Home) {
-        moreSectionName = MoreSection.Home.name
+    val closeMoreSection = {
+        moreSectionName = when {
+            moreSection in listOf(MoreSection.Wallets, MoreSection.WalletCashier) -> MoreSection.WalletWorkspace.name
+            moreSection == MoreSection.ProductCashier && walletWorkspaceOwnsPos -> MoreSection.WalletWorkspace.name
+            else -> MoreSection.Home.name
+        }
+        if (moreSection == MoreSection.WalletWorkspace && walletWorkspaceFromDashboard) selectedTab = StoreTab.Dashboard.name
+        walletServiceName = null
+        walletWorkspaceOwnsPos = false
         searchQuery = ""
     }
+    BackHandler(enabled = activeTab == StoreTab.More && moreSection != MoreSection.Home, onBack = closeMoreSection)
 
     LaunchedEffect(user.id) {
         if ("page.products.view" in user.permissions) storeViewModel.refreshProducts(null)
@@ -592,6 +619,8 @@ private fun StoreHomeScreen(
     val openTab: (StoreTab) -> Unit = { tab ->
         selectedTab = tab.name
         searchQuery = ""
+        walletServiceName = null
+        walletWorkspaceOwnsPos = false
         if (tab == StoreTab.More) moreSectionName = MoreSection.Home.name
     }
     val openSection: (MoreSection) -> Unit = { section ->
@@ -599,6 +628,8 @@ private fun StoreHomeScreen(
         retailEntryShiftId = null
         retailEntryOpenShift = false
         retailEntryScan = false
+        walletServiceName = null
+        walletWorkspaceOwnsPos = false
         selectedTab = StoreTab.More.name
         moreSectionName = section.name
         searchQuery = ""
@@ -649,7 +680,8 @@ private fun StoreHomeScreen(
                 MoreSection.Sales -> storeViewModel.refreshSales(query)
                 MoreSection.Notifications -> storeViewModel.refreshNotifications()
                 MoreSection.Maintenance -> storeViewModel.refreshMaintenances(query)
-                MoreSection.WalletCashier -> storeViewModel.refreshWalletCashier()
+                MoreSection.Wallets -> if (force) storeViewModel.refreshWalletOverview()
+                MoreSection.WalletCashier -> storeViewModel.refreshWalletCashier(walletService?.key)
                 MoreSection.ProductCashier -> storeViewModel.searchCashierProducts("")
                 MoreSection.RetailShifts, MoreSection.RetailDevices -> if (force) retailRefreshVersion++
                 MoreSection.Damaged -> storeViewModel.refreshDamagedItems(query, damagedStatusFilter)
@@ -658,7 +690,7 @@ private fun StoreHomeScreen(
         }
     }
 
-    LaunchedEffect(activeTab, searchQuery, selectedProductCategoryId, productStockFilter, moreSection) {
+    LaunchedEffect(activeTab, searchQuery, selectedProductCategoryId, productStockFilter, moreSection, walletService) {
         delay(300)
         refreshCurrent(false)
     }
@@ -741,7 +773,6 @@ private fun StoreHomeScreen(
         }
     }
 
-    val hilal = "hilal.android.v1" in user.permissions
     val canPayInvoices = if (hilal) "page.invoices.pay" in user.permissions else "page.invoices.manage" in user.permissions
     val canRefundInvoices = if (hilal) "page.invoices.refund" in user.permissions else "page.invoices.manage" in user.permissions
     val quickActions = buildList {
@@ -756,6 +787,12 @@ private fun StoreHomeScreen(
         if ("page.maintenance.manage" in user.permissions) add(QuickAction("طلب صيانة", Icons.Filled.Build) { maintenanceEditTarget = null; maintenanceDialogOpen = true })
     }
     val retailActions = buildList {
+        if (canOpenWalletWorkspace) {
+            add(DashboardRetailAction(walletWorkspaceTitle, "الأرصدة والإيداع والسحب والتحصيل", Icons.Filled.AccountBalanceWallet, "wallet-home-workspace") {
+                walletWorkspaceFromDashboard = true
+                openSection(MoreSection.WalletWorkspace)
+            })
+        }
         if (user.canOperateRetailShifts()) {
             val shift = myRetailShift.record
             val label = when {
@@ -794,18 +831,21 @@ private fun StoreHomeScreen(
         topBar = {
             Column {
                 TopAppBar(
+                    colors = TopAppBarDefaults.topAppBarColors(
+                        containerColor = MaterialTheme.colorScheme.surface,
+                        titleContentColor = MaterialTheme.colorScheme.onSurface,
+                        navigationIconContentColor = MaterialTheme.colorScheme.primary,
+                        actionIconContentColor = MaterialTheme.colorScheme.primary,
+                    ),
                     title = {
                         Column {
-                            Text(activeTitle, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text(activeTitle, maxLines = 2, overflow = TextOverflow.Ellipsis)
                             Text(user.name, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     },
                     navigationIcon = {
                         if (activeTab == StoreTab.More && moreSection != MoreSection.Home) {
-                            IconButton(onClick = {
-                                moreSectionName = MoreSection.Home.name
-                                searchQuery = ""
-                            }) {
+                            IconButton(onClick = closeMoreSection) {
                                 Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "رجوع")
                             }
                         }
@@ -854,7 +894,8 @@ private fun StoreHomeScreen(
                         Icon(Icons.Filled.Add, contentDescription = if (debtsSection == "personal") "إضافة دين عليّ" else "إضافة دين عميل")
                     }
                 }
-                activeTab == StoreTab.More && moreSection == MoreSection.Wallets && "page.wallets.manage" in user.permissions -> {
+                activeTab == StoreTab.More && moreSection == MoreSection.Wallets && walletService != WalletService.InstaPay &&
+                    "page.wallets.manage" in user.permissions -> {
                     FloatingActionButton(onClick = { walletDialogOpen = true }) {
                         Icon(Icons.Filled.Add, contentDescription = "إضافة محفظة")
                     }
@@ -875,7 +916,8 @@ private fun StoreHomeScreen(
                         Icon(Icons.Filled.Add, contentDescription = "تسجيل هالك")
                     }
                 }
-                activeTab == StoreTab.More && moreSection == MoreSection.WalletCashier && "page.wallet_cashier.manage" in user.permissions -> {
+                activeTab == StoreTab.More && moreSection == MoreSection.WalletCashier && walletService != WalletService.InstaPay &&
+                    "page.wallet_cashier.manage" in user.permissions -> {
                     FloatingActionButton(onClick = { walletCashierDialogOpen = true }) {
                         Icon(Icons.Filled.Add, contentDescription = "تسجيل معاملة")
                     }
@@ -898,18 +940,21 @@ private fun StoreHomeScreen(
             }
         },
         bottomBar = {
-            NavigationBar {
+            NavigationBar(containerColor = HilalNavigation, contentColor = HilalNavigationContent) {
                 availableTabs.filterNot { it == StoreTab.Customers }.forEach { tab ->
                     NavigationBarItem(
                         modifier = Modifier.testTag("store-tab-${tab.name}"),
                         selected = activeTab == tab,
-                        onClick = {
-                            selectedTab = tab.name
-                            searchQuery = ""
-                            if (tab == StoreTab.More) moreSectionName = MoreSection.Home.name
-                        },
+                        onClick = { openTab(tab) },
                         icon = { Icon(tab.icon, contentDescription = null) },
                         label = { Text(tab.label, maxLines = 1) },
+                        colors = NavigationBarItemDefaults.colors(
+                            selectedIconColor = HilalNavigationContent,
+                            selectedTextColor = HilalNavigationContent,
+                            indicatorColor = HilalNavigationSelected,
+                            unselectedIconColor = HilalNavigationMuted,
+                            unselectedTextColor = HilalNavigationMuted,
+                        ),
                     )
                 }
             }
@@ -1038,9 +1083,8 @@ private fun StoreHomeScreen(
                     canViewCustomers = "page.customers.view" in user.permissions,
                     canViewSuppliers = "page.suppliers.view" in user.permissions,
                     canViewInstallments = "page.installments.view" in user.permissions,
-                    canViewWallets = "page.wallets.view" in user.permissions,
-                    canViewWalletCashier = "page.wallet_cashier.view" in user.permissions,
-                    canViewProductCashier = "page.invoices.manage" in user.permissions,
+                    canOpenWalletWorkspace = canOpenWalletWorkspace,
+                    canViewProductCashier = canOpenPos,
                     canViewRetailShifts = canViewRetailShifts,
                     canViewRetailDevices = canViewRetailDevices,
                     canViewSales = "page.sales.view" in user.permissions,
@@ -1069,15 +1113,9 @@ private fun StoreHomeScreen(
                         moreSectionName = MoreSection.Installments.name
                         searchQuery = ""
                     },
-                    onOpenWallets = {
-                        moreSectionName = MoreSection.Wallets.name
-                        searchQuery = ""
-                        storeViewModel.refreshWalletOverview()
-                    },
-                    onOpenWalletCashier = {
-                        moreSectionName = MoreSection.WalletCashier.name
-                        searchQuery = ""
-                        storeViewModel.refreshWalletCashier()
+                    onOpenWalletWorkspace = {
+                        walletWorkspaceFromDashboard = false
+                        openSection(MoreSection.WalletWorkspace)
                     },
                     onOpenProductCashier = {
                         moreSectionName = MoreSection.ProductCashier.name
@@ -1198,14 +1236,36 @@ private fun StoreHomeScreen(
                     onLoadMoreDebts = storeViewModel::loadMorePersonalDebts,
                     modifier = Modifier.padding(padding),
                 )
+                MoreSection.WalletWorkspace -> WalletWorkspaceScreen(
+                    canReadBalances = canViewWallets,
+                    canReadTransfers = canViewWalletCashier,
+                    canOpenPointOfSale = hilal && canOpenPos && user.canOperateRetailShifts(),
+                    onBalances = {
+                        openSection(MoreSection.Wallets)
+                        storeViewModel.refreshWalletOverview()
+                    },
+                    onTransfers = { openSection(MoreSection.WalletCashier) },
+                    onProvider = { provider ->
+                        openSection(if (canViewWalletCashier) MoreSection.WalletCashier else MoreSection.Wallets)
+                        walletServiceName = provider.name
+                        if (!canViewWalletCashier) storeViewModel.refreshWalletOverview()
+                    },
+                    onInstaPaySale = {
+                        openSection(MoreSection.ProductCashier)
+                        walletWorkspaceOwnsPos = true
+                        storeViewModel.searchCashierProducts("")
+                    },
+                    modifier = Modifier.padding(padding),
+                )
                 MoreSection.Wallets -> WalletOverviewScreen(
                     state = walletState,
+                    service = walletService,
                     canManage = "page.wallets.manage" in user.permissions,
-                    canUseCashier = "page.wallet_cashier.view" in user.permissions,
+                    canUseCashier = canViewWalletCashier,
                     onRefresh = storeViewModel::refreshWalletOverview,
                     onOpenCashier = {
-                        moreSectionName = MoreSection.WalletCashier.name
-                        storeViewModel.refreshWalletCashier()
+                        openSection(MoreSection.WalletCashier)
+                        walletServiceName = walletService?.name
                     },
                     onAdjustWallet = { walletAdjustmentTarget = it },
                     onToggleWallet = { id -> storeViewModel.toggleWallet(id, UUID.randomUUID().toString()) },
@@ -1213,9 +1273,17 @@ private fun StoreHomeScreen(
                 )
                 MoreSection.WalletCashier -> WalletCashierScreen(
                     state = walletCashierState,
+                    service = walletService,
+                    knownWallets = walletState.overview?.wallets.orEmpty(),
+                    canReadBalances = canViewWallets,
                     canManage = "page.wallet_cashier.manage" in user.permissions,
                     canReverse = "page.wallet_cashier.reverse" in user.permissions || "page.wallets.manage" in user.permissions,
-                    onRefresh = storeViewModel::refreshWalletCashier,
+                    onRefresh = { storeViewModel.refreshWalletCashier(walletService?.key) },
+                    onOpenBalances = {
+                        openSection(MoreSection.Wallets)
+                        walletServiceName = walletService?.name
+                        storeViewModel.refreshWalletOverview()
+                    },
                     onSettle = { cashierActionTarget = it; cashierAction = CashierAction.Settle },
                     onReverse = { cashierActionTarget = it; cashierAction = CashierAction.Reverse },
                     modifier = Modifier.padding(padding),
@@ -1226,6 +1294,7 @@ private fun StoreHomeScreen(
                     onSearch = storeViewModel::searchCashierProducts,
                     onCheckout = storeViewModel::checkoutCashier,
                     retailUser = user.takeIf { hilal },
+                    instaPaySale = walletWorkspaceOwnsPos,
                     retailViewModel = retailViewModel,
                     onOpenShifts = { openSection(MoreSection.RetailShifts) },
                     onRetailSale = {
@@ -1530,6 +1599,7 @@ private fun StoreHomeScreen(
 
     if (walletDialogOpen) {
         WalletCreateDialog(
+            initialProvider = walletService?.takeIf { it != WalletService.InstaPay }?.key,
             onDismiss = { walletDialogOpen = false },
             onCreate = storeViewModel::createWallet,
         )
@@ -1636,7 +1706,9 @@ private fun StoreHomeScreen(
 
     if (walletCashierDialogOpen) {
         WalletCashierCreateDialog(
-            wallets = walletCashierState.data?.wallets.orEmpty(),
+            wallets = walletCashierState.data?.wallets.orEmpty().filter {
+                !WalletService.InstaPay.matches(it.provider) && (walletService == null || walletService.matches(it.provider))
+            },
             onDismiss = { walletCashierDialogOpen = false },
             onCreate = storeViewModel::createWalletTransaction,
         )
@@ -2131,8 +2203,7 @@ private fun MoreHubScreen(
     canViewCustomers: Boolean,
     canViewSuppliers: Boolean,
     canViewInstallments: Boolean,
-    canViewWallets: Boolean,
-    canViewWalletCashier: Boolean,
+    canOpenWalletWorkspace: Boolean,
     canViewProductCashier: Boolean,
     canViewRetailShifts: Boolean,
     canViewRetailDevices: Boolean,
@@ -2146,8 +2217,7 @@ private fun MoreHubScreen(
     onOpenCustomers: () -> Unit,
     onOpenSuppliers: () -> Unit,
     onOpenInstallments: () -> Unit,
-    onOpenWallets: () -> Unit,
-    onOpenWalletCashier: () -> Unit,
+    onOpenWalletWorkspace: () -> Unit,
     onOpenProductCashier: () -> Unit,
     onOpenRetailShifts: () -> Unit,
     onOpenRetailDevices: () -> Unit,
@@ -2168,13 +2238,13 @@ private fun MoreHubScreen(
         }
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("إدارة المتجر", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
+            if (canOpenWalletWorkspace) MoreActionRow(walletWorkspaceTitle, "الأرصدة والإيداع والسحب والتحصيل",
+                Icons.Filled.AccountBalanceWallet, onOpenWalletWorkspace, Modifier.testTag("wallet-menu-workspace"))
             if (canViewCategories) MoreActionRow("التصنيفات", "تصنيفات المنتجات", Icons.Filled.Category, onOpenCategories)
             if (canViewCustomers) MoreActionRow("العملاء", "قائمة العملاء والبحث وإدارة بياناتهم", Icons.Filled.People, onOpenCustomers)
             if (canViewSales) MoreActionRow("المبيعات", "المنتجات المباعة حسب إجمالي الفواتير", Icons.Filled.BarChart, onOpenSales)
             if (canViewSuppliers) MoreActionRow("الموردون", "الأرصدة والحسابات الدائنة", Icons.Filled.People, onOpenSuppliers)
             if (canViewInstallments) MoreActionRow("الأقساط والديون", "الأرصدة ومواعيد السداد", Icons.AutoMirrored.Filled.ReceiptLong, onOpenInstallments)
-            if (canViewWallets) MoreActionRow("المحافظ", "الأرصدة والنقدية والحدود", Icons.Filled.AccountBalanceWallet, onOpenWallets)
-            if (canViewWalletCashier) MoreActionRow("كاشير المحافظ", "تسجيل التحويلات والتحصيلات", Icons.Filled.AccountBalanceWallet, onOpenWalletCashier)
             if (canViewProductCashier) MoreActionRow("نقطة البيع", "بحث المنتجات والسلة والتحصيل", Icons.Filled.Store, onOpenProductCashier,
                 Modifier.testTag("retail-menu-checkout"))
             if (canViewRetailShifts) MoreActionRow(retailShiftTitle, "الفتح والإغلاق واعتماد الفروق", Icons.Filled.Payments, onOpenRetailShifts,
@@ -2234,11 +2304,11 @@ private fun BackupScreen(
 }
 
 @Composable
-private fun MoreActionRow(label: String, description: String, icon: ImageVector, onClick: () -> Unit, modifier: Modifier = Modifier) {
+internal fun MoreActionRow(label: String, description: String, icon: ImageVector, onClick: () -> Unit, modifier: Modifier = Modifier) {
     Surface(
         modifier = modifier,
         onClick = onClick,
-        shape = RoundedCornerShape(8.dp),
+        shape = MaterialTheme.shapes.medium,
         color = MaterialTheme.colorScheme.surface,
         border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
     ) {
@@ -2249,7 +2319,7 @@ private fun MoreActionRow(label: String, description: String, icon: ImageVector,
         ) {
             Surface(
                 modifier = Modifier.size(40.dp),
-                shape = RoundedCornerShape(8.dp),
+                shape = MaterialTheme.shapes.small,
                 color = MaterialTheme.colorScheme.primaryContainer,
             ) {
                 Box(contentAlignment = Alignment.Center) {
@@ -2328,23 +2398,40 @@ private fun NotificationListScreen(
 @Composable
 private fun WalletCashierScreen(
     state: WalletCashierUiState,
+    service: WalletService?,
+    knownWallets: List<WalletDto>,
+    canReadBalances: Boolean,
     canManage: Boolean,
     canReverse: Boolean,
     onRefresh: () -> Unit,
+    onOpenBalances: () -> Unit,
     onSettle: (WalletCashierTransactionDto) -> Unit,
     onReverse: (WalletCashierTransactionDto) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val activeWallets = state.data?.wallets.orEmpty().filter { service == null || service.matches(it.provider) }
+    val providersByWallet = remember(knownWallets, state.data?.wallets) {
+        knownWallets.associate { it.id to it.provider } + state.data?.wallets.orEmpty().associate { it.id to it.provider }
+    }
+    val transactions = state.data?.transactions.orEmpty().filter {
+        service == null || service.matches(it.walletProvider ?: providersByWallet[it.walletId])
+    }
     Column(modifier.fillMaxSize()) {
         Row(
             Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Column {
-                Text("المبالغ الآجلة", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Text("${state.data?.outstanding ?: "0.00"} ج.م", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+            Column(Modifier.weight(1f)) {
+                if (service == null) {
+                    Text("المبالغ الآجلة", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(state.data?.outstanding?.let { "$it ج.م" } ?: "—", style = MaterialTheme.typography.titleLarge)
+                } else {
+                    Text(if (service == WalletService.InstaPay) "سجل المحافظ السابقة" else "رصيد المزود وحركاته المسجّلة",
+                        style = MaterialTheme.typography.titleSmall)
+                }
             }
+            if (canReadBalances) TextButton(onClick = onOpenBalances) { Text("الأرصدة") }
             IconButton(onClick = onRefresh, enabled = !state.isLoading) {
                 Icon(Icons.Filled.Refresh, contentDescription = "تحديث الكاشير")
             }
@@ -2358,12 +2445,12 @@ private fun WalletCashierScreen(
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 item {
-                    Text("المحافظ النشطة", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    Text("أرصدة المحافظ النشطة لدى المزود", style = MaterialTheme.typography.titleMedium)
                 }
-                if (state.data.wallets.isEmpty()) {
-                    item { EmptyState("أضف محفظة نشطة من صفحة المحافظ أولاً") }
+                if (activeWallets.isEmpty()) {
+                    item { EmptyState(service?.let { "لا توجد محفظة نشطة لدى ${it.label}" } ?: "لا توجد محافظ نشطة") }
                 } else {
-                    items(state.data.wallets, key = { it.id }) { wallet ->
+                    items(activeWallets, key = { it.id }) { wallet ->
                         Surface(
                             shape = RoundedCornerShape(8.dp),
                             color = MaterialTheme.colorScheme.surface,
@@ -2376,7 +2463,7 @@ private fun WalletCashierScreen(
                             ) {
                                 Column(Modifier.weight(1f)) {
                                     Text(wallet.name, fontWeight = FontWeight.SemiBold)
-                                    Text(wallet.provider, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    Text(walletProviderDisplay(wallet.provider), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 }
                                 Text("${wallet.balance} ج.م", fontWeight = FontWeight.Bold)
                             }
@@ -2384,10 +2471,10 @@ private fun WalletCashierScreen(
                     }
                 }
                 item { Text("آخر المعاملات", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold) }
-                if (state.data.transactions.isEmpty()) {
+                if (transactions.isEmpty()) {
                     item { EmptyState("لا توجد معاملات مسجلة") }
                 } else {
-                    items(state.data.transactions, key = WalletCashierTransactionDto::uuid) { transaction ->
+                    items(transactions, key = WalletCashierTransactionDto::uuid) { transaction ->
                         Card(
                             shape = RoundedCornerShape(8.dp),
                             border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
@@ -2427,6 +2514,7 @@ private fun ProductCashierScreen(
     onSearch: (String) -> Unit,
     onCheckout: (CashierCheckoutInputDto, String, (CashierCheckoutResponseDto) -> Unit) -> Unit,
     retailUser: UserDto?,
+    instaPaySale: Boolean,
     retailViewModel: RetailViewModel,
     onOpenShifts: () -> Unit,
     onRetailSale: () -> Unit,
@@ -2646,6 +2734,7 @@ private fun ProductCashierScreen(
             viewModel = retailViewModel,
             cart = checkoutCart,
             totalMinor = requireNotNull(retailMinorUnits(total.toPlainString())),
+            instaPaySale = instaPaySale,
             onOpenShifts = onOpenShifts,
             onDismiss = { retailCart = null },
             onComplete = {
@@ -2741,6 +2830,7 @@ private fun SalesListScreen(
 @Composable
 private fun WalletOverviewScreen(
     state: WalletOverviewUiState,
+    service: WalletService?,
     canManage: Boolean,
     canUseCashier: Boolean,
     onRefresh: () -> Unit,
@@ -2755,7 +2845,7 @@ private fun WalletOverviewScreen(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween,
         ) {
-            Text("ملخص الأرصدة", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            Text(service?.let { "الرصيد لدى ${it.label}" } ?: "ملخص الأرصدة", style = MaterialTheme.typography.titleMedium)
             Row(verticalAlignment = Alignment.CenterVertically) {
                 if (canUseCashier) {
                     TextButton(onClick = onOpenCashier) { Text("المعاملات") }
@@ -2770,7 +2860,7 @@ private fun WalletOverviewScreen(
             state.overview == null -> EmptyState(state.error ?: "لا توجد بيانات محافظ متاحة")
             else -> {
                 state.error?.let { ErrorBanner(it) }
-                WalletOverviewContent(state.overview, canManage, onAdjustWallet, onToggleWallet)
+                WalletOverviewContent(state.overview, service, canManage, onAdjustWallet, onToggleWallet)
             }
         }
     }
@@ -2779,18 +2869,20 @@ private fun WalletOverviewScreen(
 @Composable
 private fun WalletOverviewContent(
     overview: WalletOverviewDto,
+    service: WalletService?,
     canManage: Boolean,
     onAdjustWallet: (WalletDto) -> Unit,
     onToggleWallet: (Long) -> Unit,
 ) {
+    val wallets = overview.wallets.filter { service == null || service.matches(it.provider) }
     LazyColumn(
         contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 20.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        item {
+        if (service == null) item {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                WalletSummaryLine("إجمالي المحافظ", overview.summary.walletsTotal)
-                overview.summary.cash?.let { WalletSummaryLine("النقدية بالصندوق", it) }
+                WalletSummaryLine("إجمالي الأرصدة لدى المزودين", overview.summary.walletsTotal)
+                overview.summary.cash?.let { WalletSummaryLine("النقد في الدرج المخصص للمحافظ", it) }
                 overview.summary.profitToday?.let { WalletSummaryLine("ربح اليوم", it) }
                 WalletSummaryLine("المستحق من العملاء", overview.summary.receivables)
                 overview.summary.profitAvailable?.let { WalletSummaryLine("الربح المتاح", it) }
@@ -2798,12 +2890,12 @@ private fun WalletOverviewContent(
             }
         }
         item {
-            Text("المحافظ (${overview.wallets.size})", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            Text("المحافظ (${wallets.size})", style = MaterialTheme.typography.titleMedium)
         }
-        if (overview.wallets.isEmpty()) {
+        if (wallets.isEmpty()) {
             item { EmptyState("لا توجد محافظ مسجلة") }
         } else {
-            items(overview.wallets, key = WalletDto::id) { wallet ->
+            items(wallets, key = WalletDto::id) { wallet ->
                 WalletOverviewRow(wallet, canManage, onAdjustWallet, onToggleWallet)
             }
         }
@@ -2845,7 +2937,7 @@ private fun WalletOverviewRow(
                 Text("${wallet.balance} ج.م", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
             }
             Text(
-                listOfNotNull(wallet.provider.takeIf(String::isNotBlank), wallet.identifier?.takeIf(String::isNotBlank)).joinToString(" · ")
+                listOfNotNull(wallet.provider.takeIf(String::isNotBlank)?.let(::walletProviderDisplay), wallet.identifier?.takeIf(String::isNotBlank)).joinToString(" · ")
                     .ifBlank { "محفظة بلا بيانات تعريف" },
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,

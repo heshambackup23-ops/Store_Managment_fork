@@ -234,7 +234,7 @@ class StoreRepository @Inject constructor(
         api.deleteMaintenance(id).requireSuccess()
     }
 
-    suspend fun walletCashier(): ApiResult<WalletCashierDto> = calls.execute { api.walletCashier().data }
+    suspend fun walletCashier(provider: String?): ApiResult<WalletCashierDto> = calls.execute { api.walletCashier(provider).data }
 
     suspend fun createWalletTransaction(key: String, input: WalletCashierInputDto) = calls.execute {
         api.createWalletTransaction(key, input)

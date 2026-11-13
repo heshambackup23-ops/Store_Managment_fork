@@ -45,12 +45,22 @@ private data class TenderEntry(val amount: String = "", val reference: String = 
 
 private fun Long.asEgp() = BigDecimal.valueOf(this, 2).toPlainString()
 
+internal fun instaPayTenderReference(input: String): String? {
+    val prefix = "InstaPay:"
+    val receipt = input.trim().replace(Regex("^(?:instapay:\\s*)+", RegexOption.IGNORE_CASE), "")
+    if (receipt.isEmpty() || receipt.length > 100 - prefix.length || receipt.any {
+            Character.isISOControl(it) || Character.getType(it) == Character.FORMAT.toInt()
+        }) return null
+    return prefix + receipt
+}
+
 @Composable
 internal fun RetailCheckoutDialog(
     user: UserDto,
     viewModel: RetailViewModel,
     cart: List<PosCartLine>,
     totalMinor: Long,
+    instaPaySale: Boolean = false,
     onOpenShifts: () -> Unit,
     onDismiss: () -> Unit,
     onComplete: (RetailCheckoutReceiptDto) -> Unit,
@@ -61,7 +71,9 @@ internal fun RetailCheckoutDialog(
     val shift = context?.ownedShift
     val hasShift = shift != null
     val canEdit = !mutation.isSaving
-    var tenders by remember { mutableStateOf(mapOf("cash" to TenderEntry(totalMinor.asEgp()))) }
+    var tenders by remember(instaPaySale) {
+        mutableStateOf(mapOf((if (instaPaySale) "bank_transfer" else "cash") to TenderEntry(totalMinor.asEgp())))
+    }
     var customer by remember { mutableStateOf<CustomerDto?>(null) }
     var selectedDevices by remember { mutableStateOf<Map<Long, List<RetailDeviceDto>>>(emptyMap()) }
     var selectingCustomer by remember { mutableStateOf(false) }
@@ -69,7 +81,11 @@ internal fun RetailCheckoutDialog(
     var formError by remember { mutableStateOf<String?>(null) }
     var attempted by remember { mutableStateOf<Pair<RetailCheckoutDto, String>?>(null) }
     val tracked = cart.filter { it.product.tracking != "quantity" }
-    val methods = if (hasShift) tenderMethods else tenderMethods.take(1)
+    val methods = when {
+        instaPaySale -> listOf("bank_transfer" to "تحويل بنكي عبر إنستا باي")
+        hasShift -> tenderMethods
+        else -> tenderMethods.take(1)
+    }
     val paidForDisplay = methods.sumOf { (method, _) -> retailMinorUnits(tenders[method]?.amount.orEmpty()) ?: 0L }
 
     LaunchedEffect(user.id) {
@@ -88,10 +104,19 @@ internal fun RetailCheckoutDialog(
                 formError = "أدخل مبلغًا صحيحًا بالجنيه والقرش لكل وسيلة سداد."
                 return
             }
-            if (amount > 0L) payments.add(RetailPaymentDto(method, amount, entry.reference.trim().ifEmpty { null }))
+            if (amount > 0L) {
+                val reference = if (instaPaySale) instaPayTenderReference(entry.reference) else entry.reference.trim().ifEmpty { null }
+                if (instaPaySale && reference == null) {
+                    formError = "أدخل رقم إيصال إنستا باي المؤكد قبل تسجيل التحويل."
+                    return
+                }
+                payments.add(RetailPaymentDto(method, amount, reference))
+            }
         }
         val paid = payments.sumOf { it.amountMinor }
         formError = when {
+            instaPaySale && shift == null -> "افتح وردية لتسجيل التحويل البنكي عبر إنستا باي."
+            instaPaySale && paid == 0L -> "أدخل المبلغ المحصّل عبر إنستا باي."
             paid > totalMinor -> "إجمالي السداد يتجاوز قيمة الفاتورة."
             paid < totalMinor && customer == null -> "اختر عميلًا عند البيع الآجل أو الدفع الجزئي."
             context?.requiresShift != false && shift == null -> "افتح وردية قبل إتمام البيع."
@@ -146,7 +171,7 @@ internal fun RetailCheckoutDialog(
                     TextButton(onClick = { viewModel.loadCheckoutContext(user.id, user.canOperateRetailShifts()) }) { Text("تحديث الوردية") }
                 }
                 if (shift != null) DetailLine("الوردية", shift.registerName)
-                else if (context?.requiresShift == true) {
+                else if (context?.requiresShift == true || (context != null && instaPaySale)) {
                     Text("يلزم فتح وردية لهذا الحساب لإتمام البيع.")
                     if (user.canOperateRetailShifts()) TextButton(onClick = onOpenShifts) { Text("الذهاب للورديات") }
                 } else if (context != null) {
@@ -166,7 +191,7 @@ internal fun RetailCheckoutDialog(
                         Text("${line.product.name} · اختيار الأجهزة ${selection.size}/${line.quantity}")
                     }
                 }
-                if (context != null && (shift != null || !context.requiresShift)) methods.forEach { (method, label) ->
+                if (context != null && (shift != null || (!context.requiresShift && !instaPaySale))) methods.forEach { (method, label) ->
                     val entry = tenders[method] ?: TenderEntry()
                     OutlinedTextField(
                         entry.amount, { amount -> tenders = tenders + (method to entry.copy(amount = amount.take(22))) },
@@ -176,7 +201,7 @@ internal fun RetailCheckoutDialog(
                     )
                     if (method != "cash" && (retailMinorUnits(entry.amount) ?: 0L) > 0L) OutlinedTextField(
                         entry.reference, { reference -> tenders = tenders + (method to entry.copy(reference = reference.take(100))) },
-                        label = { Text("مرجع $label (اختياري)") }, enabled = canEdit, singleLine = true,
+                        label = { Text(if (instaPaySale) "مرجع إيصال إنستا باي (مطلوب)" else "مرجع $label (اختياري)") }, enabled = canEdit, singleLine = true,
                         modifier = Modifier.fillMaxWidth(),
                     )
                 }
@@ -187,7 +212,7 @@ internal fun RetailCheckoutDialog(
         },
         confirmButton = {
             Button(
-                enabled = canEdit && context != null && (shift != null || !context.requiresShift),
+                enabled = canEdit && context != null && (shift != null || (!context.requiresShift && !instaPaySale)),
                 onClick = ::submit,
             ) { Text(if (mutation.isSaving) "جارٍ إتمام البيع…" else "تأكيد البيع") }
         },

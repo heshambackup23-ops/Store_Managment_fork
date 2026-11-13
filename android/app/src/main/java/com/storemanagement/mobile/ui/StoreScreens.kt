@@ -255,7 +255,7 @@ internal fun ManagedCard(
     onClick: (() -> Unit)? = null,
     content: @Composable ColumnScope.() -> Unit,
 ) {
-    val shape = RoundedCornerShape(14.dp)
+    val shape = MaterialTheme.shapes.medium
     val colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
     val border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
     if (onClick != null) {
@@ -1312,7 +1312,7 @@ internal fun HomeDashboardScreen(
                     Surface(
                         onClick = action.onClick,
                         modifier = Modifier.fillMaxWidth().testTag(action.tag),
-                        shape = RoundedCornerShape(12.dp),
+                        shape = MaterialTheme.shapes.medium,
                         color = MaterialTheme.colorScheme.primaryContainer,
                         contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
                     ) {

@@ -55,6 +55,22 @@ class StagingAcceptanceTest {
         assertEquals("http://127.0.0.1:8787/api/", BuildConfig.API_BASE_URL)
         signIn("emulator-operator", "مسؤول محاكي هلال")
 
+        compose.onNodeWithTag("wallet-home-workspace").performScrollTo().performSemanticsAction(SemanticsActions.OnClick)
+        waitForText("المحافظ المسجّلة")
+        compose.onNodeWithTag("wallet-provider-fawry").performScrollTo().performSemanticsAction(SemanticsActions.OnClick)
+        waitForText("سجل فوري")
+        compose.onNodeWithContentDescription("رجوع").performSemanticsAction(SemanticsActions.OnClick)
+        compose.onNodeWithTag("wallet-provider-instapay").performScrollTo().performSemanticsAction(SemanticsActions.OnClick)
+        waitForText("سجل المحافظ السابقة")
+        compose.onNodeWithContentDescription("تسجيل معاملة").assertDoesNotExist()
+        compose.onNodeWithContentDescription("رجوع").performSemanticsAction(SemanticsActions.OnClick)
+        compose.onNodeWithTag("wallet-provider-vodafone").performScrollTo().performSemanticsAction(SemanticsActions.OnClick)
+        waitForText("سجل فودافون كاش")
+        compose.onNodeWithContentDescription("رجوع").performSemanticsAction(SemanticsActions.OnClick)
+        compose.onNodeWithTag("wallet-instapay-sale").performScrollTo().performSemanticsAction(SemanticsActions.OnClick)
+        waitForText("اسم المنتج أو الباركود")
+        compose.onNodeWithTag("store-tab-Dashboard").performSemanticsAction(SemanticsActions.OnClick)
+
         compose.onNodeWithTag("retail-home-review-shifts").performSemanticsAction(SemanticsActions.OnClick)
         waitFor("pending shift review screen") { compose.onAllNodes(hasTestTag(retailShiftScreenTag)).fetchSemanticsNodes().isNotEmpty() }
         waitForText("لا توجد ورديات مطابقة.")
@@ -135,6 +151,9 @@ class StagingAcceptanceTest {
 
         signOut()
         signIn("emulator-reviewer", "مراجع محاكي هلال")
+        compose.onNodeWithTag("wallet-home-workspace").assertDoesNotExist()
+        compose.onNodeWithTag("store-tab-More").performSemanticsAction(SemanticsActions.OnClick)
+        compose.onNodeWithTag("wallet-menu-workspace").assertDoesNotExist()
         openRetailMenu("retail-menu-shifts", retailShiftScreenTag)
         waitForText("درج محاكي هلال")
         clickText("درج محاكي هلال")

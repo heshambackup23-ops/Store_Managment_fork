@@ -3,6 +3,7 @@ import type { FormEvent } from 'react'
 import { Link } from 'react-router-dom'
 import { formatDate, integer, money, readMoney, request, RequestError } from './api'
 import { Notice, PageTitle } from './ui'
+import { walletManagementTitle } from './wallet-providers'
 
 type Position = { target: 'drawer' | 'wallet'; wallet_id: number | null; wallet_name: string | null; expected_minor: number }
 type Count = Position & {
@@ -98,7 +99,7 @@ export function WalletReconciliation() {
   const lastPage = Math.max(1, Math.ceil(total / 20))
   return <>
     <PageTitle title="مطابقة الدرج والمحافظ" description="عدّ النقد في درج المحافظ أو اقرأ الرصيد من تطبيق المزود. تسجيل المطابقة يحفظ نتيجة الجرد للمراجعة."
-      action={<div className="form-actions"><Link className="secondary" to="/wallet-workspace">خدمات المحافظ</Link>
+      action={<div className="form-actions"><Link className="secondary" to="/wallet-workspace">{walletManagementTitle}</Link>
         <Link className="secondary" to="/wallet-report">تقرير المحافظ</Link></div>} />
     <p className="muted">يطابق الكاشير النقد المسجّل في درج البيع المشترك عند إقفال الوردية.</p>
     {saved && <Notice>تم تسجيل مطابقة {targetLabel(saved)}: {differenceLabel(saved.difference_minor)}{saved.difference_minor !== 0 ? ` (${money(saved.difference_minor)})` : ''}.</Notice>}

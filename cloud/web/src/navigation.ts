@@ -1,9 +1,11 @@
 import { allowed } from './api'
 import type { User } from './api'
+import { walletManagementTitle } from './wallet-providers'
 
 type Destination = { path: string; label: string; permissions?: string[]; requireAll?: boolean }
-type Section = { id: string; title: string; items: Destination[] }
+type Section = { id: string; title: string; items: Destination[]; direct?: boolean }
 const item = (path: string, label: string, ...permissions: string[]): Destination => ({ path, label, permissions })
+export const walletWorkspace = item('/wallet-workspace', walletManagementTitle, 'wallets.view', 'wallets.cash')
 
 const sections: Section[] = [
   { id: 'today', title: 'اليوم', items: [
@@ -17,6 +19,7 @@ const sections: Section[] = [
     item('/retail-discounts', 'اعتمادات الخصم', 'retail.discounts.approve', 'invoices.discount'),
     item('/retail-hardware', 'اختبار القارئ والطابعة', 'invoices.create'),
   ] },
+  { id: 'wallets', title: walletWorkspace.label, items: [walletWorkspace], direct: true },
   { id: 'stock', title: 'المخزون', items: [
     item('/retail-branches', 'مخزون الفروع', 'inventory.view', 'retail.branches.manage', 'retail.branches.transfer'),
     item('/products', 'المنتجات', 'products.view'),
@@ -40,7 +43,6 @@ const sections: Section[] = [
     item('/retail-finance', 'تقارير مالية للمتجر', 'reports.view'),
     item('/reports', 'تقارير المبيعات', 'reports.view'),
     item('/retail-safe', 'خزنة المتجر', 'retail.safe.manage', 'retail.shifts.approve'),
-    item('/wallet-workspace', 'خدمات المحافظ', 'wallets.view', 'wallets.cash'),
     item('/supplier-report', 'أرصدة الموردين', 'suppliers.view'),
     item('/debts', 'الديون الشخصية', 'debts.view'),
   ] },
@@ -62,6 +64,7 @@ export const walletDestinations = [
 ]
 
 export function visibleDestination(user: User, destination: Destination) {
+  if (destination.path === walletWorkspace.path && allowed(user, 'reports.view') && allowed(user, 'retail.shifts.approve')) return true
   const permissions = destination.permissions ?? []
   if (!permissions.length) return true
   const check = (permission: string) => allowed(user, permission)
@@ -74,7 +77,7 @@ export function navigationFor(user: User) {
 }
 
 export function currentSection(path: string, navigation: Section[]) {
-  if (path.startsWith('/wallet')) return navigation.find(section => section.id === 'accounts')
+  if (path.startsWith('/wallet')) return navigation.find(section => section.id === 'wallets')
   return navigation.find(section => section.items.some(item => path === item.path || path.startsWith(item.path + '/')))
 }
 
@@ -83,9 +86,9 @@ export function workFor(user: User) {
   const cashier = allowed(user, 'invoices.create')
   const stock = ['inventory.stocktake.count', 'retail.branches.transfer', 'suppliers.manage'].some(p => allowed(user, p))
   const accountant = allowed(user, 'retail.ledger.view')
-  const paths = manager ? ['/pos', '/retail-shifts', '/retail-discounts', '/retail-stocktakes', '/retail-ledger', '/retail-branches']
-    : cashier ? ['/pos', '/returns', '/retail-shifts', '/invoices', '/products']
-    : stock ? ['/purchases', '/retail-branches', '/retail-stocktakes', '/retail-devices', '/products']
+  const paths = manager ? ['/pos', '/wallet-workspace', '/retail-shifts', '/retail-discounts', '/retail-stocktakes', '/retail-ledger', '/retail-branches']
+    : cashier ? ['/pos', '/wallet-workspace', '/returns', '/retail-shifts', '/invoices', '/products']
+    : stock ? ['/purchases', '/retail-branches', '/retail-stocktakes', '/retail-devices', '/products', '/wallet-workspace']
     : accountant ? ['/retail-ledger', '/retail-finance', '/retail-safe', '/supplier-report', '/wallet-workspace']
     : ['/retail-devices', '/retail-installations', '/maintenance', '/customers', '/wallet-workspace', '/products']
   const available = navigationFor(user).flatMap(section => section.items)

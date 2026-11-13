@@ -20,6 +20,7 @@ import { retailSerialInventoryErrors } from './retail-serial-inventory';
 import { retailBranchErrors } from './retail-branches';
 import { walletReconciliation } from './wallet-reconciliation';
 import { walletReporting } from './wallet-reporting';
+import { walletProviderFilter, walletProviderScope } from './wallet-providers';
 
 export const businessPermissions = [
   'inventory.view', 'inventory.manage',
@@ -895,7 +896,19 @@ function cairoDay() {
   return ['year', 'month', 'day'].map(part => parts.find(value => value.type === part)?.value).join('-');
 }
 
-business.get('/wallets', permit('wallets.view'), c => list(c, '*', 'wallets'));
+business.get('/wallets', permit('wallets.view'), c => {
+  const { provider, wallet_id: walletId, active } = z.object({ provider: walletProviderFilter,
+    wallet_id: z.coerce.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
+    active: z.enum(['1', '0']).optional(),
+  }).parse(c.req.query());
+  const scope = walletProviderScope(provider, 'provider');
+  const clauses = [scope.clause];
+  const values: Bind[] = [...scope.values];
+  if (walletId !== undefined) { clauses.push('id = ?'); values.push(walletId); }
+  if (active !== undefined) { clauses.push('active = ?'); values.push(Number(active)); }
+  const where = clauses.filter(Boolean).join(' AND ');
+  return selectPage(c, '*', 'wallets', where ? 'WHERE ' + where : '', values, 'id DESC');
+});
 
 business.post('/wallets', permit('wallets.manage'), async c => {
   const data = await body(c, wallet.extend({ opening_minor: money.default(0) }));
@@ -966,6 +979,7 @@ business.post('/wallets/:id/adjustments', permit('wallets.manage'), async c => {
 
 const walletTransactionFilters = z.object({
   wallet_id: z.coerce.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
+  provider: walletProviderFilter,
   kind: z.enum(['opening', 'send', 'receive', 'expense', 'settlement_in', 'settlement_out', 'reversal']).optional(),
   status: z.enum(['effective', 'reversed']).optional(),
   q: z.string().trim().max(100).optional(),
@@ -1001,6 +1015,11 @@ async function walletLedger(c: ApiContext, attachment = false) {
     [filter.from, 't.business_day >= ?'], [filter.to, 't.business_day <= ?'],
   ] as const) {
     if (value !== undefined) { clauses.push(clause); parameters.push(value); }
+  }
+  const provider = walletProviderScope(filter.provider, 'w.provider');
+  if (provider.clause) {
+    clauses.push(provider.clause);
+    parameters.push(...provider.values);
   }
   if (filter.status === 'effective') clauses.push("r.id IS NULL AND t.kind <> 'reversal'");
   if (filter.status === 'reversed') clauses.push("(r.id IS NOT NULL OR t.kind = 'reversal')");

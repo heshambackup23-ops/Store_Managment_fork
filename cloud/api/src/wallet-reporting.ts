@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { fail, ok, page, paginated, permit, searchPrefix, selectPage, type ApiEnv } from './http';
+import { walletProviderFilter, walletProviderScope } from './wallet-providers';
 
 export const walletReporting = new Hono<ApiEnv>();
 const calendar = new Intl.DateTimeFormat('en-CA', {
@@ -63,6 +64,9 @@ walletReporting.get('/wallets/positions', permit('wallets.view'), async c => {
   const today = businessDate(Date.now());
   const paging = page(c);
   const db = c.env.DB;
+  const provider = walletProviderFilter.parse(c.req.query('provider'));
+  const { clause, values } = walletProviderScope(provider, 'provider');
+  const filter = clause ? 'WHERE ' + clause : '';
   const [items, count] = await db.batch<Record<string, unknown>>([
     db.prepare(`SELECT
     w.id, w.name, w.provider, w.active, w.balance_minor, w.warn_at_percent,
@@ -72,13 +76,13 @@ walletReporting.get('/wallets/positions', permit('wallets.view'), async c => {
     COALESCE(SUM(CASE WHEN t.kind = 'receive' AND t.business_day = calendar.today THEN t.amount_minor END), 0) AS daily_received_minor,
     COALESCE(SUM(CASE WHEN t.kind = 'send' THEN t.amount_minor END), 0) AS monthly_sent_minor,
     COALESCE(SUM(CASE WHEN t.kind = 'receive' THEN t.amount_minor END), 0) AS monthly_received_minor
-    FROM (SELECT * FROM wallets ORDER BY active DESC, name, id LIMIT ? OFFSET ?) w
+    FROM (SELECT * FROM wallets ${filter} ORDER BY active DESC, name, id LIMIT ? OFFSET ?) w
     CROSS JOIN (SELECT ? AS today) calendar
     LEFT JOIN wallet_transactions t ON t.wallet_id = w.id AND t.kind IN ('send','receive')
       AND t.business_day BETWEEN date(calendar.today,'start of month') AND calendar.today
       AND NOT EXISTS (SELECT 1 FROM wallet_transactions r WHERE r.reversal_of = t.id)
-    GROUP BY w.id ORDER BY w.active DESC, w.name, w.id`).bind(paging.limit, paging.offset, today),
-    db.prepare('SELECT count(*) AS total FROM wallets'),
+    GROUP BY w.id ORDER BY w.active DESC, w.name, w.id`).bind(...values, paging.limit, paging.offset, today),
+    db.prepare('SELECT count(*) AS total FROM wallets ' + filter).bind(...values),
   ]);
   return paginated(c, items.results, number(count.results[0]?.total), paging);
 });

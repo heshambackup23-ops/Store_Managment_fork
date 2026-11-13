@@ -5,7 +5,7 @@ import { allowed, apiUrl, formatDate, integer, money, readMoney, request, Reques
 import type { User } from './api'
 import { ActionDialog, DataModule, FormInput, idOf, Modal, Notice } from './ui'
 import { SharedDrawerDialog, ShiftContext, useOpenShift } from './RetailShifts'
-import { walletProviderLabel } from './wallet-providers'
+import { walletManagementTitle, walletProviderFilters, walletProviderFilterValue, walletProviderGroup, walletProviderLabel } from './wallet-providers'
 import type { ModuleConfig, Row } from './ui'
 
 type Position = {
@@ -26,13 +26,17 @@ const limits = [
 ] as const
 
 export function WalletPositions({ revision }: { revision: number }) {
+  const [params] = useSearchParams()
+  const provider = walletProviderFilterValue(params.get('provider'))
   const [rows, setRows] = useState<Position[]>()
   const [error, setError] = useState('')
   const [page, setPage] = useState(1)
   const [lastPage, setLastPage] = useState(1)
   useEffect(() => {
     const controller = new AbortController()
-    request<Position[]>('/wallets/positions?' + new URLSearchParams({ page: String(page), per_page: '12' }), { signal: controller.signal })
+    const query = new URLSearchParams({ page: String(page), per_page: '12' })
+    if (provider) query.set('provider', provider)
+    request<Position[]>('/wallets/positions?' + query, { signal: controller.signal })
       .then(result => {
         if (controller.signal.aborted) return
         setRows(result.data)
@@ -41,14 +45,14 @@ export function WalletPositions({ revision }: { revision: number }) {
       })
       .catch(error => { if (!controller.signal.aborted) setError(error.message) })
     return () => controller.abort()
-  }, [page, revision])
+  }, [page, revision, provider])
 
   return <section className="section-space" aria-label="أرصدة وحدود المحافظ">
     <h2>الأرصدة والحدود بتوقيت القاهرة</h2>
     {error ? <Notice error>{error}</Notice> : !rows ? <Notice>جارٍ تحميل الأرصدة…</Notice> : !rows.length ? <Notice>لا توجد محافظ.</Notice> :
       <div className="wallet-positions">
         {rows.map(row => <article className="panel panel-inner wallet-position" key={row.id}>
-          <header><h3>{row.name}</h3><span className="muted">{row.provider || '—'} · {row.active ? 'نشطة' : 'موقوفة'}</span></header>
+          <header><h3>{row.name}</h3><span className="muted">{walletProviderLabel(row.provider)} · {row.active ? 'نشطة' : 'موقوفة'}</span></header>
           <dl className="invoice-summary">
             <div><dt>رصيد المحفظة لدى المزود</dt><dd>{money(row.balance_minor)}</dd></div>
             <div><dt>حد العملية</dt><dd>{row.transaction_limit_minor === null ? 'غير محدد' : money(row.transaction_limit_minor)}</dd></div>
@@ -79,7 +83,7 @@ export function WalletPositions({ revision }: { revision: number }) {
   </section>
 }
 
-const filters = ['wallet_id', 'kind', 'status', 'from', 'to', 'q'] as const
+const filters = ['provider', 'wallet_id', 'kind', 'status', 'from', 'to', 'q'] as const
 const kinds = {
   opening: 'رصيد افتتاحي', send: 'إرسال', receive: 'استقبال', expense: 'مصروف',
   settlement_in: 'تسوية داخلة', settlement_out: 'تسوية خارجة', reversal: 'عكس',
@@ -142,6 +146,8 @@ export function WalletTransferDialog({ user, wallet, kind, close, done }: {
   const reviewHeading = useRef<HTMLHeadingElement>(null)
   const shift = useOpenShift(user)
   const walletId = idOf(wallet)
+  const fawry = walletProviderGroup(wallet.provider) === 'fawry'
+  const title = fawry ? (kind === 'send' ? 'حركة تخصم من رصيد فوري' : 'حركة تضيف إلى رصيد فوري') : transferLabels[kind]
   const deferred = kind === 'send' && Boolean(customer)
   const ledger = '/wallet-transactions?' + new URLSearchParams({
     wallet_id: String(walletId),
@@ -162,6 +168,7 @@ export function WalletTransferDialog({ user, wallet, kind, close, done }: {
         const principal = readMoney(amount)
         const priced = transferPricing(wallet, kind, principal, commission, fee, deferred)
         const providerReference = reference.trim()
+        if (fawry && !providerReference) throw new Error('أدخل مرجع الحركة من فوري.')
         const customerId = deferred ? Number(customer) : undefined
         if (/[\p{Cc}\p{Cf}]/u.test(providerReference)) throw new Error('أزل الرموز المخفية من مرجع المزود.')
         if (customerId !== undefined && (!Number.isSafeInteger(customerId) || customerId <= 0)) {
@@ -200,7 +207,7 @@ export function WalletTransferDialog({ user, wallet, kind, close, done }: {
   }
 
   const drawerLabel = review?.shift ? 'درج البيع للوردية' : 'الدرج المخصص للمحافظ'
-  return <Modal title={transferLabels[kind]} close={() => { if (!busy) close() }}>
+  return <Modal title={title} close={() => { if (!busy) close() }}>
     <form className="modal-form" onSubmit={submit}>
       <p>{String(wallet.name)} · {walletProviderLabel(wallet.provider)}</p>
       {review ? <>
@@ -221,7 +228,9 @@ export function WalletTransferDialog({ user, wallet, kind, close, done }: {
         <p className="muted">أكد المعاملة فقط بعد مطابقة المبلغ والمرجع مع تطبيق المزود.</p>
       </> : <>
         <label className="field">المبلغ بالجنيه<input ref={amountField} value={amount} required inputMode="decimal" onChange={event => setAmount(event.target.value)} /></label>
-        <label className="field">مرجع العملية لدى المزود (اختياري)<input dir="auto" value={reference} maxLength={100} onChange={event => setReference(event.target.value)} /></label>
+        <label className="field">{fawry ? 'مرجع الحركة من فوري' : 'مرجع العملية لدى المزود (اختياري)'}
+          <input dir="auto" value={reference} required={fawry} maxLength={100} onChange={event => setReference(event.target.value)} />
+        </label>
         <label className="field">رقم الطرف الآخر (اختياري)<input dir="auto" value={counterparty} maxLength={50} onChange={event => setCounterparty(event.target.value)} /></label>
         <label className="field">عمولة العميل بالجنيه<input value={commission} inputMode="decimal" placeholder="حسب إعداد المحفظة" onChange={event => setCommission(event.target.value)} /></label>
         <label className="field">رسوم المزود بالجنيه<input value={fee} inputMode="decimal" placeholder="حسب إعداد المحفظة" onChange={event => setFee(event.target.value)} /></label>
@@ -253,19 +262,24 @@ export function WalletLedger({ user, config }: { user: User; config: ModuleConfi
   const query = new URLSearchParams()
   for (const key of filters) {
     const value = params.get(key)
-    if (value) query.set(key, value)
+    if (value && (key !== 'provider' || walletProviderFilterValue(value))) query.set(key, value)
   }
   const queryText = query.toString()
   const querySuffix = queryText ? '?' + queryText : ''
   const walletId = query.get('wallet_id') ?? ''
+  const provider = walletProviderFilterValue(query.get('provider'))
 
   useEffect(() => {
     const controller = new AbortController()
-    request<Row[]>('/wallets?per_page=100', { signal: controller.signal })
-      .then(result => { if (!controller.signal.aborted) setWallets(result.data) })
+    const filters = new URLSearchParams({ per_page: '100' })
+    if (provider) filters.set('provider', provider)
+    request<Row[]>('/wallets?' + filters, { signal: controller.signal })
+      .then(result => {
+        if (!controller.signal.aborted) { setWallets(result.data); setWalletError('') }
+      })
       .catch(error => { if (!controller.signal.aborted) setWalletError(error.message) })
     return () => controller.abort()
-  }, [])
+  }, [provider])
 
   function filter(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -275,6 +289,7 @@ export function WalletLedger({ user, config }: { user: User; config: ModuleConfi
       const value = String(input.get(key) ?? '').trim()
       if (value) next.set(key, value)
     }
+    if (next.get('provider') !== (provider ?? null)) next.delete('wallet_id')
     setParams(next)
   }
 
@@ -295,6 +310,10 @@ export function WalletLedger({ user, config }: { user: User; config: ModuleConfi
     { key: 'fee_minor', label: 'رسوم المزود', render: row => money(row.fee_minor) },
   )
   const filterForm = <form className="panel form-card section-space" key={queryText} onSubmit={filter}>
+    <label className="field">مزود الخدمة<select name="provider" defaultValue={provider ?? ''}>
+      <option value="">كل المزودين</option>
+      {walletProviderFilters.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+    </select></label>
     <label className="field">المحفظة<select name="wallet_id" defaultValue={walletId}>
       <option value="">كل المحافظ</option>
       {walletId && !wallets.some(row => String(row.id) === walletId) && <option value={walletId}>محفظة #{walletId}</option>}
@@ -319,8 +338,8 @@ export function WalletLedger({ user, config }: { user: User; config: ModuleConfi
     config={{ ...config, columns, endpoint: config.endpoint + querySuffix }}
     renderAction={props => props.action.sharedDrawer ? <SharedDrawerDialog {...props} user={user} /> : <ActionDialog {...props} />}
     extra={<>
-      <div className="form-actions"><Link className="secondary" to="/wallet-workspace">خدمات المحافظ</Link>
-        {allowed(user, 'wallets.transact') && <Link className="secondary" to="/wallet-cashier">كاشير المحافظ</Link>}
+      <div className="form-actions"><Link className="secondary" to="/wallet-workspace">{walletManagementTitle}</Link>
+        {allowed(user, 'wallets.transact') && <Link className="secondary" to={'/wallet-cashier' + (provider ? '?provider=' + provider : '')}>كاشير المحافظ</Link>}
       </div>
       {filterForm}{walletError && <Notice error>{walletError}</Notice>}
     </>} />

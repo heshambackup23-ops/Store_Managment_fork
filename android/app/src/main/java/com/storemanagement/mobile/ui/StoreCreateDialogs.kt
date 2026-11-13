@@ -216,19 +216,20 @@ internal fun ProductEditDialog(
 
 @Composable
 internal fun WalletCreateDialog(
+    initialProvider: String? = null,
     onDismiss: () -> Unit,
     onCreate: (WalletInputDto, String) -> Unit,
 ) {
     val providers = listOf(
         "vodafone_cash" to "فودافون كاش",
-        "instapay" to "إنستا باي",
+        "fawry" to "فوري",
         "orange_cash" to "أورنج كاش",
         "etisalat_cash" to "اتصالات كاش",
         "we_pay" to "WE Pay",
         "other" to "أخرى",
     )
     var name by rememberSaveable { mutableStateOf("") }
-    var provider by rememberSaveable { mutableStateOf(providers.first().first) }
+    var provider by rememberSaveable(initialProvider) { mutableStateOf(initialProvider ?: providers.first().first) }
     var identifier by rememberSaveable { mutableStateOf("") }
     var openingBalance by rememberSaveable { mutableStateOf("0.00") }
     var menuOpen by remember { mutableStateOf(false) }

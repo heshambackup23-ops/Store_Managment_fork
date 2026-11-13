@@ -49,6 +49,7 @@ export function RetailFinance({ user }: { user: User }) {
   const to = params.get('to') ?? ''
   const side = params.get('side') === 'payable' ? 'payable' : 'receivable'
   const method = params.get('method') ?? ''
+  const channel = params.get('channel') === 'instapay' ? 'instapay' : ''
   const status = params.get('status') ?? ''
   const shiftId = params.get('shift_id') ?? ''
   const auditQuery = params.get('q') ?? ''
@@ -65,6 +66,7 @@ export function RetailFinance({ user }: { user: User }) {
     const next = new URLSearchParams(params)
     if (value) next.set(key, value)
     else next.delete(key)
+    if (key === 'method' && value !== 'bank_transfer') next.delete('channel')
     setParams(next, { replace: key === 'q' })
     setPage(1)
     setBatch([])
@@ -81,6 +83,7 @@ export function RetailFinance({ user }: { user: User }) {
       if (from) query.set('from', from)
       if (to) query.set('to', to)
       if (view === 'settlement' && method) query.set('method', method)
+      if (view === 'settlement' && channel) query.set('channel', channel)
       if (view === 'settlement' && status) query.set('status', status)
       if (view === 'settlement' && /^\d+$/.test(shiftId)) query.set('shift_id', shiftId)
       if (view === 'audit' && auditQuery.trim()) query.set('q', auditQuery.trim())
@@ -92,7 +95,7 @@ export function RetailFinance({ user }: { user: User }) {
       }
     }).catch(error => { if (!controller.signal.aborted) setError(error.message) })
     return () => controller.abort()
-  }, [view, page, side, from, to, method, status, shiftId, revision, auditQuery])
+  }, [view, page, side, from, to, method, channel, status, shiftId, revision, auditQuery])
 
   function render(value: unknown, kind: Column[2]) {
     if (kind === 'money') return money(value)
@@ -125,13 +128,16 @@ export function RetailFinance({ user }: { user: User }) {
     <PageTitle title="تقارير مالية للمتجر" action={canExport && <a className="secondary" href={apiUrl('/retail/accountant.csv?' + exportQuery)}>حركات المتجر للمحاسب CSV</a>} />
     <div className="form-actions section-space" aria-label="التقرير المعروض">{(Object.keys(labels) as View[]).filter(name => name === 'aging' || name === 'settlement' && canViewSettlement || (name === 'margin' || name === 'valuation') && canViewMargin || name === 'audit' && canAudit).map(name =>
       <button className={name === view ? 'primary' : 'secondary'} aria-pressed={name === view} key={name} onClick={() => filter('view', name)}>{labels[name]}</button>)}</div>
-    {view === 'valuation' ? <RetailInventoryValuation canFilter={allowed(user, 'categories.view')} /> : <section className="panel panel-inner form-section section-space"><h2>{labels[view]}</h2>
+    {view === 'valuation' ? <RetailInventoryValuation canFilter={allowed(user, 'categories.view')} /> : <section className="panel panel-inner form-section section-space"><h2>{view === 'settlement' && channel ? 'مطابقة تحويلات إنستا باي' : labels[view]}</h2>
       {view === 'aging' ? <label className="field">نوع الرصيد<select value={side} onChange={event => filter('side', event.target.value)}>
         <option value="receivable">لنا · مستحقات العملاء</option><option value="payable">علينا · مستحقات الموردين</option></select></label> : <div className="form-grid">
         <label className="field">من تاريخ<input type="date" value={from} onChange={event => filter('from', event.target.value)} /></label>
         <label className="field">إلى تاريخ<input type="date" value={to} onChange={event => filter('to', event.target.value)} /></label>
         {view === 'settlement' && <label className="field">القناة<select value={method} onChange={event => filter('method', event.target.value)}>
           <option value="">كل القنوات</option><option value="card">بطاقة</option><option value="wallet">محفظة</option><option value="bank_transfer">تحويل بنكي</option></select></label>}
+        {view === 'settlement' && method === 'bank_transfer' && <label className="field">نوع التحويل<select value={channel} onChange={event => filter('channel', event.target.value)}>
+          <option value="">كل التحويلات البنكية</option><option value="instapay">إنستا باي</option>
+        </select></label>}
         {view === 'settlement' && <label className="field">حالة المطابقة<select value={status} onChange={event => filter('status', event.target.value)}>
           <option value="">كل الحالات</option><option value="pending">بانتظار المطابقة</option><option value="matched">مطابق</option></select></label>}
         {view === 'settlement' && shiftId && <button className="secondary" onClick={() => filter('shift_id', '')}>مسح فلتر الوردية {integer(Number(shiftId))}</button>}

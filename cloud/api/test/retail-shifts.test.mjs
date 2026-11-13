@@ -185,6 +185,32 @@ test('retail tenders and shifts reconcile cash, guard the register and preserve 
     assert.equal(await db.prepare('SELECT COUNT(*) AS total FROM retail_settlement_batches').first('total'), 1);
   });
 
+  await t.test('filters InstaPay settlement references without mixing ordinary bank transfers', async () => {
+    const transferShift = expect(await call(shifts, { input: { register_name: 'Bank transfer fixture', opening_minor: 0 } }), 201);
+    const endpoint = '/reports/tender-settlements';
+    for (const reference of ['InstaPay:FIXTURE-1', 'InstaPay:', 'WIRE-FIXTURE-2']) {
+      expect(await call('/invoices', { input: {
+        ...sale, shift_id: transferShift.id, payments: [{ method: 'bank_transfer', amount_minor: 1000, reference }],
+      } }), 201);
+    }
+    const query = '?method=bank_transfer&shift_id=' + transferShift.id;
+    const general = expect(await call(endpoint + query, { user: 1 }), 200);
+    assert.equal(general.items.length, 3);
+    const filtered = expect(await call(endpoint + query + '&channel=instapay', { user: 1 }), 200);
+    assert.deepEqual(filtered.items.map(row => row.reference), ['InstaPay:FIXTURE-1']);
+    assert.equal(filtered.totals[0].received_minor, 1000);
+    expect(await call(endpoint + query + '&channel=instapay', { user: 4 }), 403);
+    expect(await call(endpoint + '?method=card&channel=instapay', { user: 1 }), 422);
+    const [item] = filtered.items;
+    expect(await call(endpoint + '/batches', { user: 1, input: {
+      items: [{ operation_id: item.operation_id, source: item.source, position: item.position }],
+      method: 'bank_transfer', fee_minor: 0, observed_minor: 1000, statement_date: transferShift.business_day,
+      statement_reference: 'INSTA-PAY-FIXTURE',
+    } }), 201);
+    assert.equal(expect(await call(endpoint + query + '&channel=instapay&status=matched', { user: 1 }), 200).items.length, 1);
+    expect(await call(shifts + '/' + transferShift.id + '/close', { input: { observed_minor: 0 } }), 201);
+  });
+
   await t.test('emergency closure releases the drawer and requires review by a third actor', async () => {
     const absent = expect(await call(shifts, { input: { register_name: 'Emergency Drawer', opening_minor: 5000 } }), 201);
     const route = shifts + '/' + absent.id;

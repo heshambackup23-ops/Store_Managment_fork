@@ -1005,6 +1005,41 @@ test('Worker and local D1 enforce financial rules through the mounted API', asyn
     assertStatus(await request(csv + filter, { identity: 2 }), 401);
   });
 
+  await t.test('wallet provider filters find canonical and legacy accounts and preserve access controls', async () => {
+    const fawry = assertStatus(await post('/wallets', { name: 'Fawry fixture', provider: 'fawry', opening_minor: 3000 }), 201);
+    const legacy = assertStatus(await post('/wallets', { name: 'Legacy Fawry fixture', provider: '  Fawry Pay  ', opening_minor: 2000 }), 201);
+    const vodafone = assertStatus(await post('/wallets', { name: 'Vodafone fixture', provider: 'فودافون كاش', opening_minor: 1000 }), 201);
+    const transfer = assertStatus(await post('/wallets/' + legacy.id + '/transactions', {
+      kind: 'send', amount_minor: 700, fee_minor: 10, commission_minor: 30, provider_reference: 'FAWRY-FIXTURE-01',
+    }), 201);
+    for (const endpoint of ['/wallets', '/wallets/positions']) {
+      const wallets = await request(endpoint + '?provider=fawry&per_page=1', { identity: 3 });
+      assert.equal(wallets.status, 200);
+      assert.equal(wallets.json.meta.total, 2);
+      assert.equal(wallets.json.data.length, 1);
+      const second = assertStatus(await request(endpoint + '?provider=fawry&per_page=1&page=2', { identity: 3 }), 200);
+      assert.deepEqual(new Set([...wallets.json.data, ...second].map(row => row.id)), new Set([fawry.id, legacy.id]));
+      assertStatus(await request(endpoint + '?provider=fawry', { identity: 1 }), 403);
+      assertStatus(await request(endpoint + '?provider=unknown', { identity: 3 }), 422);
+    }
+    assert.deepEqual(assertStatus(await request('/wallets?provider=vodafone_cash', { identity: 3 }), 200)
+      .filter(row => row.id === vodafone.id).map(row => row.id), [vodafone.id]);
+    assert.deepEqual(assertStatus(await request('/wallets?provider=fawry&active=1&wallet_id=' + legacy.id), 200)
+      .map(row => row.id), [legacy.id]);
+    const ledger = '/wallet-transactions?provider=fawry&kind=send';
+    assert.deepEqual(assertStatus(await request(ledger, { identity: 3 }), 200)
+      .map(row => [row.id, row.cash_delta_minor]), [[transfer.id, null]]);
+    assert.deepEqual(assertStatus(await request(ledger + '&wallet_id=' + vodafone.id), 200), []);
+    const csv = await request('/wallet-transactions.csv?provider=fawry&kind=send');
+    assert.equal(csv.status, 200);
+    assert.deepEqual(parse(csv.csv, { bom: true, columns: true }).map(row => row.provider_reference), ['FAWRY-FIXTURE-01']);
+    assertStatus(await request('/wallet-transactions.csv?provider=fawry', { identity: 3 }), 403);
+    const mobile = assertStatus(await request('/wallet-cashier?provider=fawry', { identity: 3, android: true }), 200);
+    assert.deepEqual(new Set(mobile.wallets.map(row => Number(row.id))), new Set([fawry.id, legacy.id]));
+    assert.deepEqual(mobile.transactions.map(row => [row.uuid, row.wallet_provider]), [[String(transfer.id), 'Fawry Pay']]);
+    assertStatus(await request('/wallet-cashier?provider=fawry', { identity: 1, android: true }), 403);
+  });
+
   await t.test('line returns credit linked debt, pay only the remainder and isolate unsellable stock', async () => {
     const product = assertStatus(await post('/products', { name: 'Partial return fixture', price_minor: 2000 }), 201);
     const stock = async () => assertStatus(await request('/products/' + product.id), 200).stock;

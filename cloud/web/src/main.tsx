@@ -21,18 +21,34 @@ import { RetailInstallations } from './RetailInstallations'
 import { RetailLedger } from './RetailLedger'
 import { DataModule, idOf, Notice, PageTitle } from './ui'
 import { WalletLedger } from './WalletOperations'
-import { currentSection, navigationFor } from './navigation'
+import { currentSection, navigationFor, visibleDestination, walletWorkspace } from './navigation'
 import { ReturnLookup, WalletWorkspace } from './Workspaces'
 import './styles.css'
 import './workspace.css'
 
 type Theme = 'light' | 'dark'
+const themeKey = 'hilal-grove-theme'
+const sectionIcons: Record<string, string> = {
+  today: 'M3 3h7v7H3z M14 3h7v7h-7z M3 14h7v7H3z M14 14h7v7h-7z',
+  sales: 'M3 4h18v12H3z M7 8h4m3 0h3M7 20h10m-5-4v4',
+  wallets: 'M4 6h16v13H4z M6 6l12-3v3m2 5h-5a2 2 0 0 0 0 4h5m-4-2h.1',
+  stock: 'm3 7 9-4 9 4-9 4-9-4Zm0 0v10l9 4 9-4V7m-9 4v10',
+  service: 'M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8ZM4 21v-1a8 8 0 0 1 16 0v1',
+  accounts: 'M4 4v16h16M8 16v-4m5 4V8m5 8V5',
+  admin: 'M4 6h16M4 12h16M4 18h16M8 4v4m8 2v4m-6 2v4',
+}
+
+function SectionIcon({ id }: { id: string }) {
+  return <svg className="section-icon" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"
+    fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d={sectionIcons[id]} /></svg>
+}
+
 function startTheme(): Theme {
   try {
-    const stored = localStorage.getItem('henra-theme')
+    const stored = localStorage.getItem(themeKey)
     if (stored === 'dark' || stored === 'light') return stored
-  } catch { /* Follow the system theme when storage is restricted. */ }
-  return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+  } catch { /* Use the default theme when storage is restricted. */ }
+  return 'light'
 }
 
 function ThemeButton({ theme, toggle }: { theme: Theme; toggle: () => void }) {
@@ -145,7 +161,7 @@ function Shell({ user, update, clear, theme, toggle }: {
   const menu = useRef<HTMLButtonElement>(null)
   const groups = navigationFor(user)
   const active = currentSection(location.pathname, groups)
-  const openSection = expanded ?? active?.id ?? 'today'
+  const openSection = expanded ?? (active?.direct ? undefined : active?.id) ?? 'today'
   const shift = useOpenShift(user, location.key)
   const home = '/dashboard'
   const protect = (permission: string, element: ReactNode) => allowed(user, permission) ? element : <Notice error>ليست لديك صلاحية عرض هذه الصفحة.</Notice>
@@ -199,11 +215,15 @@ function Shell({ user, update, clear, theme, toggle }: {
         </Link>
         <button className="sidebar-close" type="button" onClick={() => { setDrawer(false); requestAnimationFrame(() => menu.current?.focus()) }}>إغلاق القائمة</button>
         <nav aria-label="القائمة الرئيسية" className="navigation">
-          {groups.map(group => <section className="nav-group" key={group.id}>
+          {groups.map(group => group.direct ? <NavLink key={group.id} to={group.items[0].path}
+            className={'nav-section nav-section-link' + (active?.id === group.id ? ' current' : '')}
+            onClick={() => finishNavigation(group.items[0].path)} end>
+            <SectionIcon id={group.id} /><span>{group.title}</span>
+          </NavLink> : <section className="nav-group" key={group.id}>
             <h2><button className={'nav-section' + (active?.id === group.id ? ' current' : '')} type="button"
               aria-controls={'nav-' + group.id} aria-expanded={openSection === group.id}
               onClick={() => { setCompact(false); setExpanded(openSection === group.id ? '' : group.id) }}>
-              <span>{group.title}</span><span aria-hidden="true">{openSection === group.id ? '−' : '+'}</span>
+              <span className="nav-section-label"><SectionIcon id={group.id} />{group.title}</span><span aria-hidden="true">{openSection === group.id ? '−' : '+'}</span>
             </button></h2>
             <div id={'nav-' + group.id} hidden={openSection !== group.id}>
               {group.items.map(item => <NavLink key={item.path} className="nav-link" to={item.path}
@@ -232,8 +252,8 @@ function Shell({ user, update, clear, theme, toggle }: {
         </header>
         {shift.canOperate && <div className="work-context" aria-label="الفرع والوردية">
           {shift.shift ? <>
-            <span>الفرع <strong>{shift.shift.branch_name ?? '—'}</strong></span>
-            <span>الدرج <strong>{shift.shift.register_name}</strong></span>
+            <span className="context-item">الفرع <strong>{shift.shift.branch_name ?? '—'}</strong></span>
+            <span className="context-item">الدرج <strong>{shift.shift.register_name}</strong></span>
             <Link className="shift-indicator" to="/retail-shifts">وردية مفتوحة</Link>
           </> : shift.loading ? <span role="status">جارٍ التحقق من الوردية…</span>
             : <Link className="shift-indicator" to="/retail-shifts">{shift.error ? 'تحقق من الوردية' : 'افتح وردية'}</Link>}
@@ -269,7 +289,7 @@ function Shell({ user, update, clear, theme, toggle }: {
             <Route path="/retail-finance" element={protect('reports.view', <RetailFinance user={user} />)} />
             <Route path="/retail-ledger" element={protect('retail.ledger.view', <RetailLedger user={user} />)} />
             <Route path="/wallet-report" element={protect('wallets.cash', <WalletReport user={user} />)} />
-            <Route path="/wallet-workspace" element={['wallets.view', 'wallets.cash'].some(permission => allowed(user, permission)) ? <WalletWorkspace user={user} /> : <Notice error>ليست لديك صلاحية عرض المحافظ.</Notice>} />
+            <Route path={walletWorkspace.path} element={visibleDestination(user, walletWorkspace) ? <WalletWorkspace user={user} /> : <Notice error>ليست لديك صلاحية عرض المحافظ.</Notice>} />
             <Route path="/wallet-reconciliation" element={protect('wallets.cash', <WalletReconciliation />)} />
             <Route path="/wallet-cashier" element={protect('wallets.view', <WalletCashier user={user} />)} />
             <Route path="/customers/:id/ledger" element={protect('customers.view', <CustomerLedger key={location.pathname} />)} />
@@ -299,7 +319,7 @@ function App() {
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme
-    try { localStorage.setItem('henra-theme', theme) } catch { /* Theme is still applied for this page. */ }
+    try { localStorage.setItem(themeKey, theme) } catch { /* Theme is still applied for this page. */ }
   }, [theme])
   useEffect(() => {
     const controller = new AbortController()

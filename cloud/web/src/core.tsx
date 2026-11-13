@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import type { FormEvent } from 'react'
+import type { CSSProperties, FormEvent } from 'react'
 import { Link } from 'react-router-dom'
 import { allowed, apiUrl, decimal, formatDate, integer, money, request } from './api'
 import { RetailQuantityCost } from './RetailQuantityCost'
@@ -282,12 +282,55 @@ const dashboardMetrics = [
   ['wallets', 'المحافظ', integer], ['wallet_balance_minor', 'رصيد المحافظ', money], ['maintenance', 'طلبات الصيانة', integer],
 ] as const
 
+const cairoDay = new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Cairo', year: 'numeric', month: '2-digit', day: '2-digit' })
+const weekLabel = new Intl.DateTimeFormat('ar-EG', { weekday: 'short', timeZone: 'UTC' })
+type SalesDay = { day: string; net_minor: number }
+
+function SalesWeek() {
+  const [days, setDays] = useState<SalesDay[]>()
+  const [error, setError] = useState(false)
+  useEffect(() => {
+    const parts = cairoDay.formatToParts(new Date())
+    const today = ['year', 'month', 'day'].map(key => parts.find(part => part.type === key)?.value).join('-')
+    const dates = Array.from({ length: 7 }, (_, index) => new Date(Date.parse(today) - (6 - index) * 86400000).toISOString().slice(0, 10))
+    const query = new URLSearchParams({ from: dates[0], to: today })
+    const abort = new AbortController()
+    request<{ days: SalesDay[] }>('/reports/sales?' + query, { signal: abort.signal }).then(({ data }) => {
+      if (abort.signal.aborted) return
+      const byDay = new Map(data.days.map(day => [day.day, day.net_minor]))
+      setDays(dates.map(day => ({ day, net_minor: byDay.get(day) ?? 0 })))
+    }).catch(() => { if (!abort.signal.aborted) setError(true) })
+    return () => abort.abort()
+  }, [])
+  const values = (days ?? []).map(day => day.net_minor)
+  const maxPositive = Math.max(0, ...values)
+  const maxNegative = Math.max(0, ...values.map(value => -value))
+  const domain = Math.max(1, maxPositive + maxNegative)
+  return <section className="dashboard-section dashboard-chart panel" aria-labelledby="weekly-sales">
+    <div className="dashboard-chart-heading"><h2 id="weekly-sales">صافي المبيعات خلال ٧ أيام</h2><Link to="/reports">تقرير المبيعات</Link></div>
+    {error ? <p className="muted">تعذّر تحميل المبيعات الأسبوعية.</p> : !days ? <p role="status" className="muted">جارٍ تحميل المبيعات…</p> :
+      <ol className="dashboard-bars" style={{
+        '--positive-share': 100 - maxNegative / domain * 100 + '%',
+        '--negative-share': maxNegative / domain * 100 + '%',
+      } as CSSProperties}>
+        {days.map(({ day, net_minor }) => <li key={day} className={'dashboard-bar' + (net_minor < 0 ? ' negative' : '')}>
+          <span className="dashboard-bar-value"><bdi>{money(net_minor)}</bdi></span>
+          <span aria-hidden="true" className="dashboard-bar-track">
+            <span className="dashboard-bar-fill" style={{ '--bar-size': Math.abs(net_minor) / domain * 100 + '%' } as CSSProperties} />
+          </span>
+          <time className="dashboard-bar-label" dateTime={day}>{weekLabel.format(new Date(day))}</time>
+        </li>)}
+      </ol>}
+  </section>
+}
+
 export function Dashboard({ user }: { user: User }) {
   const [metrics, setMetrics] = useState<Row>()
   const [error, setError] = useState('')
   const [pendingShifts, setPendingShifts] = useState<number>()
   const work = workFor(user)
   const canReviewShifts = allowed(user, 'retail.shifts.approve')
+  const canSeeReports = allowed(user, 'reports.view')
   useEffect(() => {
     const controller = new AbortController()
     request<Row>('/dashboard', { signal: controller.signal })
@@ -319,12 +362,6 @@ export function Dashboard({ user }: { user: User }) {
           <strong>{item.path === '/retail-shifts' && !work.manager ? 'ورديتي' : item.label}</strong>
         </Link>)}
       </nav>}
-      {review.length > 0 && <section className="dashboard-section panel section-space">
-        <h2>{work.manager ? 'يحتاج مراجعتك' : 'تنبيهات المخزون'}</h2>
-        <ul className="worklist">{review.map(item => <li key={item.path}>
-          <Link to={item.path}>{item.label}</Link>{item.count !== undefined && <span className="status-pill">{integer(item.count)}</span>}
-        </li>)}</ul>
-      </section>}
       {error ? <Notice error>{error}</Notice> : !metrics ? <Notice>جارٍ تحميل مؤشرات المتجر…</Notice> : (
         <>
           <div className="metric-grid section-space" aria-label="مؤشرات المتجر">
@@ -335,6 +372,15 @@ export function Dashboard({ user }: { user: User }) {
           {!shown.length && <Notice>لا تتوفر مؤشرات ضمن صلاحيات حسابك.</Notice>}
         </>
       )}
+      {(canSeeReports || review.length > 0) && <div className={'dashboard-sections' + (canSeeReports && review.length ? '' : ' single')}>
+        {canSeeReports && <SalesWeek />}
+        {review.length > 0 && <section className="dashboard-section panel">
+          <h2>{work.manager ? 'يحتاج مراجعتك' : 'تنبيهات المخزون'}</h2>
+          <ul className="worklist">{review.map(item => <li key={item.path}>
+            <Link to={item.path}>{item.label}</Link>{item.count !== undefined && <span className="status-pill">{integer(item.count)}</span>}
+          </li>)}</ul>
+        </section>}
+      </div>}
     </>
   )
 }
