@@ -4,9 +4,10 @@ import { createRoot } from 'react-dom/client'
 import { BrowserRouter, Link, NavLink, Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import { allowed, apiUrl, RequestError, request } from './api'
 import type { User } from './api'
-import { businessModules, CommerceModule, InvoiceDetail, Pos, SalesReport, WalletReport } from './commerce'
+import { businessModules, CommerceModule, DamageReport, InvoiceDetail, Pos, SalesReport, WalletReport } from './commerce'
 import { coreModules, Dashboard, Notifications, Products, Profile, Roles, Settings, Staff } from './core'
-import { DataModule, Notice, PageTitle } from './ui'
+import { CustomerLedger, DamageDetail, PurchaseReceipts, SupplierDetail, WalletCashier } from './detail'
+import { DataModule, idOf, Notice, PageTitle } from './ui'
 import './styles.css'
 
 type Theme = 'light' | 'dark'
@@ -33,6 +34,7 @@ const navGroups: { title: string; items: NavigationItem[] }[] = [
     { path: '/purchases', label: 'المشتريات', permission: 'suppliers.view' },
     { path: '/supplier-report', label: 'أرصدة الموردين', permission: 'suppliers.view' },
     { path: '/wallets', label: 'المحافظ', permission: 'wallets.view' },
+    { path: '/wallet-cashier', label: 'كاشير المحافظ', permission: 'wallets.view' },
     { path: '/wallet-transactions', label: 'حركات المحافظ', permission: 'wallets.view' },
     { path: '/wallet-debts', label: 'ديون المحافظ', permission: 'wallets.view' },
     { path: '/wallet-cash', label: 'حركات نقدية المحافظ', permission: 'wallets.cash' },
@@ -86,9 +88,9 @@ function Login({ onLogin, theme, toggle, startupError }: {
 
   return (
     <main className="login-screen">
-      <section className="login-brand" aria-label="هينرا">
-        <span className="brand-mark" aria-hidden="true">H</span>
-        <h1>هينرا لإدارة المتجر</h1>
+      <section className="login-brand" aria-label="هلال">
+        <span className="brand-mark" aria-hidden="true">ه</span>
+        <h1>هلال لإدارة المتجر</h1>
         <p>المبيعات والمخزون وحسابات المتجر.</p>
       </section>
       <section className="login-content">
@@ -98,7 +100,7 @@ function Login({ onLogin, theme, toggle, startupError }: {
           <label className="field">البريد الإلكتروني
             <input name="email" type="email" autoComplete="username" required />
           </label>
-          <label className="field">كلمة المرور
+          <label className="field">كلمة المرور أو مفتاح الدخول
             <input name="password" type="password" autoComplete="current-password" required />
           </label>
           {error && <Notice error>{error}</Notice>}
@@ -125,7 +127,7 @@ function Backup() {
       const url = URL.createObjectURL(await response.blob())
       const link = document.createElement('a')
       link.href = url
-      link.download = 'henra-catalog.csv'
+      link.download = 'hilal-catalog.csv'
       link.click()
       setTimeout(() => URL.revokeObjectURL(url), 1000)
     } catch (error) { setError(error instanceof Error ? error.message : 'تعذر الاتصال بالخادم.') }
@@ -189,7 +191,7 @@ function Shell({ user, update, clear, theme, toggle }: {
         onClick={() => { setDrawer(false); menu.current?.focus() }} />}
       <aside className={'sidebar' + (drawer ? ' open' : '')} id="sidebar" ref={sidebar}>
         <Link className="brand" to={home} onClick={() => setDrawer(false)}>
-          <span className="brand-mark" aria-hidden="true">H</span><span><strong>هينرا</strong><small>إدارة المتجر</small></span>
+          <span className="brand-mark" aria-hidden="true">ه</span><span><strong>هلال</strong><small>إدارة المتجر</small></span>
         </Link>
         <nav aria-label="القائمة الرئيسية" className="navigation">
           {groups.map(group => <section className="nav-group" key={group.title}>
@@ -221,14 +223,21 @@ function Shell({ user, update, clear, theme, toggle }: {
             <Route path="/dashboard" element={<Dashboard user={user} />} />
             <Route path="/products" element={<Products user={user} />} />
             {Object.entries(coreModules).filter(([name]) => !['products', 'staff', 'notifications'].includes(name)).map(([name, config]) => (
-              <Route key={name} path={'/' + name} element={<DataModule key={name} user={user} config={config} />} />
+              <Route key={name} path={'/' + name} element={<DataModule key={name} user={user} config={config} rowActions={name === 'customers' ? row =>
+                <Link className="link-button" to={'/customers/' + idOf(row) + '/ledger'}>دفتر العميل</Link> : undefined} />} />
             ))}
             {Object.keys(businessModules).map(name => <Route key={name} path={'/' + name} element={<CommerceModule name={name} user={user} />} />)}
             <Route path="/pos" element={<Pos key="sale" user={user} />} />
             <Route path="/pos/reissue/:invoiceId" element={<Pos key="reissue" user={user} />} />
             <Route path="/invoices/:id" element={protect('invoices.view', <InvoiceDetail user={user} />)} />
             <Route path="/reports" element={protect('reports.view', <SalesReport />)} />
-            <Route path="/wallet-report" element={protect('wallets.cash', <WalletReport />)} />
+            <Route path="/wallet-report" element={protect('wallets.cash', <WalletReport user={user} />)} />
+            <Route path="/wallet-cashier" element={protect('wallets.view', <WalletCashier user={user} />)} />
+            <Route path="/customers/:id/ledger" element={protect('customers.view', <CustomerLedger key={location.pathname} />)} />
+            <Route path="/suppliers/:id" element={protect('suppliers.view', <SupplierDetail user={user} />)} />
+            <Route path="/purchases/:id/receipts" element={protect('suppliers.view', <PurchaseReceipts user={user} />)} />
+            <Route path="/damaged/:id" element={protect('damaged.view', <DamageDetail />)} />
+            <Route path="/damage-report" element={protect('damaged.view', <DamageReport />)} />
             <Route path="/staff" element={<Staff user={user} />} />
             <Route path="/notifications" element={<Notifications user={user} />} />
             <Route path="/roles" element={<Roles user={user} />} />

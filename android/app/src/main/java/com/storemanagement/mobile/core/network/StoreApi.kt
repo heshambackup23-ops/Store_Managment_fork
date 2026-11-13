@@ -102,6 +102,10 @@ interface StoreApi {
         @Body body: ProductInputDto,
     ): ApiEnvelope<ProductDto>
 
+    @Streaming
+    @GET("v1/products/{product}/image")
+    suspend fun productImage(@Path("product") id: Long): ResponseBody
+
     @Multipart
     @POST("v1/products/{product}/image")
     suspend fun updateProductImage(

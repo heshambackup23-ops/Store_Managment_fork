@@ -3,7 +3,7 @@ import type { FormEvent } from 'react'
 import { Link } from 'react-router-dom'
 import { allowed, apiUrl, decimal, formatDate, integer, money, request } from './api'
 import type { User } from './api'
-import { DataModule, idOf, Modal, Notice, PageTitle } from './ui'
+import { AccessKeyDialog, DataModule, idOf, Modal, Notice, PageTitle } from './ui'
 import type { Action, Column, Field, ModuleConfig, Row } from './ui'
 
 export const required = (name: string, label: string, kind: Field['kind'] = 'text'): Field => ({ name, label, kind, required: true })
@@ -74,8 +74,12 @@ export const coreModules: Record<string, ModuleConfig> = {
   },
   staff: {
     title: 'الموظفون', description: 'حسابات الموظفين والأدوار وحالة الوصول.', endpoint: '/staff', permission: 'staff.view',
-    columns: [numberColumn, { key: 'name', label: 'الموظف' }, { key: 'email', label: 'البريد الإلكتروني' }, { key: 'role', label: 'الدور' }, activeColumn],
-    create: createAction('إضافة موظف', '/staff', 'staff.create', [...staffFields, required('password', 'كلمة المرور الأولية', 'password')]),
+    columns: [numberColumn, { key: 'name', label: 'الموظف' }, { key: 'email', label: 'البريد الإلكتروني' }, { key: 'role', label: 'الدور' },
+      { key: 'credential_mode', label: 'الدخول', render: row => row.credential_mode === 'access_key' ? 'مفتاح دخول' : 'كلمة مرور' }, activeColumn],
+    create: createAction('إضافة موظف', '/staff', 'staff.create', [...staffFields, {
+      name: 'credential_mode', label: 'طريقة الدخول', kind: 'select', initial: 'password', required: true,
+      options: [{ value: 'password', label: 'كلمة مرور' }, { value: 'access_key', label: 'مفتاح دخول مولّد' }],
+    }, { ...required('password', 'كلمة المرور الأولية', 'password'), visible: values => values.credential_mode !== 'access_key' }]),
     actions: [editAction('/staff', 'staff.update', staffFields)],
   },
   notifications: {
@@ -91,14 +95,17 @@ export const coreModules: Record<string, ModuleConfig> = {
   },
 }
 
-function ProductImageDialog({ row, close, done }: { row: Row; close: () => void; done: () => void }) {
+export function RecordImageDialog({ row, collection, title, maxBytes, close, done }: {
+  row: Row; collection: string; title: string; maxBytes?: number; close: () => void; done: () => void
+}) {
   const [file, setFile] = useState<File>()
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
-  const endpoint = '/products/' + idOf(row) + '/image'
+  const endpoint = collection + '/' + idOf(row) + '/image'
 
   async function save(remove = false) {
     if (busy || (!remove && !file)) return
+    if (!remove && maxBytes && file && file.size > maxBytes) { setError('حجم الصورة يتجاوز الحد المسموح.'); return }
     setBusy(true)
     setError('')
     try {
@@ -110,12 +117,13 @@ function ProductImageDialog({ row, close, done }: { row: Row; close: () => void;
   }
 
   return (
-    <Modal title="صورة المنتج" close={() => { if (!busy) close() }}>
+    <Modal title={title} close={() => { if (!busy) close() }}>
       <form className="modal-form" onSubmit={event => { event.preventDefault(); void save() }}>
-        {Boolean(row.has_image) && <img className="product-image" src={apiUrl(endpoint)} alt={String(row.name || 'صورة المنتج')} />}
+        {Boolean(row.has_image) && <img className="product-image" src={apiUrl(endpoint)} alt={String(row.name || title)} />}
         <label className="field">ملف الصورة
-          <input type="file" accept="image/png,image/jpeg,image/webp" required onChange={event => setFile(event.target.files?.[0])} />
+          <input type="file" accept="image/png,image/jpeg,image/webp" required disabled={busy} onChange={event => setFile(event.target.files?.[0])} />
         </label>
+        {maxBytes && <small>الحد الأقصى {integer(maxBytes / 1024)} كيلوبايت.</small>}
         {error && <Notice error>{error}</Notice>}
         <div className="form-actions">
           <button className="primary" disabled={busy || !file}>حفظ الصورة</button>
@@ -162,7 +170,7 @@ export function Products({ user }: { user: User }) {
           {Boolean(row.barcode) && <button className="link-button" onClick={() => setLabel(row)}>الملصق</button>}
         </>
       )} />
-      {image && <ProductImageDialog row={image} close={() => setImage(undefined)} done={() => { setImage(undefined); setVersion(current => current + 1) }} />}
+      {image && <RecordImageDialog row={image} collection="/products" title="صورة المنتج" close={() => setImage(undefined)} done={() => { setImage(undefined); setVersion(current => current + 1) }} />}
       {label && <ProductLabel row={label} close={() => setLabel(undefined)} />}
     </>
   )
@@ -323,6 +331,27 @@ export function Profile({ user, update }: { user: User; update: (user: User) => 
   const [passwordFeedback, setPasswordFeedback] = useState<{ message: string; error?: boolean }>()
   const [savingProfile, setSavingProfile] = useState(false)
   const [savingPassword, setSavingPassword] = useState(false)
+  const [accessKey, setAccessKey] = useState('')
+  const [keyFeedback, setKeyFeedback] = useState('')
+  const [issuingKey, setIssuingKey] = useState(false)
+
+  async function issueKey(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (issuingKey) return
+    const form = event.currentTarget
+    const currentPassword = new FormData(form).get('current_password')
+    setIssuingKey(true)
+    setKeyFeedback('')
+    try {
+      const result = await request<{ access_key: string }>('/profile/access-key', {
+        method: 'POST', body: { current_password: currentPassword },
+      })
+      form.reset()
+      setAccessKey(result.data.access_key)
+      update({ ...user, credential_mode: 'access_key' })
+    } catch (error) { setKeyFeedback(error instanceof Error ? error.message : 'تعذر إصدار المفتاح.') }
+    finally { setIssuingKey(false) }
+  }
 
   async function submitName(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -357,6 +386,7 @@ export function Profile({ user, update }: { user: User; update: (user: User) => 
     try {
       await request('/profile/password', { method: 'POST', body: { current_password: data.get('current_password'), new_password: data.get('new_password') } })
       form.reset()
+      update({ ...user, credential_mode: 'password' })
       setPasswordFeedback({ message: 'تم تغيير كلمة المرور.' })
     } catch (error) { setPasswordFeedback({ error: true, message: error instanceof Error ? error.message : 'تعذر تغيير كلمة المرور.' }) }
     finally { setSavingPassword(false) }
@@ -370,20 +400,31 @@ export function Profile({ user, update }: { user: User; update: (user: User) => 
         <label className="field">الاسم <input required autoComplete="name" value={name} onChange={event => setName(event.target.value)} /></label>
         <label className="field">البريد الإلكتروني <input required type="email" autoComplete="email" value={email}
           onChange={event => setEmail(event.target.value)} /></label>
-        {emailChanged && <label className="field">أدخل كلمة المرور الحالية لتغيير البريد الإلكتروني
+        {emailChanged && <label className="field">أدخل كلمة المرور أو مفتاح الدخول الحالي لتغيير البريد الإلكتروني
           <input required name="current_password" type="password" autoComplete="current-password" />
         </label>}
         {profileFeedback && <Notice error={profileFeedback.error}>{profileFeedback.message}</Notice>}
         <div className="form-actions"><button className="primary" disabled={savingProfile}>حفظ بيانات الحساب</button></div>
       </form>
-      <form className="form-card panel" onSubmit={submitPassword}>
-        <h2>تغيير كلمة المرور</h2>
-        <label className="field">كلمة المرور الحالية <input name="current_password" type="password" autoComplete="current-password" required /></label>
+      <form className="form-card panel section-space" onSubmit={submitPassword}>
+        <h2>تعيين كلمة مرور</h2>
+        <label className="field">كلمة المرور أو مفتاح الدخول الحالي <input name="current_password" type="password" autoComplete="current-password" required /></label>
         <label className="field">كلمة المرور الجديدة <input name="new_password" type="password" autoComplete="new-password" required /></label>
         <label className="field">تأكيد كلمة المرور الجديدة <input name="confirmation" type="password" autoComplete="new-password" required /></label>
         {passwordFeedback && <Notice error={passwordFeedback.error}>{passwordFeedback.message}</Notice>}
         <div className="form-actions"><button className="primary" disabled={savingPassword}>تغيير كلمة المرور</button></div>
       </form>
+      <form className="form-card panel" onSubmit={issueKey}>
+        <h2>مفتاح الدخول</h2>
+        <p className="muted">طريقة الدخول الحالية {user.credential_mode === 'access_key' ? 'بمفتاح دخول' : 'بكلمة مرور'}.</p>
+        <p className="muted">يستبدل المفتاح الجديد بيانات الدخول الحالية وينهي الجلسات الأخرى.</p>
+        <label className="field">كلمة المرور أو مفتاح الدخول الحالي
+          <input name="current_password" type="password" autoComplete="current-password" required />
+        </label>
+        {keyFeedback && <Notice error>{keyFeedback}</Notice>}
+        <div className="form-actions"><button className="secondary" disabled={issuingKey}>إصدار مفتاح دخول</button></div>
+      </form>
+      {accessKey && <AccessKeyDialog accessKey={accessKey} close={() => setAccessKey('')} />}
     </>
   )
 }
@@ -400,6 +441,12 @@ export function Staff({ user }: { user: User }) {
         endpoint: row => '/staff/' + idOf(row) + '/password',
         fields: [required('password', 'كلمة المرور الجديدة', 'password')],
         confirmation: 'ستنتهي الجلسات المفتوحة لهذا الموظف.',
+      },
+      {
+        label: 'إصدار مفتاح دخول', permission: 'staff.reset_password',
+        endpoint: row => '/staff/' + idOf(row) + '/access-key',
+        confirmation: 'يستبدل المفتاح الجديد بيانات دخول الموظف وينهي جلساته.',
+        visible: row => row.id !== user.id,
       },
     ] : [],
   }

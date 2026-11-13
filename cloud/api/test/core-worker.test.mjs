@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { mkdtemp, readFile, rmdir, unlink } from 'node:fs/promises'
+import { mkdtemp, readFile, readdir, rmdir, unlink } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { test } from 'node:test'
+import { DatabaseSync } from 'node:sqlite'
 import { build } from 'esbuild'
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare'
 import { unstable_splitSqlQuery } from 'wrangler'
@@ -18,6 +19,24 @@ const env = {
   STORE_USER_PASSWORD: 'local admin password for tests',
 }
 const appPath = fileURLToPath(new URL('../src/index.ts', import.meta.url))
+
+test('Hilal migration preserves custom settings and defaults future inserts to Hilal', async () => {
+  const db = new DatabaseSync(':memory:')
+  try {
+    db.exec(await readFile(new URL('../migrations/0001_core.sql', import.meta.url), 'utf8'))
+    db.exec(`UPDATE settings SET store_name = 'متجر محلي', store_phone = '01000000000',
+      receipt_footer = 'شكرًا', updated_at = '2026-11-11T00:00:00.000Z' WHERE id = 1`)
+    db.exec(await readFile(new URL('../migrations/0004_hilal_default_settings.sql', import.meta.url), 'utf8'))
+    const settings = db.prepare('SELECT store_name, store_phone, receipt_footer, updated_at FROM settings').get()
+    assert.deepEqual({ ...settings }, {
+      store_name: 'متجر محلي', store_phone: '01000000000', receipt_footer: 'شكرًا', updated_at: '2026-11-11T00:00:00.000Z',
+    })
+    db.exec('DELETE FROM settings WHERE id = 1; INSERT INTO settings (id) VALUES (1)')
+    assert.equal(db.prepare('SELECT store_name FROM settings WHERE id = 1').get().store_name, 'هلال لإدارة المتجر')
+  } finally {
+    db.close()
+  }
+})
 
 test('Worker core runs against isolated D1 with real sessions, permissions and catalog storage', async (t) => {
   const app = await build({ entryPoints: [appPath], bundle: true, write: false, format: 'esm', target: 'es2022' })
@@ -34,14 +53,18 @@ test('Worker core runs against isolated D1 with real sessions, permissions and c
   async function runSql(sql) {
     await db.batch(unstable_splitSqlQuery(sql).map((statement) => db.prepare(statement)))
   }
-  for (const migration of ['0001_core.sql', '0002_business.sql']) {
+  for (const migration of (await readdir(new URL('../migrations/', import.meta.url))).filter((file) => file.endsWith('.sql')).sort()) {
     await runSql(await readFile(new URL('../migrations/' + migration, import.meta.url), 'utf8'))
   }
 
   const folder = await mkdtemp(join(tmpdir(), 'henra-store-core-test-'))
   const provisioned = join(folder, 'admin.generated.sql')
+  const keyProvisioned = join(folder, 'key-admin.generated.sql')
+  const generatedKeyFile = join(folder, 'admin.generated.key')
   t.after(async () => {
-    await unlink(provisioned).catch((error) => { if (error.code !== 'ENOENT') throw error })
+    for (const file of [provisioned, keyProvisioned, generatedKeyFile]) {
+      await unlink(file).catch((error) => { if (error.code !== 'ENOENT') throw error })
+    }
     await rmdir(folder)
   })
   execFileSync(process.execPath, [fileURLToPath(new URL('../scripts/provision-user.mjs', import.meta.url)), provisioned], {
@@ -138,6 +161,7 @@ test('Worker core runs against isolated D1 with real sessions, permissions and c
     assert.equal(product.data.stock, 0)
     assert.equal(product.data.category_name, 'تصنيف تجريبي')
     assert.equal(product.data.price, '110.01')
+    assert.equal(product.data.image_url, null)
     assert.deepEqual(product.data.category, { id: categoryId, name: 'تصنيف تجريبي' })
     assert.equal((await request('/products?q=منتج', 'GET', undefined, staffToken)).data[0].id, productId)
     assert.equal((await request('/customers/' + customerId, 'GET', undefined, staffToken)).data.address, 'عنوان افتراضي')
@@ -147,7 +171,11 @@ test('Worker core runs against isolated D1 with real sessions, permissions and c
     const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAACklEQVR4nGNgAAAAAgABSK+kcQAAAABJRU5ErkJggg==', 'base64')
     const upload = await raw('/api/v1/products/' + productId + '/image', 'PUT', png, token)
     assert.equal(upload.status, 200, await upload.text())
-    const image = await raw('/api/v1/products/' + productId + '/image', 'GET', undefined, staffToken)
+    const withImage = await request('/products/' + productId, 'GET', undefined, staffToken)
+    const imagePath = '/api/v1/products/' + productId + '/image'
+    assert.equal(withImage.data.image_url, imagePath)
+    assert.equal((await raw(imagePath)).status, 401)
+    const image = await raw(imagePath, 'GET', undefined, staffToken)
     assert.equal(image.headers.get('Content-Type'), 'image/png')
     assert.deepEqual(Buffer.from(await image.arrayBuffer()), png)
     const counts = await db.prepare('SELECT count(*) AS count FROM audit_logs WHERE entity_type = ? AND entity_id = ?')
@@ -198,6 +226,91 @@ test('Worker core runs against isolated D1 with real sessions, permissions and c
     const payload = { email: 'absent@store.example.test', password: 'wrong-password' }
     for (let attempt = 0; attempt < 10; attempt++) await request('/auth/login', 'POST', payload, undefined, 401)
     await request('/auth/login', 'POST', payload, undefined, 429)
+  })
+
+  await t.test('customer ledger shows only visible domains and counts a linked installment once', async () => {
+    await runSql(`
+      INSERT INTO invoices (id, customer_id, total_minor, paid_minor, actor_id) VALUES (200, ${customerId}, 55000, 10000, 1);
+      INSERT INTO installments (customer_id, invoice_id, principal_minor, due_date, actor_id)
+        VALUES (${customerId}, 200, 45000, '2027-01-01', 1);
+      INSERT INTO personal_debts (customer_id, person_name, principal_minor, direction, actor_id)
+        VALUES (${customerId}, 'Test customer', 2700, 'receivable', 1);
+    `)
+    const ledger = await request('/customers/' + customerId + '/ledger?per_page=2', 'GET', undefined, token)
+    assert.equal(ledger.data.balances.invoices_due_minor, 0)
+    assert.equal(ledger.data.balances.installments_due_minor, 45000)
+    assert.equal(ledger.data.balances.personal_receivables_minor, 2700)
+    assert.equal(ledger.meta.total, 3)
+    assert.equal(ledger.meta.last_page, 2)
+    assert.equal(ledger.data.entries.length, 2)
+
+    await request('/staff/' + staffId, 'PATCH', { active: true }, token)
+    const response = await raw('/api/v1/auth/token', 'POST', {
+      username: staff.username, password: staff.password, device_name: 'ledger test',
+    })
+    assert.equal(response.status, 201)
+    const scopedToken = (await response.json()).data.access_token
+    const empty = await request('/customers/' + customerId + '/ledger', 'GET', undefined, scopedToken)
+    assert.deepEqual(empty.data.balances, {})
+    assert.deepEqual(empty.data.entries, [])
+    await request('/roles/' + roleId, 'PATCH', { name: 'Test cashier', permissions: ['customers.view', 'invoices.view'] }, token)
+    const scoped = await request('/customers/' + customerId + '/ledger', 'GET', undefined, scopedToken)
+    assert.deepEqual(scoped.data.balances, { invoices_due_minor: 45000 })
+    assert.deepEqual(scoped.data.entries.map(({ kind }) => kind), ['invoice'])
+    await request('/customers/999999/ledger', 'GET', undefined, scopedToken, 404)
+    await request('/roles/' + roleId, 'PATCH', { name: 'Test cashier', permissions: ['invoices.view'] }, token)
+    await request('/customers/' + customerId + '/ledger', 'GET', undefined, scopedToken, 403)
+  })
+
+  await t.test('generated access keys support staff provisioning, rotation, browser and mobile sign-in', async () => {
+    const created = await request('/staff', 'POST', {
+      name: 'Access-key cashier', role_id: roleId, email: 'key@store.example.test',
+      username: 'cashier-key', credential_mode: 'access_key',
+    }, token, 201)
+    const key = created.data.access_key
+    assert.match(key, /^hilal-ak1_[A-Za-z0-9_-]{43}$/)
+    assert.equal(created.data.credential_mode, 'access_key')
+    const stored = await db.prepare('SELECT password_hash FROM users WHERE id = ?').bind(created.data.id).first()
+    assert.match(stored.password_hash, /^hmac-sha256\$1\$/)
+    assert.ok(!stored.password_hash.includes(key))
+    const credentials = { username: 'cashier-key', password: key, device_name: 'key test' }
+    const native = await raw('/api/v1/auth/token', 'POST', credentials)
+    assert.equal(native.status, 201)
+    const previous = (await native.json()).data.access_token
+    const login = await request('/auth/login', 'POST', { email: 'key@store.example.test', password: key })
+    assert.equal(login.data.user.credential_mode, 'access_key')
+    await request('/staff/' + created.data.id + '/access-key', 'POST', undefined, previous, 403)
+    const rotated = await request('/staff/' + created.data.id + '/access-key', 'POST', undefined, token)
+    assert.notEqual(rotated.data.access_key, key)
+    await request('/auth/me', 'GET', undefined, previous, 401)
+    assert.equal((await raw('/api/v1/auth/token', 'POST', credentials)).status, 401)
+    const nativeAfter = await raw('/api/v1/auth/token', 'POST', { ...credentials, password: rotated.data.access_key })
+    assert.equal(nativeAfter.status, 201)
+    const nativeAfterToken = (await nativeAfter.json()).data.access_token
+    const self = await request('/profile/access-key', 'POST', { current_password: rotated.data.access_key }, nativeAfterToken)
+    assert.match(self.data.access_key, /^hilal-ak1_[A-Za-z0-9_-]{43}$/)
+    assert.notEqual(self.data.access_key, rotated.data.access_key)
+    await request('/auth/me', 'GET', undefined, nativeAfterToken)
+    assert.equal((await raw('/api/v1/auth/token', 'POST', { ...credentials, password: rotated.data.access_key })).status, 401)
+    const list = await request('/staff', 'GET', undefined, token)
+    assert.equal(list.data.find(({ id }) => id === created.data.id).access_key, undefined)
+  })
+
+  await t.test('settings use Hilal default and CLI can provision an access key without emitting the secret', async () => {
+    const settings = await request('/settings', 'GET', undefined, token)
+    assert.equal(settings.data.store_name, 'هلال لإدارة المتجر')
+    const script = fileURLToPath(new URL('../scripts/provision-user.mjs', import.meta.url))
+    const output = execFileSync(process.execPath, [script, keyProvisioned, '--access-key-file', generatedKeyFile], {
+      env: { ...process.env, ...env, STORE_USER_EMAIL: 'keyadmin@store.example.test', STORE_USER_USERNAME: 'keyadmin', STORE_USER_PASSWORD: '' },
+      encoding: 'utf8',
+    })
+    const key = (await readFile(generatedKeyFile, 'utf8')).trim()
+    const sql = await readFile(keyProvisioned, 'utf8')
+    assert.match(key, /^hilal-ak1_[A-Za-z0-9_-]{43}$/)
+    assert.ok(!output.includes(key))
+    assert.ok(!sql.includes(key))
+    await runSql(sql)
+    await request('/auth/login', 'POST', { email: 'keyadmin@store.example.test', password: key })
   })
 
   await t.test('logout invalidates the corresponding opaque session', async () => {

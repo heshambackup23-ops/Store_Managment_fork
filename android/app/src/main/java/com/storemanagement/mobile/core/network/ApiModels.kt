@@ -132,6 +132,7 @@ data class ProductInputDto(
     val barcode: String? = null,
     val stock: Int,
     @SerialName("category_id") val categoryId: Long? = null,
+    @SerialName("expected_stock") val expectedStock: Int? = null,
 )
 
 @Serializable

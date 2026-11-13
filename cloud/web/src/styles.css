@@ -324,3 +324,5 @@
 
 .invoice-filter { display: flex; flex-wrap: wrap; align-items: flex-end; gap: .8rem; }
 .invoice-filter label { flex: 1 1 10rem; }
+
+.reference-field { display: grid; gap: .35rem; }

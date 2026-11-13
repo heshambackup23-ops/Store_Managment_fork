@@ -68,11 +68,12 @@ dashboard.get('/dashboard', async (c) => {
   }
   if (hasPermission(user, 'debts.view')) {
     queries.push(db.prepare(`SELECT CAST(coalesce(sum(principal_minor - paid_minor), 0) AS TEXT)
-      AS personal_debt_minor FROM personal_debts WHERE direction = 'receivable'`))
+      AS personal_debt_minor FROM personal_debts d WHERE direction = 'receivable'
+        AND NOT EXISTS (SELECT 1 FROM debt_voids WHERE debt_id = d.id)`))
   }
   if (hasPermission(user, 'maintenance.view')) {
     queries.push(db.prepare(`SELECT count(*) AS maintenance FROM maintenance_requests
-      WHERE status IN ('received', 'in_progress', 'completed')`))
+      WHERE archived_at IS NULL AND status IN ('received', 'in_progress', 'completed')`))
   }
   if (queries.length === 0) return ok(c, {})
   const rows = await db.batch(queries)

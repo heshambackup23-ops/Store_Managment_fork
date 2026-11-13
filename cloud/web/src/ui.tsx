@@ -14,15 +14,16 @@ export interface Column {
 export interface Field {
   name: string
   label: string
-  kind?: 'text' | 'password' | 'email' | 'number' | 'money' | 'signed-money' | 'date' | 'select' | 'textarea' | 'reference' | 'check' | 'multi'
+  kind?: 'text' | 'password' | 'email' | 'number' | 'money' | 'signed-money' | 'date' | 'select' | 'textarea' | 'reference' | 'check' | 'multi' | 'items'
   options?: { value: string; label: string }[]
-  reference?: { path: string; label?: string }
+  reference?: { path: string; label?: string; searchable?: boolean }
   required?: boolean
   nullable?: boolean
   initial?: string
   min?: number
   placeholder?: string
   read?: (row: Row) => string
+  visible?: (values: Record<string, string>) => boolean
 }
 
 export interface Action {
@@ -34,6 +35,7 @@ export interface Action {
   confirmation?: string
   danger?: boolean
   financial?: boolean
+  initialFromRow?: boolean
   visible?: (row: Row) => boolean
   transform?: (body: Row, row?: Row) => Row
 }
@@ -91,43 +93,61 @@ function initialValues(fields: Field[], row?: Row): Record<string, string> {
   return Object.fromEntries(fields.map(field => {
     const value = row?.[field.name]
     if (row && field.read) return [field.name, field.read(row)]
+    if (field.kind === 'date' && typeof value === 'string') return [field.name, value.slice(0, 10)]
     if (field.kind === 'check' && value !== undefined) return [field.name, value ? 'true' : 'false']
-    if (field.kind === 'multi' && Array.isArray(value)) return [field.name, JSON.stringify(value)]
+    if ((field.kind === 'multi' || field.kind === 'items') && Array.isArray(value)) return [field.name, JSON.stringify(value)]
     return [field.name, value === null || value === undefined ? field.initial || '' : String(value)]
   }))
 }
 
-function ReferenceInput({ field, value, set, inputId }: {
-  field: Field; value: string; set: (value: string) => void; inputId: string
+function ReferenceInput({ field, value, set, inputId, disabled }: {
+  field: Field; value: string; set: (value: string) => void; inputId: string; disabled?: boolean
 }) {
   const [options, setOptions] = useState<Row[]>([])
+  const [term, setTerm] = useState('')
+  const [error, setError] = useState(false)
+  const path = field.reference?.path
+  const searchable = field.reference?.searchable ?? ['/customers', '/products', '/categories', '/staff', '/suppliers'].includes(path || '')
   useEffect(() => {
-    if (!field.reference) return
+    if (!path) return
     const controller = new AbortController()
-    request<Row[]>(field.reference.path + '?per_page=50', { signal: controller.signal })
-      .then(result => setOptions(Array.isArray(result.data) ? result.data : []))
-      .catch(() => { /* The record ID can still be entered directly. */ })
-    return () => controller.abort()
-  }, [field.reference])
+    const timer = setTimeout(() => {
+      const params = new URLSearchParams({ per_page: '50' })
+      if (searchable && term.trim()) params.set('q', term.trim())
+      request<Row[]>(path + '?' + params, { signal: controller.signal })
+        .then(result => {
+          if (!controller.signal.aborted) { setOptions(Array.isArray(result.data) ? result.data : []); setError(false) }
+        })
+        .catch(() => { if (!controller.signal.aborted) setError(true) })
+    }, term ? 250 : 0)
+    return () => { clearTimeout(timer); controller.abort() }
+  }, [path, searchable, term])
   return (
-    <>
+    <div className="reference-field">
+      {searchable && <input type="search" disabled={disabled} aria-label={'بحث في ' + field.label} value={term}
+        maxLength={100} placeholder="ابحث بالاسم أو الرمز" onChange={event => setTerm(event.target.value)} />}
+      {options.length > 0 && <select disabled={disabled} aria-label={'اختر ' + field.label} value={options.some(option => String(option.id) === value) ? value : ''}
+        onChange={event => set(event.target.value)}>
+        <option value="">اختر من النتائج</option>
+        {options.map(option => <option key={idOf(option)} value={String(option.id)}>
+          {String(option[field.reference?.label || 'name'] || option.id)} (#{String(option.id)})
+        </option>)}
+      </select>}
       <input id={inputId} type="text" inputMode="numeric" pattern="[0-9]+" required={field.required}
-        list={inputId + '-list'} value={value} onChange={event => set(event.target.value)} />
-      <datalist id={inputId + '-list'}>
-        {options.map(option => <option key={idOf(option)} value={String(option.id)} label={String(option[field.reference?.label || 'name'] ?? '')} />)}
-      </datalist>
-      <small>رقم السجل المرتبط</small>
-    </>
+        placeholder="رقم السجل" disabled={disabled} value={value} onChange={event => set(event.target.value)} />
+      {error && <small>تعذر تحميل الخيارات. يمكنك إدخال رقم السجل.</small>}
+    </div>
   )
 }
 
-function FormInput({ field, value, set }: { field: Field; value: string; set: (value: string) => void }) {
+export function FormInput({ field, value, set, disabled }: { field: Field; value: string; set: (value: string) => void; disabled?: boolean }) {
   const inputId = useId()
   const kind = field.kind || 'text'
+  if (kind === 'items') return <ItemsInput label={field.label} value={value} set={set} disabled={disabled} />
   if (kind === 'multi') {
     const selected: string[] = value ? JSON.parse(value) : []
     return (
-      <fieldset className="multi-select">
+      <fieldset className="multi-select" disabled={disabled}>
         <legend>{field.label}</legend>
         {field.options?.map(option => (
           <label key={option.value}>
@@ -141,21 +161,23 @@ function FormInput({ field, value, set }: { field: Field; value: string; set: (v
     )
   }
   if (kind === 'check') {
-    return <label className="check-field"><input type="checkbox" checked={value === 'true'} onChange={event => set(String(event.target.checked))} />{field.label}</label>
+    return <label className="check-field"><input type="checkbox" disabled={disabled} checked={value === 'true'} onChange={event => set(String(event.target.checked))} />{field.label}</label>
   }
+  if (kind === 'reference') return <div className="field">
+    <label htmlFor={inputId}>{field.label}{field.required && <span className="required" aria-hidden="true"> *</span>}</label>
+    <ReferenceInput field={field} value={value} set={set} inputId={inputId} disabled={disabled} />
+  </div>
   return (
     <label htmlFor={inputId} className="field">
       <span>{field.label}{field.required && <span className="required" aria-hidden="true"> *</span>}</span>
-      {kind === 'reference'
-        ? <ReferenceInput field={field} value={value} set={set} inputId={inputId} />
-        : kind === 'textarea'
-          ? <textarea id={inputId} required={field.required} value={value} onChange={event => set(event.target.value)} />
+      {kind === 'textarea'
+          ? <textarea id={inputId} disabled={disabled} required={field.required} value={value} onChange={event => set(event.target.value)} />
           : kind === 'select'
-            ? <select id={inputId} required={field.required} value={value} onChange={event => set(event.target.value)}>
+            ? <select id={inputId} disabled={disabled} required={field.required} value={value} onChange={event => set(event.target.value)}>
                 <option value="">اختر من القائمة</option>
                 {field.options?.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
               </select>
-            : <input id={inputId} type={kind === 'money' || kind === 'signed-money' ? 'text' : kind} inputMode={kind === 'money' || kind === 'signed-money' ? 'decimal' : undefined}
+            : <input id={inputId} disabled={disabled} type={kind === 'money' || kind === 'signed-money' ? 'text' : kind} inputMode={kind === 'money' || kind === 'signed-money' ? 'decimal' : undefined}
                 min={field.min} step={kind === 'number' ? 1 : undefined} required={field.required} placeholder={field.placeholder}
                 autoComplete={kind === 'password' ? 'new-password' : undefined}
                 value={value} onChange={event => set(event.target.value)} />}
@@ -163,7 +185,51 @@ function FormInput({ field, value, set }: { field: Field; value: string; set: (v
   )
 }
 
+type ItemInput = { product_id: number; quantity: number }
+const catalogItem: Field = { name: 'product_id', label: 'المنتج', kind: 'reference', reference: { path: '/products' } }
+
+function ItemsInput({ label, value, set, disabled }: { label: string; value: string; set: (value: string) => void; disabled?: boolean }) {
+  const [product, setProduct] = useState('')
+  const [quantity, setQuantity] = useState('1')
+  const [error, setError] = useState('')
+  const items: ItemInput[] = value ? JSON.parse(value) : []
+
+  function add() {
+    const productId = Number(product)
+    const count = Number(quantity)
+    if (!Number.isSafeInteger(productId) || productId <= 0 || !Number.isSafeInteger(count) || count < 1 || count > 1_000_000) {
+      setError('اختر منتجًا وأدخل كمية صحيحة.')
+      return
+    }
+    if (items.some(item => item.product_id === productId)) {
+      setError('هذا المنتج مضاف بالفعل.')
+      return
+    }
+    setError('')
+    set(JSON.stringify([...items, { product_id: productId, quantity: count }]))
+    setProduct('')
+    setQuantity('1')
+  }
+
+  return <fieldset className="multi-select" disabled={disabled}>
+    <legend>{label}</legend>
+    <FormInput field={catalogItem} value={product} set={setProduct} disabled={disabled} />
+    <label>الكمية<input type="number" min="1" max="1000000" value={quantity} onChange={event => setQuantity(event.target.value)} /></label>
+    <button className="secondary" type="button" disabled={items.length >= 40} onClick={add}>إضافة بند</button>
+    {error && <Notice error>{error}</Notice>}
+    {items.length > 0 && <ul className="dash-list">{items.map(item => <li key={item.product_id}>
+      <span>المنتج {integer(item.product_id)} · الكمية {integer(item.quantity)}</span>
+      <button className="link-button" type="button" onClick={() => set(JSON.stringify(items.filter(row => row.product_id !== item.product_id)))}>إزالة</button>
+    </li>)}</ul>}
+  </fieldset>
+}
+
 function encodeField(field: Field, value: string): unknown {
+  if (field.kind === 'items') {
+    const items: ItemInput[] = value ? JSON.parse(value) : []
+    if (field.required && !items.length) throw new Error('أضف بندًا واحدًا على الأقل.')
+    return items.map(({ product_id, quantity }) => ({ product_id, quantity }))
+  }
   if (field.kind === 'check') return value === 'true'
   if (field.kind === 'multi') return value ? JSON.parse(value) : []
   if (value.trim() === '') return field.nullable ? null : undefined
@@ -182,13 +248,15 @@ function encodeField(field: Field, value: string): unknown {
   return field.kind === 'password' ? value : value.trim()
 }
 
-function ActionDialog({ action, row, close, done }: {
+export function ActionDialog({ action, row, close, done }: {
   action: Action; row?: Row; close: () => void; done: () => void
 }) {
   const fields = action.fields || []
-  const [values, setValues] = useState(() => initialValues(fields, row))
+  const [values, setValues] = useState(() => initialValues(fields, action.method === 'PATCH' || action.initialFromRow ? row : undefined))
+  const visible = fields.filter(field => field.visible?.(values) ?? true)
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
+  const [accessKey, setAccessKey] = useState('')
 
   async function submit(event: FormEvent) {
     event.preventDefault()
@@ -197,9 +265,11 @@ function ActionDialog({ action, row, close, done }: {
     setError('')
     try {
       const method = action.method || 'POST'
-      const body = Object.fromEntries(fields.map(field => [field.name, encodeField(field, values[field.name] || '')]))
-      await request(action.endpoint(row), { method, body: method === 'DELETE' ? undefined : action.transform?.(body, row) ?? body, financial: action.financial })
-      done()
+      const body = Object.fromEntries(visible.map(field => [field.name, encodeField(field, values[field.name] || '')]))
+      const result = await request<Row>(action.endpoint(row), { method, body: method === 'DELETE' ? undefined : action.transform?.(body, row) ?? body, financial: action.financial })
+      const secret = result.data?.access_key
+      if (typeof secret === 'string') setAccessKey(secret)
+      else done()
     } catch (error) {
       setError(error instanceof Error ? error.message : 'تعذر تنفيذ الطلب.')
     } finally {
@@ -207,11 +277,12 @@ function ActionDialog({ action, row, close, done }: {
     }
   }
 
+  if (accessKey) return <AccessKeyDialog accessKey={accessKey} close={done} />
   return (
     <Modal title={action.label} close={() => { if (!busy) close() }}>
       <form className="modal-form" onSubmit={submit}>
         {action.confirmation && <p>{action.confirmation}</p>}
-        {fields.map(field => <FormInput key={field.name} field={field} value={values[field.name] || ''}
+        {visible.map(field => <FormInput key={field.name} field={field} value={values[field.name] || ''} disabled={busy}
           set={value => setValues(previous => ({ ...previous, [field.name]: value }))} />)}
         {error && <Notice error>{error}</Notice>}
         <div className="form-actions">
@@ -223,8 +294,8 @@ function ActionDialog({ action, row, close, done }: {
   )
 }
 
-export function DataModule({ config, user, extra, rowActions }: {
-  config: ModuleConfig; user: User; extra?: ReactNode; rowActions?: (row: Row) => ReactNode
+export function DataModule({ config, user, extra, rowActions, onChange }: {
+  config: ModuleConfig; user: User; extra?: ReactNode; rowActions?: (row: Row) => ReactNode; onChange?: () => void
 }) {
   const [input, setInput] = useState('')
   const [query, setQuery] = useState('')
@@ -307,7 +378,32 @@ export function DataModule({ config, user, extra, rowActions }: {
         </>
       )}
       {selected && <ActionDialog action={selected.action} row={selected.row} close={() => setSelected(undefined)}
-        done={() => { setSelected(undefined); setSuccess('تم تنفيذ الإجراء.'); setVersion(current => current + 1) }} />}
+        done={() => { setSelected(undefined); setSuccess('تم تنفيذ الإجراء.'); setVersion(current => current + 1); onChange?.() }} />}
     </>
   )
+}
+
+export function AccessKeyDialog({ accessKey, close }: { accessKey: string; close: () => void }) {
+  const [feedback, setFeedback] = useState('')
+  const input = useRef<HTMLInputElement>(null)
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(accessKey)
+      setFeedback('تم نسخ المفتاح.')
+    } catch {
+      input.current?.select()
+      setFeedback('انسخ المفتاح المحدد يدويًا.')
+    }
+  }
+  return <Modal title="مفتاح الدخول الجديد" close={close}>
+    <div className="modal-content">
+      <p>احفظ المفتاح الآن. يُستخدم في خانة كلمة المرور عند تسجيل الدخول ويُعرض مرة واحدة.</p>
+      <label className="field">مفتاح الدخول<input ref={input} value={accessKey} readOnly dir="ltr" autoComplete="off" /></label>
+      {feedback && <Notice>{feedback}</Notice>}
+      <div className="form-actions">
+        <button className="primary" onClick={() => void copy()}>نسخ المفتاح</button>
+        <button className="secondary" onClick={close}>تم الحفظ</button>
+      </div>
+    </div>
+  </Modal>
 }

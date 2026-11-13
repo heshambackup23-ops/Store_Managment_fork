@@ -94,7 +94,8 @@ internal fun ProductEditDialog(
     var description by rememberSaveable(product?.id) { mutableStateOf(product?.description.orEmpty()) }
     var notes by rememberSaveable(product?.id) { mutableStateOf(product?.notes.orEmpty()) }
     var barcode by rememberSaveable(product?.id) { mutableStateOf(product?.barcode.orEmpty()) }
-    var stock by rememberSaveable(product?.id) { mutableStateOf(product?.stock?.toString() ?: "0") }
+    val expectedStock = rememberSaveable(product?.id) { product?.stock }
+    var stock by rememberSaveable(product?.id) { mutableStateOf(expectedStock?.toString() ?: "0") }
     var categoryId by rememberSaveable(product?.id) { mutableStateOf(product?.categoryId) }
     var categoryMenuOpen by remember { mutableStateOf(false) }
     var validationError by remember { mutableStateOf<String?>(null) }
@@ -128,7 +129,7 @@ internal fun ProductEditDialog(
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     AsyncImage(
-                        model = selectedImage ?: product?.imageUrl,
+                        model = selectedImage ?: productImageModel(product?.imageUrl, product?.serverUpdatedAt),
                         contentDescription = "صورة المنتج",
                         modifier = Modifier.size(88.dp).clip(RoundedCornerShape(12.dp)),
                     )
@@ -191,7 +192,21 @@ internal fun ProductEditDialog(
                 } else {
                     validationError = null
                     attemptedPayload = payload()
-                    onSave(product?.id, ProductInputDto(name = name.trim(), price = normalizedPrice, description = description.trim().ifBlank { null }, notes = notes.trim().ifBlank { null }, barcode = barcode.trim().ifBlank { null }, stock = stock.toInt(), categoryId = categoryId), requestKey, selectedImage)
+                    onSave(
+                        product?.id,
+                        ProductInputDto(
+                            name = name.trim(),
+                            price = normalizedPrice,
+                            description = description.trim().ifBlank { null },
+                            notes = notes.trim().ifBlank { null },
+                            barcode = barcode.trim().ifBlank { null },
+                            stock = stock.toInt(),
+                            categoryId = categoryId,
+                            expectedStock = expectedStock,
+                        ),
+                        requestKey,
+                        selectedImage,
+                    )
                 }
             }) { Text(if (product == null) "حفظ المنتج" else "حفظ التعديلات") }
         },

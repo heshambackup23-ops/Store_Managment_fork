@@ -1,4 +1,4 @@
-# معمارية HENRA Store Management — Cloud Edition
+# معمارية هلال لإدارة المتجر
 
 مرجع السلوك هو Laravel عند `90baabb4b38ae292ea7ef55806145518774991bb`. تقع الشفرة الجديدة في `cloud/` ويظل Laravel وتطبيق Kotlin في الشجرة للمقارنة.
 

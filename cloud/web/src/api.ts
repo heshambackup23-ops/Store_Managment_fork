@@ -8,6 +8,7 @@ export interface User {
   email: string
   role: string
   permissions: string[]
+  credential_mode?: 'password' | 'access_key'
 }
 
 export interface Pagination {

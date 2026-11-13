@@ -41,7 +41,11 @@ const productTable = 'products p LEFT JOIN categories c ON p.category_id = c.id'
 const prefixOperator = "LIKE ? ESCAPE '\\'"
 
 function productView(row: Record<string, unknown>) {
-  return { ...row, category: row.category_id ? { id: row.category_id, name: row.category_name } : null }
+  return {
+    ...row,
+    category: row.category_id ? { id: row.category_id, name: row.category_name } : null,
+    image_url: row.has_image ? `/api/v1/products/${row.id}/image` : null,
+  }
 }
 
 async function find(c: ApiContext, columns: string, table: string, id: number, field = 'id') {
@@ -151,7 +155,7 @@ catalog.delete('/products/:id', permit('products.delete'), async (c) => {
   return ok(c, { id })
 })
 
-function imageType(bytes: ArrayBuffer) {
+export function imageType(bytes: ArrayBuffer) {
   const view = new Uint8Array(bytes)
   if (view.length >= 4 && view[0] === 0xff && view[1] === 0xd8 && view[2] === 0xff) return 'image/jpeg'
   if (view.length >= 8 && [137, 80, 78, 71, 13, 10, 26, 10].every((byte, i) => view[i] === byte)) return 'image/png'

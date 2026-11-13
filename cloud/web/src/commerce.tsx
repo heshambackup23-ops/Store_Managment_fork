@@ -1,15 +1,32 @@
 import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { allowed, decimal, formatDate, integer, money, readMoney, request } from './api'
+import { allowed, apiUrl, decimal, formatDate, integer, money, readMoney, request } from './api'
 import type { User } from './api'
-import { activeColumn, activeField, countColumn, createAction, dateColumn, editAction, moneyColumn, numberColumn, required } from './core'
-import { DataModule, dataText, idOf, Modal, Notice, PageTitle } from './ui'
+import { activeColumn, activeField, countColumn, createAction, dateColumn, editAction, moneyColumn, numberColumn, RecordImageDialog, required } from './core'
+import { ActionDialog, DataModule, dataText, FormInput, idOf, Modal, Notice, PageTitle } from './ui'
 import type { Action, Column, Field, ModuleConfig, Row } from './ui'
 
 const remaining = (row: Row, total: string) => Number(row[total]) - Number(row.paid_minor)
 const remainingColumn = (total: string): Column => ({ key: 'remaining', label: 'المتبقي', render: row => money(remaining(row, total)) })
 const paidColumn = moneyColumn('paid_minor', 'المدفوع')
+function moneyField(name: string, label: string, required = false): Field {
+  return { name, label, kind: 'money', required, read: row => decimal(row[name]) }
+}
+
+function voidEntry(path: string, permission: string): Action {
+  return {
+    ...reverse(path, permission, 'void'),
+    label: 'إلغاء القيد',
+    visible: row => !row.voided_at && row.paid_minor === 0 && !row.invoice_id,
+    confirmation: 'يلغى القيد مع بقاء أثره في سجل المراجعة.',
+  }
+}
+
+function deleteEntry(path: string, permission: string, confirmation: string): Action {
+  return { method: 'DELETE', label: 'حذف', permission, danger: true, confirmation, endpoint: row => path + '/' + idOf(row) }
+}
+
 const notes: Field = { name: 'note', label: 'ملاحظات', kind: 'textarea' }
 
 function reference(name: string, label: string, path: string, mandatory = false, lookup?: string): Field {
@@ -30,12 +47,12 @@ function reverse(path: string, permission: string, segment = 'reverse'): Action 
     endpoint: row => path + '/' + idOf(row) + '/' + segment,
     fields: [required('reason', 'السبب', 'textarea')],
     confirmation: 'راجع السجل قبل تنفيذ العملية العكسية.',
-    visible: row => segment === 'refund' ? row.status !== 'refunded' : !row.reversed_by && !row.reversal_of,
+    visible: row => segment === 'refund' ? row.status !== 'refunded' : !row.reversed_by && !row.reversal_of && !row.profit_withdrawal_id && !row.adjustment_id,
   }
 }
 
 const statuses: Record<string, string> = {
-  open: 'غير مسددة بالكامل', paid: 'مسددة', refunded: 'مسترجعة', pending: 'مستحقة',
+  open: 'غير مسددة بالكامل', paid: 'مسددة', refunded: 'مسترجعة', pending: 'مستحقة', overdue: 'متأخرة', voided: 'ملغاة',
   received: 'تم الاستلام', in_progress: 'قيد الصيانة', completed: 'تم الإصلاح', delivered: 'تم التسليم', cancelled: 'ملغاة',
   receivable: 'للمتجر', payable: 'على المتجر', receive: 'استقبال', send: 'إرسال', expense: 'مصروف',
   settlement_in: 'تسوية داخلة', settlement_out: 'تسوية خارجة', reversal: 'عكس', opening: 'رصيد افتتاحي',
@@ -56,7 +73,8 @@ function amounts(names: Record<string, string>): Field[] {
 }
 
 const supplierFields: Field[] = [
-  required('name', 'اسم المورد'), { name: 'phone', label: 'رقم الهاتف' }, { name: 'address', label: 'العنوان' },
+  required('name', 'اسم المورد'), { name: 'phone', label: 'رقم الهاتف' }, { name: 'email', label: 'البريد الإلكتروني', kind: 'email' },
+  { name: 'address', label: 'العنوان' }, moneyField('opening_minor', 'الرصيد الافتتاحي بالجنيه'),
   { name: 'notes', label: 'ملاحظات', kind: 'textarea' },
 ]
 const walletFields: Field[] = [
@@ -66,42 +84,120 @@ const walletFields: Field[] = [
     daily_receive_limit_minor: 'حد الاستقبال اليومي بالجنيه', monthly_send_limit_minor: 'حد الإرسال الشهري بالجنيه',
     monthly_receive_limit_minor: 'حد الاستقبال الشهري بالجنيه',
   }).map(field => ({ ...field, read: (row: Row) => decimal(row[field.name]) })),
+  moneyField('default_commission_bps', 'نسبة العمولة الافتراضية (%)'),
+  moneyField('default_commission_min_minor', 'أقل عمولة افتراضية بالجنيه'),
+  moneyField('default_fee_bps', 'نسبة رسوم المزود الافتراضية (%)'),
+  moneyField('default_fee_min_minor', 'أقل رسوم افتراضية بالجنيه'),
+  { ...moneyField('default_fee_max_minor', 'أقصى رسوم افتراضية بالجنيه'), nullable: true },
 ]
 const maintenanceFields: Field[] = [
   reference('customer_id', 'رقم سجل العميل', '/customers'), required('customer_name', 'اسم العميل'),
-  { name: 'phone', label: 'رقم الهاتف' }, required('item', 'الجهاز أو المنتج'),
+  { name: 'phone', label: 'رقم الهاتف' }, { name: 'address', label: 'العنوان' },
+  { name: 'requested_date', label: 'تاريخ استلام طلب الصيانة', kind: 'date' }, required('item', 'الجهاز أو المنتج'),
   required('problem', 'العطل', 'textarea'), {
     name: 'price_minor', label: 'التكلفة بالجنيه', kind: 'money',
     read: row => decimal(row.price_minor),
   }, { name: 'notes', label: 'ملاحظات', kind: 'textarea' },
 ]
 
-const walletTransaction: Action = {
+export const walletTransaction: Action = {
   label: 'تسجيل معاملة', permission: 'wallets.transact', financial: true,
   endpoint: row => '/wallets/' + idOf(row) + '/transactions',
   visible: row => Boolean(row.active),
   fields: [
     { ...required('kind', 'نوع المعاملة', 'select'), options: options(['receive', 'send', 'expense', 'settlement_in', 'settlement_out']) },
     required('amount_minor', 'المبلغ بالجنيه', 'money'),
-    ...amounts({ commission_minor: 'العمولة بالجنيه', fee_minor: 'رسوم المزود بالجنيه' }), notes,
-    { ...reference('deferred_customer', 'عميل العملية الآجلة (للإرسال فقط)', '/customers'), nullable: false },
-    { name: 'deferred_date', label: 'تاريخ استحقاق المبلغ الآجل', kind: 'date' },
+    { name: 'counterparty', label: 'رقم الطرف الآخر', visible: values => ['send', 'receive'].includes(values.kind) },
+    ...amounts({ commission_minor: 'العمولة بالجنيه (فارغ لاستخدام الإعداد)', fee_minor: 'رسوم المزود بالجنيه (فارغ لاستخدام الإعداد)' })
+      .map(field => ({ ...field, visible: (values: Record<string, string>) => ['send', 'receive'].includes(values.kind) })), notes,
+    { ...reference('deferred_customer', 'العميل للسداد الآجل', '/customers'), nullable: false, visible: values => values.kind === 'send' },
+    { name: 'deferred_date', label: 'تاريخ استحقاق المبلغ الآجل', kind: 'date', visible: values => values.kind === 'send' && Boolean(values.deferred_customer) },
   ],
   transform(body) {
     const { deferred_customer, deferred_date, ...transaction } = body
     if (deferred_customer && transaction.kind !== 'send') throw new Error('يمكن تسجيل مبلغ آجل لعملية الإرسال فقط.')
     if (!deferred_customer) return transaction
-    const principal = Number(transaction.amount_minor) + Number(transaction.commission_minor || 0)
-    if (!Number.isSafeInteger(principal)) throw new Error('المبلغ الآجل خارج النطاق المسموح.')
-    return { ...transaction, deferred: { customer_id: deferred_customer, principal_minor: principal, due_date: deferred_date } }
+    return { ...transaction, deferred: { customer_id: deferred_customer, due_date: deferred_date } }
   },
 }
 
+const repairProgress = [
+  { from: 'received', to: 'in_progress', label: 'بدء الإصلاح' },
+  { from: 'in_progress', to: 'completed', label: 'تم الإصلاح' },
+  { from: 'completed', to: 'delivered', label: 'تم التسليم' },
+].map(({ from, to, label }): Action => ({
+  label, method: 'PATCH', permission: 'maintenance.manage',
+  endpoint: row => '/maintenance/' + idOf(row), visible: row => row.status === from,
+  confirmation: 'تأكيد تحديث حالة طلب الصيانة؟',
+  transform: (_body, row) => {
+    const payload = Object.fromEntries(maintenanceFields.map(field => [field.name, row?.[field.name] ?? undefined]))
+    return { ...payload, status: to, requested_date: typeof payload.requested_date === 'string' ? payload.requested_date.slice(0, 10) : undefined }
+  },
+}))
+
 const installmentDue = required('due_date', 'تاريخ الاستحقاق', 'date')
+const installmentPaidOn: Field = { name: 'payment_date', label: 'تاريخ السداد', kind: 'date', nullable: true }
+const installmentCatalog: Field = { name: 'items', label: 'المنتجات', kind: 'items', required: true }
+const installmentMode: Field = {
+  name: 'item_mode', label: 'مصدر القيمة', kind: 'select', initial: 'manual', required: true,
+  options: [{ value: 'manual', label: 'وصف وقيمة يدوية أو فاتورة مرتبطة' }, { value: 'catalog', label: 'اختيار منتجات من الكتالوج' }],
+}
+const installmentStatusActions = [
+  { status: 'overdue', label: 'تحديد كمتأخر', show: (row: Row) => row.status === 'open' },
+  { status: 'open', label: 'إزالة علامة التأخير', show: (row: Row) => row.status === 'overdue' },
+].map(({ status, label, show }): Action => ({
+  label, permission: 'installments.manage', endpoint: row => '/installments/' + idOf(row) + '/status',
+  confirmation: 'تأكيد تحديث حالة القسط؟', visible: show, transform: () => ({ status }),
+}))
+const createInstallment: Action = {
+  ...createAction('إضافة قسط', '/installments', 'installments.manage', [
+    reference('customer_id', 'العميل', '/customers', true), installmentMode,
+    { ...reference('invoice_id', 'الفاتورة', '/invoices'), visible: values => values.item_mode === 'manual' },
+    { ...moneyField('principal_minor', 'قيمة القسط بالجنيه', true), visible: values => values.item_mode === 'manual' },
+    { name: 'product_name', label: 'وصف المنتج', visible: values => values.item_mode === 'manual' && !values.invoice_id },
+    { ...installmentCatalog, visible: values => values.item_mode === 'catalog' },
+    installmentDue, installmentPaidOn, notes,
+    { ...moneyField('paid_minor', 'المدفوع عند الإنشاء بالجنيه'), visible: values => !values.invoice_id || values.item_mode === 'catalog' },
+  ], true),
+  transform: ({ item_mode: _mode, ...body }) => body,
+}
 const debtFields: Field[] = [
   required('person_name', 'اسم صاحب الدين'), { name: 'phone', label: 'رقم الهاتف' },
-  { name: 'due_date', label: 'تاريخ الاستحقاق', kind: 'date', nullable: true }, notes,
+  { name: 'due_date', label: 'تاريخ الاستحقاق', kind: 'date', nullable: true },
+  { name: 'description', label: 'وصف الدين', kind: 'textarea' }, notes,
 ]
+function imageColumn(path: string): Column {
+  return {
+    key: 'has_image', label: 'الصورة', render: row => row.has_image
+      ? <img className="preview-image" src={apiUrl(path + '/' + idOf(row) + '/image') + '?v=' + encodeURIComponent(String(row.updated_at || ''))}
+          alt="" loading="lazy" />
+      : '—',
+  }
+}
+
+const walletAdjustment: Action = {
+  label: 'تسوية الرصيد', permission: 'wallets.manage', financial: true,
+  endpoint: row => '/wallets/' + idOf(row) + '/adjustments',
+  visible: row => Boolean(row.active),
+  fields: [required('delta_minor', 'فرق الرصيد بالجنيه (موجب للإضافة وسالب للخصم)', 'signed-money'),
+    required('reason', 'سبب التسوية', 'textarea')],
+}
+
+const damageFields: Field[] = [
+  { ...required('quantity', 'الكمية', 'number'), min: 1 },
+  required('reason', 'السبب', 'textarea'),
+  moneyField('unit_value_minor', 'قيمة الوحدة بالجنيه'),
+  { name: 'damaged_on', label: 'تاريخ الهالك', kind: 'date' },
+  { name: 'notes', label: 'ملاحظات', kind: 'textarea' },
+]
+export const supplierPayment: Action = {
+  label: 'سداد على حساب المورد', permission: 'suppliers.pay', financial: true,
+  endpoint: row => '/suppliers/' + idOf(row) + '/payments',
+  visible: row => Number(row.balance_minor) > 0,
+  fields: [required('amount_minor', 'المبلغ بالجنيه', 'money'),
+    { name: 'payment_date', label: 'تاريخ السداد', kind: 'date' }, notes],
+}
+
 const invoicePayment = payment('/invoices', 'invoices.pay', 'total_minor')
 invoicePayment.visible = row => row.status === 'open' && !row.installment_id
 
@@ -109,53 +205,68 @@ export const businessModules: Record<string, ModuleConfig> = {
   inventory: {
     title: 'حركات المخزون', description: 'كميات الدخول والخروج ومراجع الحركات المسجلة.', endpoint: '/inventory/movements', permission: 'inventory.view', searchable: false,
     columns: [numberColumn, { key: 'product_name', label: 'المنتج' }, countColumn('delta', 'التغير في الكمية'),
-      statusColumn('source_type', 'مصدر الحركة'), { key: 'source_id', label: 'رقم المرجع' }, { key: 'note', label: 'الملاحظة' }, dateColumn('created_at', 'التاريخ')],
+      { ...statusColumn('source_type', 'مصدر الحركة'), render: row => row.purchase_stock_receipt_id
+        ? 'استلام مشتريات' : row.purchase_stock_reversal_id ? 'عكس استلام مشتريات' : statuses[String(row.source_type)] || dataText(row.source_type) },
+      { key: 'source_id', label: 'رقم المرجع' }, { key: 'note', label: 'الملاحظة' }, dateColumn('created_at', 'التاريخ')],
     create: createAction('تعديل كمية المخزون', '/inventory/adjustments', 'inventory.manage', [
       reference('product_id', 'المنتج', '/products', true), required('delta', 'تغير الكمية (موجب للإضافة وسالب للخصم)', 'number'),
       required('note', 'سبب التعديل', 'textarea'),
     ], true),
   },
   invoices: {
-    title: 'الفواتير', description: 'سجل المبيعات والسداد والاسترجاع.', endpoint: '/invoices', permission: 'invoices.view', searchable: false,
+    title: 'الفواتير', description: 'سجل المبيعات والسداد والاسترجاع.', endpoint: '/invoices', permission: 'invoices.view',
     columns: [numberColumn, { key: 'customer_name', label: 'العميل' }, moneyColumn('total_minor', 'الإجمالي'),
-      paidColumn, { key: 'remaining', label: 'المتبقي', render: row => money(row.status === 'refunded' ? 0 : remaining(row, 'total_minor')) }, statusColumn(), dateColumn('created_at', 'التاريخ')],
+      paidColumn, { key: 'remaining', label: 'المتبقي', render: row => money(row.status === 'refunded' ? 0 : remaining(row, 'total_minor')) }, statusColumn(), dateColumn('document_date', 'التاريخ')],
     actions: [invoicePayment, reverse('/invoices', 'invoices.refund', 'refund')],
   },
   installments: {
     title: 'الأقساط', description: 'الأقساط المستحقة والمدفوعات المسجلة لكل عميل.', endpoint: '/installments', permission: 'installments.view', searchable: false,
-    columns: [numberColumn, { key: 'customer_name', label: 'العميل' }, { key: 'invoice_id', label: 'الفاتورة' },
-      moneyColumn('principal_minor', 'أصل القسط'), paidColumn, remainingColumn('principal_minor'), dateColumn('due_date', 'الاستحقاق')],
-    create: createAction('إضافة قسط', '/installments', 'installments.manage', [
-      reference('customer_id', 'العميل', '/customers', true), reference('invoice_id', 'الفاتورة', '/invoices'),
-      required('principal_minor', 'قيمة القسط بالجنيه', 'money'), installmentDue, notes,
-    ], true),
-    actions: [editAction('/installments', 'installments.manage', [installmentDue, notes]), payment('/installments', 'installments.pay', 'principal_minor')],
+    columns: [numberColumn, { key: 'customer_name', label: 'العميل' }, { key: 'invoice_id', label: 'الفاتورة', render: row => row.invoice_id ? <Link to={'/invoices/' + row.invoice_id}>{dataText(row.invoice_id)}</Link> : '—' },
+      { key: 'product_name', label: 'المنتج' }, moneyColumn('principal_minor', 'أصل القسط'), paidColumn, remainingColumn('principal_minor'), statusColumn(), dateColumn('due_date', 'الاستحقاق')],
+    create: createInstallment,
+    actions: [{ ...editAction('/installments', 'installments.manage', [installmentDue, installmentPaidOn, notes]), visible: row => !row.voided_at },
+      { ...editAction('/installments', 'installments.manage', [moneyField('principal_minor', 'قيمة القسط بالجنيه', true),
+        required('product_name', 'وصف المنتج'), installmentDue, installmentPaidOn, notes]),
+        label: 'تعديل الوصف والقيمة', visible: row => !row.invoice_id && !row.voided_at },
+      { ...editAction('/installments', 'installments.manage', [installmentCatalog, installmentDue, installmentPaidOn, notes]),
+        label: 'تعديل المنتجات', visible: row => !row.invoice_id && !row.voided_at },
+      ...installmentStatusActions, payment('/installments', 'installments.pay', 'principal_minor'), voidEntry('/installments', 'installments.manage')],
   },
   debts: {
     title: 'الديون الشخصية', description: 'المبالغ الشخصية المستحقة للمتجر وعليه.', endpoint: '/debts', permission: 'debts.view', searchable: false,
     columns: [numberColumn, { key: 'person_name', label: 'الاسم' }, statusColumn('direction', 'الاتجاه'),
-      moneyColumn('principal_minor', 'أصل الدين'), paidColumn, remainingColumn('principal_minor'), dateColumn('due_date', 'الاستحقاق')],
+      moneyColumn('principal_minor', 'أصل الدين'), paidColumn, remainingColumn('principal_minor'), statusColumn(), dateColumn('due_date', 'الاستحقاق')],
     create: createAction('إضافة دين', '/debts', 'debts.manage', [
       ...debtFields, reference('customer_id', 'رقم سجل العميل', '/customers'),
       { ...required('direction', 'الاتجاه', 'select'), options: options(['receivable', 'payable']) },
-      required('principal_minor', 'أصل الدين بالجنيه', 'money'),
+      required('principal_minor', 'أصل الدين بالجنيه', 'money'), moneyField('paid_minor', 'المدفوع عند الإنشاء بالجنيه'),
     ], true),
-    actions: [editAction('/debts', 'debts.manage', debtFields), payment('/debts', 'debts.pay', 'principal_minor')],
+    actions: [{ ...editAction('/debts', 'debts.manage', [...debtFields, moneyField('principal_minor', 'أصل الدين بالجنيه')]), visible: row => !row.voided_at },
+      payment('/debts', 'debts.pay', 'principal_minor'), voidEntry('/debts', 'debts.manage')],
   },
   suppliers: {
-    title: 'الموردون', description: 'بيانات التواصل مع الموردين وحساباتهم.', endpoint: '/suppliers', permission: 'suppliers.view', searchable: false,
-    columns: [numberColumn, { key: 'name', label: 'المورد' }, { key: 'phone', label: 'الهاتف' }, { key: 'address', label: 'العنوان' }, activeColumn],
+    title: 'الموردون', description: 'بيانات التواصل مع الموردين وحساباتهم.', endpoint: '/suppliers', permission: 'suppliers.view',
+    columns: [numberColumn, { key: 'name', label: 'المورد' }, { key: 'phone', label: 'الهاتف' }, { key: 'email', label: 'البريد الإلكتروني' },
+      moneyColumn('opening_minor', 'الرصيد الافتتاحي'), moneyColumn('balance_minor', 'المستحق'), activeColumn],
     create: createAction('إضافة مورد', '/suppliers', 'suppliers.manage', supplierFields, true),
-    actions: [editAction('/suppliers', 'suppliers.manage', [...supplierFields, activeField])],
+    actions: [
+      editAction('/suppliers', 'suppliers.manage', [...supplierFields, activeField]), supplierPayment,
+      { ...deleteEntry('/suppliers', 'suppliers.manage', 'هل تريد حذف المورد؟'),
+        visible: row => !row.purchases_count && !row.opening_minor && !row.opening_paid_minor },
+    ],
   },
   purchases: {
-    title: 'المشتريات', description: 'قيود المشتريات ومدفوعات الموردين.', endpoint: '/purchases', permission: 'suppliers.view', searchable: false,
+    title: 'المشتريات', description: 'قيود المشتريات ومدفوعات الموردين.', endpoint: '/purchases', permission: 'suppliers.view',
     columns: [numberColumn, { key: 'supplier_name', label: 'المورد' }, { key: 'reference', label: 'المرجع' }, { key: 'description', label: 'الوصف' },
-      moneyColumn('total_minor', 'الإجمالي'), paidColumn, remainingColumn('total_minor'), dateColumn('purchase_date', 'التاريخ')],
+      moneyColumn('total_minor', 'الإجمالي'), paidColumn, remainingColumn('total_minor'),
+      { key: 'payment_type', label: 'طريقة السداد', render: row => row.payment_type === 'cash' ? 'نقدي' : 'آجل' }, dateColumn('purchase_date', 'التاريخ')],
     create: createAction('تسجيل شراء', '/purchases', 'suppliers.manage', [
       reference('supplier_id', 'المورد', '/suppliers', true), { name: 'reference', label: 'المرجع', nullable: true },
       required('description', 'الوصف', 'textarea'), required('total_minor', 'إجمالي الشراء بالجنيه', 'money'),
       required('purchase_date', 'تاريخ الشراء', 'date'),
+      { name: 'payment_type', label: 'نوع السداد', kind: 'select', initial: 'credit',
+        options: [{ value: 'credit', label: 'آجل' }, { value: 'cash', label: 'نقدي' }] },
+      { ...moneyField('paid_minor', 'المدفوع عند التسجيل بالجنيه'), visible: values => values.payment_type === 'credit' },
     ], true),
     actions: [payment('/purchases', 'suppliers.pay', 'total_minor', true)],
   },
@@ -164,13 +275,13 @@ export const businessModules: Record<string, ModuleConfig> = {
     columns: [numberColumn, { key: 'name', label: 'المحفظة' }, { key: 'provider', label: 'المزود' },
       moneyColumn('balance_minor', 'الرصيد'), moneyColumn('transaction_limit_minor', 'حد المعاملة'), activeColumn],
     create: createAction('إضافة محفظة', '/wallets', 'wallets.manage', [...walletFields, { name: 'opening_minor', label: 'الرصيد الافتتاحي بالجنيه', kind: 'money' }], true),
-    actions: [walletTransaction, editAction('/wallets', 'wallets.manage', [...walletFields, activeField])],
+    actions: [walletTransaction, walletAdjustment, editAction('/wallets', 'wallets.manage', [...walletFields, activeField])],
   },
   'wallet-transactions': {
     title: 'حركات المحافظ', description: 'سجل التحويلات والمصروفات والتسويات والحركات العكسية.', endpoint: '/wallet-transactions', permission: 'wallets.view', searchable: false,
     columns: [numberColumn, { key: 'wallet_name', label: 'المحفظة' }, statusColumn('kind', 'نوع الحركة'), moneyColumn('amount_minor', 'المبلغ'),
       moneyColumn('delta_minor', 'أثر المحفظة'), moneyColumn('cash_delta_minor', 'أثر النقدية'), moneyColumn('commission_minor', 'العمولة'),
-      { key: 'note', label: 'الملاحظة' }, dateColumn('created_at', 'التاريخ')],
+      { key: 'counterparty', label: 'الطرف الآخر' }, { key: 'note', label: 'الملاحظة' }, dateColumn('created_at', 'التاريخ')],
     actions: [reverse('/wallet-transactions', 'wallets.reverse')],
   },
   'wallet-cash': {
@@ -185,6 +296,13 @@ export const businessModules: Record<string, ModuleConfig> = {
     ], true),
     actions: [{ ...reverse('/wallet-cash', 'wallets.reverse'), visible: row => row.kind === 'expense' && !row.reversed_by }],
   },
+  'wallet-profit-withdrawals': {
+    title: 'سجل سحب الأرباح', description: 'السحوبات المسجلة من الدرج النقدي أو أرصدة المحافظ.',
+    endpoint: '/wallet-profit-withdrawals', permission: 'wallets.cash', searchable: false,
+    columns: [numberColumn, moneyColumn('amount_minor', 'المبلغ'),
+      { key: 'wallet_name', label: 'المصدر', render: row => row.wallet_name ? dataText(row.wallet_name) : 'الدرج النقدي' },
+      dateColumn('business_day', 'التاريخ'), { key: 'note', label: 'الملاحظات' }],
+  },
   'supplier-report': {
     title: 'أرصدة الموردين', description: 'إجمالي المشتريات والمدفوعات والأرصدة المستحقة حسب المورد.', endpoint: '/reports/suppliers', permission: 'suppliers.view', searchable: false,
     columns: [{ key: 'name', label: 'المورد' }, moneyColumn('total_minor', 'إجمالي المشتريات'),
@@ -198,23 +316,34 @@ export const businessModules: Record<string, ModuleConfig> = {
   },
   damaged: {
     title: 'الهالك', description: 'قيود المخزون التالف وأسبابها.', endpoint: '/damaged', permission: 'damaged.view', searchable: false,
-    columns: [numberColumn, { key: 'product_name', label: 'المنتج' }, countColumn('quantity', 'الكمية'),
-      { key: 'reason', label: 'السبب' }, dateColumn('created_at', 'التاريخ'),
+    columns: [numberColumn, imageColumn('/damaged'), { key: 'product_name', label: 'المنتج' }, countColumn('quantity', 'الكمية'),
+      { key: 'reason', label: 'السبب' }, moneyColumn('unit_value_minor', 'قيمة الوحدة'), moneyColumn('total_value_minor', 'قيمة الهالك'), dateColumn('damaged_on', 'تاريخ الهالك'),
       { key: 'reversed_by', label: 'الحالة', render: row => <span className="status-pill">{row.reversed_by ? 'معكوس' : 'مسجل'}</span> }],
     create: createAction('تسجيل هالك', '/damaged', 'damaged.manage', [
-      reference('product_id', 'المنتج', '/products', true), { ...required('quantity', 'الكمية', 'number'), min: 1 },
-      required('reason', 'السبب', 'textarea'),
+      reference('product_id', 'المنتج', '/products', true), ...damageFields,
     ], true),
-    actions: [reverse('/damaged', 'damaged.manage')],
+    actions: [
+      {
+        label: 'تصحيح القيد', permission: 'damaged.manage', financial: true, initialFromRow: true, fields: damageFields,
+        endpoint: row => '/damaged/' + idOf(row) + '/correct', visible: row => !row.reversed_by,
+      },
+      reverse('/damaged', 'damaged.manage'),
+    ],
   },
   maintenance: {
-    title: 'الصيانة', description: 'طلبات الصيانة وحالة الإصلاح والتسليم والسداد.', endpoint: '/maintenance', permission: 'maintenance.view', searchable: false,
-    columns: [numberColumn, { key: 'customer_name', label: 'العميل' }, { key: 'item', label: 'الجهاز' }, { key: 'problem', label: 'العطل' },
-      statusColumn(), moneyColumn('price_minor', 'التكلفة'), paidColumn, remainingColumn('price_minor')],
+    title: 'الصيانة', description: 'طلبات الصيانة وحالة الإصلاح والتسليم والسداد.', endpoint: '/maintenance', permission: 'maintenance.view',
+    columns: [numberColumn, imageColumn('/maintenance'), { key: 'customer_name', label: 'العميل' }, { key: 'item', label: 'الجهاز' }, { key: 'problem', label: 'العطل' },
+      statusColumn(), dateColumn('requested_date', 'الاستلام'), dateColumn('completed_date', 'الإصلاح'),
+      moneyColumn('price_minor', 'التكلفة'), paidColumn, remainingColumn('price_minor')],
     create: createAction('إضافة طلب صيانة', '/maintenance', 'maintenance.manage', maintenanceFields, true),
-    actions: [editAction('/maintenance', 'maintenance.manage', [...maintenanceFields,
-      { ...required('status', 'الحالة', 'select'), options: options(['received', 'in_progress', 'completed', 'delivered', 'cancelled']) }]),
-      payment('/maintenance', 'maintenance.pay', 'price_minor')],
+    actions: [
+      { ...editAction('/maintenance', 'maintenance.manage', [...maintenanceFields,
+        { ...required('status', 'الحالة', 'select'), options: options(['received', 'in_progress', 'completed', 'delivered', 'cancelled']) }]),
+        visible: row => !['delivered', 'cancelled'].includes(String(row.status)) },
+      ...repairProgress,
+      payment('/maintenance', 'maintenance.pay', 'price_minor'),
+      { ...deleteEntry('/maintenance', 'maintenance.manage', 'هل تريد أرشفة طلب الصيانة؟'), visible: row => row.paid_minor === 0 },
+    ],
   },
 }
 
@@ -245,15 +374,25 @@ function PaymentHistory({ path, row, close }: { path: string; row: Row; close: (
 
 export function CommerceModule({ name, user }: { name: string; user: User }) {
   const [history, setHistory] = useState<Row>()
+  const [image, setImage] = useState<Row>()
+  const [imageVersion, setImageVersion] = useState(0)
   const [filter, setFilter] = useState('')
   const [invoiceId, setInvoiceId] = useState('')
+  const [range, setRange] = useState({ from: '', to: '' })
   const navigate = useNavigate()
   const config = businessModules[name]
   const isInvoice = name === 'invoices'
-  const endpoint = isInvoice && filter ? config.endpoint + '?status=' + encodeURIComponent(filter) : config.endpoint
+  const hasImages = name === 'damaged' || name === 'maintenance'
+  const canManageImage = hasImages && allowed(user, name + '.manage')
+  const dateFilter = ['maintenance', 'purchases', 'damaged'].includes(name)
+  const params = new URLSearchParams()
+  if (filter) params.set('status', filter)
+  if (range.from) params.set('from', range.from)
+  if (range.to) params.set('to', range.to)
+  const endpoint = config.endpoint + (params.size ? '?' + params : '')
   return <>
-    <DataModule key={name + filter} user={user} config={{ ...config, endpoint }}
-      extra={isInvoice && <form className="panel panel-inner invoice-filter section-space" onSubmit={event => {
+    <DataModule key={endpoint + ':' + imageVersion} user={user} config={{ ...config, endpoint }}
+      extra={isInvoice ? <form className="panel panel-inner invoice-filter section-space" onSubmit={event => {
         event.preventDefault()
         if (invoiceId.trim()) navigate('/invoices/' + encodeURIComponent(invoiceId.trim()))
       }}>
@@ -264,13 +403,57 @@ export function CommerceModule({ name, user }: { name: string; user: User }) {
         <label className="field">رقم الفاتورة<input inputMode="numeric" pattern="[0-9]+" value={invoiceId}
           onChange={event => setInvoiceId(event.target.value)} /></label>
         <button className="secondary" disabled={!invoiceId.trim()}>فتح الفاتورة</button>
-      </form>}
+      </form> : dateFilter ? <form className="panel panel-inner invoice-filter section-space" onSubmit={event => {
+        event.preventDefault()
+        const values = new FormData(event.currentTarget)
+        setRange({ from: String(values.get('from')), to: String(values.get('to')) })
+        setFilter(String(values.get('status') || ''))
+      }}>
+        {name === 'maintenance' && <label className="field">الحالة
+          <select name="status" defaultValue={filter}><option value="">جميع الحالات</option><option value="repaired">تم الإصلاح أو التسليم</option>
+            {options(['received', 'in_progress', 'completed', 'delivered', 'cancelled']).map(option =>
+              <option key={option.value} value={option.value}>{option.label}</option>)}
+          </select>
+        </label>}
+        <label className="field">من تاريخ<input type="date" name="from" defaultValue={range.from} /></label>
+        <label className="field">إلى تاريخ<input type="date" name="to" defaultValue={range.to} /></label>
+        <button className="secondary">تطبيق التصفية</button>
+        {name === 'damaged' && <Link className="secondary" to="/damage-report">تقرير الهالك</Link>}
+      </form> : undefined}
       rowActions={isInvoice
         ? row => <Link className="link-button" to={'/invoices/' + idOf(row)}>عرض وطباعة</Link>
+        : name === 'suppliers' ? row => <Link className="link-button" to={'/suppliers/' + idOf(row)}>حساب المورد</Link>
+        : hasImages ? row => <>
+          {name === 'damaged'
+            ? <Link className="link-button" to={'/damaged/' + idOf(row)}>عرض القيد</Link>
+            : <button className="link-button" onClick={() => setHistory(row)}>سجل المدفوعات</button>}
+          {canManageImage && <button className="link-button" onClick={() => setImage(row)}>الصورة</button>}
+        </>
+        : name === 'purchases' ? row => <>
+          <Link className="link-button" to={'/purchases/' + idOf(row) + '/receipts'}>استلام أصناف</Link>
+          <button className="link-button" onClick={() => setHistory(row)}>سجل المدفوعات</button>
+        </>
         : withPaymentHistory.has(name) ? row => <button className="link-button" onClick={() => setHistory(row)}>سجل المدفوعات</button> : undefined}
     />
+    {image && <RecordImageDialog row={image} collection={config.endpoint}
+      title={name === 'damaged' ? 'صورة الهالك' : 'صورة الصيانة'} maxBytes={131072}
+      close={() => setImage(undefined)} done={() => { setImage(undefined); setImageVersion(value => value + 1) }} />}
     {history && <PaymentHistory path={config.endpoint} row={history} close={() => setHistory(undefined)} />}
   </>
+}
+
+const posCustomerField = reference('customer_id', 'العميل', '/customers')
+
+async function searchPosProducts(canViewCatalog: boolean, term = '', signal?: AbortSignal) {
+  const params = new URLSearchParams()
+  if (term) params.set('q', term)
+  if (canViewCatalog) {
+    params.set('per_page', '20')
+    const result = await request<Row[]>('/products?' + params, { signal })
+    return result.data.filter(row => Boolean(row.active))
+  }
+  const result = await request<Row[]>('/cashier/products?' + params, { signal })
+  return result.data.map(row => ({ ...row, active: true, price_minor: readMoney(String(row.price)) }))
 }
 
 type CartItem = { id: number; name: string; stock: number; price: number; quantity: number }
@@ -278,11 +461,13 @@ type CartItem = { id: number; name: string; stock: number; price: number; quanti
 export function Pos({ user }: { user: User }) {
   const { invoiceId } = useParams()
   const [original, setOriginal] = useState<Invoice>()
+  const [reissueLoaded, setReissueLoaded] = useState(false)
   const [reissueReason, setReissueReason] = useState('')
+  const [documentDate, setDocumentDate] = useState('')
+  const [invoiceNotes, setInvoiceNotes] = useState('')
   const [products, setProducts] = useState<Row[]>([])
   const [query, setQuery] = useState('')
   const [cart, setCart] = useState<CartItem[]>([])
-  const [customers, setCustomers] = useState<Row[]>([])
   const [customer, setCustomer] = useState('')
   const [paid, setPaid] = useState('')
   const [checkoutMode, setCheckoutMode] = useState('full')
@@ -292,29 +477,52 @@ export function Pos({ user }: { user: User }) {
   const [lastInvoice, setLastInvoice] = useState<number>()
   const navigate = useNavigate()
   const total = cart.reduce((sum, line) => sum + line.price * line.quantity, 0)
-  const canSell = allowed(user, 'invoices.create') && (!invoiceId || allowed(user, 'invoices.refund') && allowed(user, 'invoices.view'))
+  const canViewCatalog = allowed(user, 'products.view')
+  const canSell = allowed(user, 'invoices.create') && (!invoiceId || canViewCatalog && allowed(user, 'invoices.refund') && allowed(user, 'invoices.view'))
 
   useEffect(() => {
     if (!canSell) return
     const controller = new AbortController()
-    request<Row[]>('/products?per_page=20', { signal: controller.signal })
-      .then(result => setProducts(result.data.filter(row => Boolean(row.active))))
+    searchPosProducts(canViewCatalog, '', controller.signal).then(setProducts)
       .catch(error => { if (!controller.signal.aborted) setError(error.message) })
     if (invoiceId) {
       request<Invoice>('/invoices/' + encodeURIComponent(invoiceId), { signal: controller.signal })
-        .then(result => {
+        .then(async result => {
           if (result.data.status === 'refunded') throw new Error('الفاتورة مسترجعة بالفعل.')
-          setOriginal(result.data)
-          if (result.data.customer_id) setCustomer(String(result.data.customer_id))
+          if (controller.signal.aborted) return
+          const previous = result.data
+          setOriginal(previous)
+          setDocumentDate(String(previous.document_date || '').slice(0, 10))
+          setInvoiceNotes(String(previous.notes || ''))
+          if (previous.customer_id) setCustomer(String(previous.customer_id))
+          const currentProducts = await Promise.all((previous.items || []).map(async line => {
+            try {
+              const result = await request<Row>('/products/' + line.product_id, { signal: controller.signal })
+              return result.data
+            } catch { return undefined }
+          }))
+          if (controller.signal.aborted) return
+          const editableLines = (previous.items || []).flatMap((line, index) => {
+            const product = currentProducts[index]
+            if (!product?.active) return []
+            const quantity = Number(line.quantity)
+            return [{
+              id: Number(product.id), name: String(product.name), price: Number(product.price_minor),
+              stock: Number(product.stock) + quantity, quantity,
+            }]
+          })
+          setCart(editableLines)
+          setCheckoutMode(previous.status === 'paid' ? 'full' : 'partial')
+          setPaid(decimal(previous.paid_minor))
+          if (editableLines.length !== (previous.items || []).length) {
+            setError('لم تُدرج بعض المنتجات من الفاتورة الأصلية لأنها غير نشطة أو لم تُحمّل. راجع السلة قبل التأكيد.')
+          }
+          setReissueLoaded(true)
         })
         .catch(error => { if (!controller.signal.aborted) setError(error.message) })
     }
-    if (allowed(user, 'customers.view')) {
-      request<Row[]>('/customers?per_page=50', { signal: controller.signal })
-        .then(result => setCustomers(result.data)).catch(() => { /* Customer IDs remain available. */ })
-    }
     return () => controller.abort()
-  }, [canSell, invoiceId, user])
+  }, [canSell, canViewCatalog, invoiceId])
 
   function availableStock(product: Row) {
     const originalLine = original?.items?.find(line => line.product_id === product.id)
@@ -347,10 +555,7 @@ export function Pos({ user }: { user: User }) {
     setError('')
     try {
       const term = query.trim()
-      const params = new URLSearchParams({ per_page: '20' })
-      if (term) params.set('q', term)
-      const response = await request<Row[]>('/products?' + params)
-      const found = response.data.filter(row => Boolean(row.active))
+      const found = await searchPosProducts(canViewCatalog, term)
       setProducts(found)
       const exact = term && found.find(row => String(row.barcode ?? '') === term)
       if (exact) { add(exact); setQuery('') }
@@ -360,7 +565,7 @@ export function Pos({ user }: { user: User }) {
 
   async function checkout(event: FormEvent) {
     event.preventDefault()
-    if (!cart.length || submitting || (invoiceId && !original)) return
+    if (!cart.length || submitting || (invoiceId && !reissueLoaded)) return
     setSubmitting(true)
     setError('')
     try {
@@ -377,6 +582,8 @@ export function Pos({ user }: { user: User }) {
           items: cart.map(item => ({ product_id: item.id, quantity: item.quantity })),
           paid_minor: amount,
           expected_total_minor: total,
+          invoice_date: documentDate || undefined,
+          notes: invoiceNotes.trim() || undefined,
           ...(invoiceId ? { reason: reissueReason.trim() } : {}),
         },
       }).then(result => {
@@ -388,12 +595,14 @@ export function Pos({ user }: { user: User }) {
         setCart([])
         setCustomer('')
         setPaid('')
+        setDocumentDate('')
+        setInvoiceNotes('')
         setCheckoutMode('full')
         setLastInvoice(result.data.id)
         if (allowed(user, 'invoices.view')) navigate('/invoices/' + result.data.id)
       })
       if (!allowed(user, 'invoices.view')) {
-        request<Row[]>('/products?per_page=20').then(result => setProducts(result.data.filter(row => Boolean(row.active))))
+        searchPosProducts(canViewCatalog).then(setProducts)
           .catch(() => { /* The confirmed sale remains valid if refreshing the catalog fails. */ })
       }
     } catch (error) { setError(error instanceof Error ? error.message : 'تعذر تأكيد الفاتورة.') }
@@ -406,7 +615,7 @@ export function Pos({ user }: { user: User }) {
   return (
     <>
       <PageTitle title={invoiceId ? 'تعديل الفاتورة ' + invoiceId : 'نقطة البيع'} description={invoiceId
-        ? 'أدخل بنود الفاتورة البديلة. ينعكس القيد الأصلي عند نجاح إصدار البديل.'
+        ? 'راجع البنود والأسعار الحالية. ينعكس القيد الأصلي عند نجاح إصدار البديل.'
         : 'ابحث عن منتج أو امسح الباركود لتسجيل البيع.'} />
       {!canSell ? <Notice error>ليست لديك صلاحية إنشاء فاتورة.</Notice> : (
         <>
@@ -426,7 +635,7 @@ export function Pos({ user }: { user: User }) {
                     <strong>{dataText(product.name)}</strong>
                     <small>{money(product.price_minor)} · المتاح {integer(availableStock(product))} {product.barcode ? '· ' + String(product.barcode) : ''}</small>
                   </div>
-                  <button className="secondary" disabled={submitting || availableStock(product) < 1 || Boolean(invoiceId && !original)} onClick={() => add(product)}>إضافة</button>
+                  <button className="secondary" disabled={submitting || availableStock(product) < 1 || Boolean(invoiceId && !reissueLoaded)} onClick={() => add(product)}>إضافة</button>
                 </article>)}
               </div>
             </section>
@@ -446,11 +655,10 @@ export function Pos({ user }: { user: User }) {
                     onClick={() => setCart(items => items.filter(line => line.id !== item.id))}>×</button></td>
                 </tr>)}</tbody>
               </table></div> : <p className="muted">أضف منتجًا لبدء الفاتورة.</p>}
-              <label className="field">العميل
-                <input list="pos-customers" type="text" inputMode="numeric" pattern="[0-9]+" placeholder="رقم العميل"
-                  disabled={submitting} value={customer} onChange={event => setCustomer(event.target.value)} />
-                <datalist id="pos-customers">{customers.map(row => <option key={idOf(row)} value={String(row.id)} label={String(row.name)} />)}</datalist>
-              </label>
+              {allowed(user, 'customers.view')
+                ? <FormInput field={posCustomerField} value={customer} set={setCustomer} disabled={submitting} />
+                : <label className="field">رقم العميل<input inputMode="numeric" pattern="[0-9]+" disabled={submitting}
+                    value={customer} onChange={event => setCustomer(event.target.value)} /></label>}
               <label className="field">طريقة السداد
                 <select disabled={submitting} value={checkoutMode} onChange={event => setCheckoutMode(event.target.value)}>
                   <option value="full">سداد كامل</option><option value="partial">سداد جزئي أو آجل</option>
@@ -459,6 +667,12 @@ export function Pos({ user }: { user: User }) {
               {checkoutMode === 'partial' && <label className="field">المبلغ المدفوع بالجنيه
                 <input value={paid} inputMode="decimal" required disabled={submitting} onChange={event => setPaid(event.target.value)} />
               </label>}
+              <label className="field">تاريخ الفاتورة
+                <input type="date" value={documentDate} disabled={submitting} onChange={event => setDocumentDate(event.target.value)} />
+              </label>
+              <label className="field">ملاحظات الفاتورة
+                <textarea value={invoiceNotes} maxLength={1000} disabled={submitting} onChange={event => setInvoiceNotes(event.target.value)} />
+              </label>
               {invoiceId && <label className="field">سبب التعديل<textarea required disabled={submitting}
                 value={reissueReason} onChange={event => setReissueReason(event.target.value)} /></label>}
               <div className="pos-total"><span>إجمالي الفاتورة</span><strong>{money(total)}</strong></div>
@@ -477,7 +691,7 @@ type Invoice = Row & { items?: Row[]; payments?: Row[]; refund?: Row | null }
 export function InvoiceDetail({ user }: { user: User }) {
   const { id } = useParams()
   const [invoice, setInvoice] = useState<Invoice>()
-  const [storeName, setStoreName] = useState('هينرا')
+  const [storeName, setStoreName] = useState('هلال')
   const [receiptFooter, setReceiptFooter] = useState('')
   const [error, setError] = useState('')
   useEffect(() => {
@@ -498,7 +712,7 @@ export function InvoiceDetail({ user }: { user: User }) {
     <div className="invoice-detail">
       <div className="no-print section-space"><Link className="secondary" to="/invoices">العودة إلى الفواتير</Link></div>
       <PageTitle title={'الفاتورة ' + (id || '')} action={invoice && <div className="form-actions no-print">
-        {invoice.status !== 'refunded' && allowed(user, 'invoices.create') && allowed(user, 'invoices.refund') &&
+        {invoice.status !== 'refunded' && allowed(user, 'products.view') && allowed(user, 'invoices.create') && allowed(user, 'invoices.refund') &&
           <Link className="secondary" to={'/pos/reissue/' + encodeURIComponent(id || '')}>تعديل الفاتورة</Link>}
         <button className="primary" onClick={() => window.print()}>طباعة الإيصال</button>
       </div>} />
@@ -507,7 +721,7 @@ export function InvoiceDetail({ user }: { user: User }) {
           <h2>{storeName}</h2>
           <dl className="invoice-summary">
             <div><dt>العميل</dt><dd>{dataText(invoice.customer_name)}</dd></div>
-            <div><dt>التاريخ</dt><dd>{formatDate(invoice.created_at)}</dd></div>
+            <div><dt>التاريخ</dt><dd>{formatDate(invoice.document_date || invoice.created_at)}</dd></div>
             <div><dt>الحالة</dt><dd>{statuses[String(invoice.status)] || dataText(invoice.status)}</dd></div>
             <div><dt>إجمالي الفاتورة</dt><dd>{money(invoice.total_minor)}</dd></div>
             <div><dt>المدفوع</dt><dd>{money(invoice.paid_minor)}</dd></div>
@@ -529,6 +743,7 @@ export function InvoiceDetail({ user }: { user: User }) {
           {Boolean(invoice.replaces_invoice_id) && <Link className="no-print" to={'/invoices/' + invoice.replaces_invoice_id}>عرض الفاتورة الأصلية</Link>}
           {Boolean(invoice.replacement_invoice_id) && <Link className="no-print" to={'/invoices/' + invoice.replacement_invoice_id}>عرض الفاتورة البديلة</Link>}
           {invoice.refund && <Notice>تم رد {money(invoice.refund.returned_minor)}. {dataText(invoice.refund.reason)}</Notice>}
+          {Boolean(invoice.notes) && <p>ملاحظات · {dataText(invoice.notes)}</p>}
           {receiptFooter && <p className="muted">{receiptFooter}</p>}
         </section>
       )}
@@ -560,7 +775,7 @@ function downloadSales(rows: Row[], from: string, to: string) {
   const url = URL.createObjectURL(new Blob(['\uFEFF', csv], { type: 'text/csv;charset=utf-8' }))
   const link = document.createElement('a')
   link.href = url
-  link.download = 'henra-sales-' + from + '-' + to + '.csv'
+  link.download = 'hilal-sales-' + from + '-' + to + '.csv'
   link.click()
   setTimeout(() => URL.revokeObjectURL(url), 1000)
 }
@@ -616,10 +831,13 @@ export function SalesReport() {
 const walletMetrics = [
   ['drawer_minor', 'رصيد الدرج النقدي'], ['provider_balance_minor', 'أرصدة المزودين'],
   ['receivables_minor', 'مستحقات المحافظ'], ['transfer_margin_minor', 'صافي عمولات التحويل'],
-  ['drawer_expense_minor', 'مصروفات الدرج'],
+  ['drawer_expense_minor', 'مصروفات الدرج'], ['profit_available_minor', 'الربح المتاح'],
+  ['profit_withdrawn_minor', 'الأرباح المسحوبة'], ['working_capital_minor', 'رأس المال العامل'],
 ] as const
 
-export function WalletReport() {
+export function WalletReport({ user }: { user: User }) {
+  const [withdrawing, setWithdrawing] = useState(false)
+  const [revision, setRevision] = useState(0)
   const [report, setReport] = useState<Row>()
   const [error, setError] = useState('')
   useEffect(() => {
@@ -628,12 +846,58 @@ export function WalletReport() {
       .then(result => setReport(result.data))
       .catch(error => { if (!controller.signal.aborted) setError(error.message) })
     return () => controller.abort()
-  }, [])
+  }, [revision])
   return <>
-    <PageTitle title="تقرير المحافظ" description="أرصدة المحافظ والدرج والذمم وصافي العمولات." />
+    <PageTitle title="تقرير المحافظ" description="أرصدة المحافظ والدرج والذمم وصافي العمولات." action={
+      <div className="form-actions"><Link className="secondary" to="/wallet-profit-withdrawals">سجل سحب الأرباح</Link>
+        {allowed(user, 'wallets.profit') && <button className="primary" onClick={() => setWithdrawing(true)}>سحب من الأرباح</button>}</div>
+    } />
+    {withdrawing && <ActionDialog action={createAction('سحب من الأرباح', '/wallet-profit-withdrawals', 'wallets.profit', [
+      required('amount_minor', 'المبلغ بالجنيه', 'money'), reference('wallet_id', 'المحفظة (اتركها فارغة للدرج النقدي)', '/wallets'), notes,
+    ], true)} close={() => setWithdrawing(false)} done={() => { setWithdrawing(false); setRevision(value => value + 1) }} />}
     {error ? <Notice error>{error}</Notice> : !report ? <Notice>جارٍ تحميل التقرير…</Notice> :
       <div className="metric-grid">{walletMetrics.map(([key, label]) =>
         <article className="panel metric" key={key}><p>{label}</p><strong>{money(report[key])}</strong></article>,
       )}</div>}
+  </>
+}
+
+export function DamageReport() {
+  const [result, setResult] = useState<Row>()
+  const [error, setError] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  async function run(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (busy) return
+    const values = new FormData(event.currentTarget)
+    const params = new URLSearchParams({ from: String(values.get('from')), to: String(values.get('to')) })
+    if (params.get('from')! > params.get('to')!) { setError('تاريخ البداية بعد تاريخ النهاية.'); return }
+    setBusy(true)
+    setError('')
+    setResult(undefined)
+    try {
+      const response = await request<Row>('/reports/damaged?' + params)
+      setResult(response.data)
+    } catch (error) { setError(error instanceof Error ? error.message : 'تعذر تحميل تقرير الهالك.') }
+    finally { setBusy(false) }
+  }
+
+  const metrics = [
+    ['entries', 'القيود المسجلة', integer], ['units', 'إجمالي الوحدات', integer],
+    ['total_value_minor', 'إجمالي قيمة الهالك', money], ['voided_entries', 'القيود الملغاة', integer],
+  ] as const
+  return <>
+    <Link className="secondary section-space" to="/damaged">الهالك</Link>
+    <PageTitle title="تقرير الهالك" />
+    <form className="panel form-card section-space" onSubmit={run}>
+      <label className="field">من تاريخ<input type="date" name="from" defaultValue={new Date(Date.now() - 6 * 86400000).toISOString().slice(0, 10)} required /></label>
+      <label className="field">إلى تاريخ<input type="date" name="to" defaultValue={new Date().toISOString().slice(0, 10)} required /></label>
+      <div className="form-actions"><button className="primary" disabled={busy}>{busy ? 'جارٍ التحميل…' : 'عرض التقرير'}</button></div>
+    </form>
+    {error && <Notice error>{error}</Notice>}
+    {result && <div className="metric-grid">{metrics.map(([key, label, format]) =>
+      <article className="panel metric" key={key}><p>{label}</p><strong>{format(result[key])}</strong></article>,
+    )}</div>}
   </>
 }

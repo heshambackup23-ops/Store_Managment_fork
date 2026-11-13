@@ -11,25 +11,28 @@ const rounds = 100000
 const encoder = new TextEncoder()
 const tokenPattern = /^[a-zA-Z0-9_-]{43}$/
 const hashPattern = /^pbkdf2-sha256\$100000\$([a-zA-Z0-9_-]{22})\$([a-zA-Z0-9_-]{43})$/
+const accessKeyPattern = /^hilal-ak1_[a-zA-Z0-9_-]{43}$/
+const accessKeyHash = /^hmac-sha256\$1\$([a-zA-Z0-9_-]{22})\$([a-zA-Z0-9_-]{43})$/
+const currentCredential = z.string().min(1).max(256)
 
 export const emailSchema = z.string().trim().max(254).email().transform((value) => value.toLowerCase())
 export const usernameSchema = z.string().trim().toLowerCase().min(1).max(80).regex(/^[a-z0-9._-]+$/)
-export const passwordSchema = z.string().min(12).max(256)
+export const passwordSchema = currentCredential.min(12).refine((value) => !accessKeyPattern.test(value))
 const name = z.string().trim().min(1).max(150)
-const login = z.object({ email: emailSchema, password: z.string().min(1).max(256) }).strict()
+const login = z.object({ email: emailSchema, password: currentCredential }).strict()
 const legacyLogin = z.object({
   username: usernameSchema,
-  password: z.string().min(1).max(256),
+  password: currentCredential,
   device_name: z.string().trim().min(1).max(80),
 }).strict()
 const passwordChange = z.object({
-  current_password: z.string().min(1).max(256),
+  current_password: currentCredential,
   new_password: passwordSchema,
 }).strict()
 const mobileProfile = z.object({
   name,
   email: emailSchema.nullish(),
-  current_password: z.string().min(1).max(256).nullish(),
+  current_password: currentCredential.nullish(),
   password: passwordSchema.nullish(),
   password_confirmation: z.string().max(256).nullish(),
 }).strict().refine((data) => !data.password || data.password === data.password_confirmation, {
@@ -69,14 +72,35 @@ export async function hashPassword(c: ApiContext, password: string) {
   return `pbkdf2-sha256$${rounds}$${b64(salt)}$${hash}`
 }
 
-async function verify(c: ApiContext, password: string, stored?: string) {
-  const match = stored?.match(hashPattern)
-  const salt = match ? unb64(match[1]) : new Uint8Array(16)
-  const hash = await derive(password, authPepper(c), salt)
-  if (!match) return false
+async function deriveAccessKey(secret: string, key: string, salt: string) {
+  return b64(new Uint8Array(await hmac(secret, `access-key-v1\0${salt}\0${key}`)))
+}
+
+export async function issueAccessKey(c: ApiContext) {
+  const key = 'hilal-ak1_' + b64(crypto.getRandomValues(new Uint8Array(32)))
+  const salt = b64(crypto.getRandomValues(new Uint8Array(16)))
+  const digest = await deriveAccessKey(authPepper(c), key, salt)
+  return { key, hash: `hmac-sha256$1$${salt}$${digest}` }
+}
+
+function matchesHash(hash: string, expected: string | undefined) {
+  if (!expected) return false
   let difference = 0
-  for (let i = 0; i < hash.length; i++) difference |= hash.charCodeAt(i) ^ match[2].charCodeAt(i)
+  for (let i = 0; i < hash.length; i++) difference |= hash.charCodeAt(i) ^ expected.charCodeAt(i)
   return difference === 0
+}
+
+async function verify(c: ApiContext, credential: string, stored?: string) {
+  const pepper = authPepper(c)
+  const passwordMatch = stored?.match(hashPattern)
+  if (accessKeyPattern.test(credential) && !passwordMatch) {
+    const match = stored?.match(accessKeyHash)
+    const hash = await deriveAccessKey(pepper, credential, match?.[1] ?? 'AAAAAAAAAAAAAAAAAAAAAA')
+    return matchesHash(hash, match?.[2])
+  }
+  const salt = passwordMatch ? unb64(passwordMatch[1]) : new Uint8Array(16)
+  const hash = await derive(credential, pepper, salt)
+  return matchesHash(hash, passwordMatch?.[2])
 }
 
 async function hashToken(token: string) {
@@ -124,10 +148,13 @@ type Identity = {
   email: string
   username: string | null
   role: string
+  credential_mode: Actor['credential_mode']
   permissions_json: string
 }
 
-const fields = `u.id, u.name, u.email, u.username, r.name AS role,
+export const credentialMode = `CASE WHEN u.password_hash GLOB 'hmac-sha256$1$*' THEN 'access_key' ELSE 'password' END`
+
+const fields = `u.id, u.name, u.email, u.username, r.name AS role, ${credentialMode} AS credential_mode,
   (SELECT json_group_array(permission) FROM role_permissions WHERE role_id = r.id) AS permissions_json`
 
 function actor(identity: Identity): Actor {
@@ -186,7 +213,7 @@ async function signIn(c: ApiContext, field: 'email' | 'username', identifier: st
   return { user: actor(identity), token, expires_at: new Date(expires * 1000).toISOString() }
 }
 
-function mobileActor(user: Actor) {
+function mobileActor(user: Actor, hilalClient: boolean) {
   const permits = new Set<string>()
   for (const module of ['categories', 'customers', 'notifications', 'products']) {
     if (user.permissions.includes('*') || user.permissions.includes(`${module}.view`) || module === 'notifications') {
@@ -195,6 +222,17 @@ function mobileActor(user: Actor) {
     if (['categories', 'customers'].includes(module)
       && (user.permissions.includes('*') || ['create', 'update', 'delete'].every((action) => user.permissions.includes(`${module}.${action}`)))) {
       permits.add(`page.${module}.manage`)
+    }
+  }
+  if (hilalClient) {
+    for (const [module, ...required] of [
+      ['invoices', 'invoices.view'], ['installments', 'installments.view', 'debts.view'],
+      ['maintenance', 'maintenance.view'], ['suppliers', 'suppliers.view'], ['sales', 'reports.view'],
+    ]) {
+      if (user.permissions.includes('*') || required.every(permission => user.permissions.includes(permission))) permits.add(`page.${module}.view`)
+    }
+    if (user.permissions.includes('*') || ['create', 'update', 'delete'].every(action => user.permissions.includes(`products.${action}`))) {
+      permits.add('page.products.manage')
     }
   }
   if (user.permissions.includes('*') || user.permissions.includes('invoices.create')) {
@@ -216,14 +254,14 @@ publicAuth.post('/auth/token', async (c) => {
   const { username, password } = await body(c, legacyLogin)
   const session = await signIn(c, 'username', username, password)
   return c.json({
-    data: { user: mobileActor(session.user), access_token: session.token, token_type: 'Bearer', expires_at: session.expires_at },
+    data: { user: mobileActor(session.user, c.req.header('X-Store-Client') === 'android'), access_token: session.token, token_type: 'Bearer', expires_at: session.expires_at },
   }, 201)
 })
 
 export const protectedAuth = new Hono<ApiEnv>()
 
 protectedAuth.get('/auth/me', (c) => ok(c, c.get('actor')))
-protectedAuth.get('/me', (c) => c.json({ data: mobileActor(c.get('actor')) }))
+protectedAuth.get('/me', (c) => c.json({ data: mobileActor(c.get('actor'), c.req.header('X-Store-Client') === 'android') }))
 protectedAuth.get('/profile', (c) => ok(c, c.get('actor')))
 
 protectedAuth.post('/auth/logout', async (c) => {
@@ -253,14 +291,24 @@ protectedAuth.patch('/profile', async (c) => {
   return ok(c, await renameProfile(c, changes.name))
 })
 
-async function updateCredentials(c: ApiContext, current: string, nextPassword: string | null, displayName: string | null, email: string) {
+type CredentialChange = { password: string } | { generateAccessKey: true }
+
+async function updateCredentials(
+  c: ApiContext,
+  current: string,
+  change: CredentialChange | null,
+  displayName: string | null,
+  email: string,
+) {
   const user = c.get('actor')
   await throttle(c, String(user.id), 'password')
   const db = c.env.DB
   const oldHash = await db.prepare('SELECT password_hash FROM users WHERE id = ? AND active = 1')
     .bind(user.id).first<string>('password_hash')
-  if (!await verify(c, current, oldHash ?? undefined)) fail(403, 'invalid_credentials', 'كلمة المرور الحالية غير صحيحة.')
-  const hash = nextPassword ? await hashPassword(c, nextPassword) : oldHash
+  if (!await verify(c, current, oldHash ?? undefined)) fail(403, 'invalid_credentials', 'بيانات الدخول الحالية غير صحيحة.')
+  const key = change && 'generateAccessKey' in change ? await issueAccessKey(c) : null
+  const hash = key?.hash ?? (change && 'password' in change ? await hashPassword(c, change.password) : oldHash)
+  const action = key ? 'access_key_rotated' : change ? 'password_changed' : 'email_changed'
   const [updated] = await db.batch([
     db.prepare(`UPDATE users SET name = coalesce(?, name), email = ?, password_hash = ?, updated_at = ${timestamp}
       WHERE id = ? AND email = ? AND password_hash = ? AND active = 1`)
@@ -268,20 +316,27 @@ async function updateCredentials(c: ApiContext, current: string, nextPassword: s
     db.prepare(`
       INSERT INTO audit_logs (actor_id, action, entity_type, entity_id)
       SELECT ?, ?, 'profile', ? WHERE changes() = 1
-    `).bind(user.id, nextPassword ? 'password_changed' : 'email_changed', user.id),
+    `).bind(user.id, action, user.id),
     db.prepare(`DELETE FROM auth_sessions WHERE user_id = ? AND token_hash <> ?
       AND EXISTS (SELECT 1 FROM users WHERE id = ? AND email = ? AND password_hash = ?)`)
       .bind(user.id, c.get('sessionHash'), user.id, email, hash),
   ])
   if (!updated.meta.changes) fail(409, 'password_changed', 'تغيرت بيانات الدخول. أعد المحاولة.')
-  return { ...user, name: displayName ?? user.name, email }
+  const mode = key ? 'access_key' as const : change ? 'password' as const : user.credential_mode
+  return { user: { ...user, name: displayName ?? user.name, email, credential_mode: mode }, accessKey: key?.key }
 }
 
 protectedAuth.post('/profile/password', async (c) => {
   const { current_password, new_password } = await body(c, passwordChange)
   const user = c.get('actor')
-  await updateCredentials(c, current_password, new_password, null, user.email)
+  await updateCredentials(c, current_password, { password: new_password }, null, user.email)
   return ok(c, { password_changed: true })
+})
+
+protectedAuth.post('/profile/access-key', async (c) => {
+  const { current_password } = await body(c, z.object({ current_password: currentCredential }).strict())
+  const result = await updateCredentials(c, current_password, { generateAccessKey: true }, null, c.get('actor').email)
+  return ok(c, { access_key: result.accessKey, credential_mode: 'access_key' })
 })
 
 protectedAuth.put('/profile', async (c) => {
@@ -290,7 +345,8 @@ protectedAuth.put('/profile', async (c) => {
   const email = data.email ?? user.email
   if (email !== user.email || data.password) {
     if (!data.current_password) fail(422, 'current_password_required', 'أدخل كلمة المرور الحالية.')
-    return ok(c, await updateCredentials(c, data.current_password, data.password ?? null, data.name, email))
+    const { user: updated } = await updateCredentials(c, data.current_password, data.password ? { password: data.password } : null, data.name, email)
+    return ok(c, updated)
   }
   return ok(c, await renameProfile(c, data.name))
 })

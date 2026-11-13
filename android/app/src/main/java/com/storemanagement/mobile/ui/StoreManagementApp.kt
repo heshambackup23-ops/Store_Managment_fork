@@ -1733,7 +1733,7 @@ private fun ProductRow(
         Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             AsyncImage(
-                model = product.imageUrl,
+                model = productImageModel(product.imageUrl, product.serverUpdatedAt),
                 contentDescription = product.name,
                 placeholder = painterResource(android.R.drawable.ic_menu_gallery),
                 error = painterResource(android.R.drawable.ic_menu_gallery),
@@ -1790,7 +1790,7 @@ private fun ProductDetailsSheet(cached: CachedProduct, state: ProductDetailUiSta
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         AsyncImage(
-            model = product?.imageUrl ?: cached.imageUrl,
+            model = productImageModel(product?.imageUrl ?: cached.imageUrl, product?.updatedAt ?: cached.serverUpdatedAt),
             contentDescription = product?.name ?: cached.name,
             placeholder = painterResource(android.R.drawable.ic_menu_gallery),
             error = painterResource(android.R.drawable.ic_menu_gallery),
@@ -2389,7 +2389,7 @@ private fun ProductCashierScreen(
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
                             AsyncImage(
-                                model = product.imageUrl,
+                                model = productImageModel(product.imageUrl),
                                 contentDescription = product.name,
                                 placeholder = painterResource(android.R.drawable.ic_menu_gallery),
                                 error = painterResource(android.R.drawable.ic_menu_gallery),

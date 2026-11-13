@@ -43,17 +43,22 @@ async function worker(t) {
       .bind(createHash('sha256').update(token).digest('base64url'), index + 1, Math.floor(Date.now() / 1000) + 300)
   ));
 
-  return async (path, { method = 'GET', body, key = randomUUID(), identity = 0 } = {}) => {
+  return async (path, { method = 'GET', body, image, key = randomUUID(), identity = 0, android = false } = {}) => {
     const headers = {};
     if (tokens[identity]) headers.Authorization = 'Bearer ' + tokens[identity];
+    if (android) headers['X-Store-Client'] = 'android';
+    if (image) headers['Content-Type'] = 'image/png';
     if (body) {
       headers['Content-Type'] = 'application/json';
       headers['Idempotency-Key'] = key;
     }
     const response = await mf.dispatchFetch('http://localhost/api/v1' + path, {
-      method, headers, body: body ? JSON.stringify(body) : undefined,
+      method, headers, body: image ?? (body ? JSON.stringify(body) : undefined),
     });
-    return { status: response.status, json: await response.json() };
+    const contentType = response.headers.get('Content-Type');
+    return { status: response.status, contentType,
+      json: contentType?.includes('application/json') ? await response.json() : null,
+      image: contentType?.startsWith('image/') ? new Uint8Array(await response.arrayBuffer()) : null };
   };
 }
 
@@ -85,6 +90,18 @@ test('Worker and local D1 enforce financial rules through the mounted API', asyn
     assert.equal(invoice.total_minor, 2500);
     assert.equal(invoice.paid_minor, 500);
     assert.equal(invoice.items[0].unit_price_minor, 2500);
+
+    const mobile = assertStatus(await request('/invoices/' + invoiceId, { android: true }), 200);
+    assert.equal(mobile.invoice_number, String(invoiceId));
+    assert.equal(mobile.status, 'partial');
+    assert.equal(mobile.total_amount, '25.00');
+    assert.equal(mobile.remaining_amount, '20.00');
+    assert.equal(mobile.items[0].line_total, '25.00');
+    const mobileList = await request('/invoices?q=' + invoiceId, { android: true });
+    assert.equal(assertStatus(mobileList, 200).length, 1);
+    assert.equal(mobileList.json.meta.current_page, 1);
+    assertStatus(await request('/invoices/' + invoiceId, { android: true, identity: 1 }), 403);
+    assert.equal(assertStatus(await request('/sales', { android: true }), 200)[0].sold_quantity, 1);
 
     const pay = () => post('/invoices/' + invoiceId + '/payments', { amount_minor: 1500 });
     const payments = await Promise.all([pay(), pay()]);
@@ -201,5 +218,222 @@ test('Worker and local D1 enforce financial rules through the mounted API', asyn
     assertStatus(await post('/inventory/adjustments', { product_id: 1, delta: 1, note: 'demo' }), 201);
     const cash = assertStatus(await post('/cashier/checkout', { items, received: '30' }), 201);
     assert.equal(cash.change, '5.00');
+  });
+
+  await t.test('supplier receipts allocate oldest purchase first, then opening balance', async () => {
+    const supplier = assertStatus(await post('/suppliers', {
+      name: 'Demo Credit Supplier', email: 'vendor@example.invalid', opening_minor: 400,
+    }), 201);
+    const createPurchase = (purchase_date, payment_type, paid_minor) => post('/purchases', {
+      supplier_id: supplier.id, description: 'purchase fixture', total_minor: 1000, purchase_date, payment_type, paid_minor,
+    });
+    const newer = assertStatus(await createPurchase('2026-03-01', 'credit', 200), 201);
+    const older = assertStatus(await createPurchase('2026-02-01', 'credit'), 201);
+    const cash = assertStatus(await createPurchase('2026-04-01', 'cash'), 201);
+    assert.equal(assertStatus(await request('/purchases/' + cash.id), 200).paid_minor, 1000);
+    assertStatus(await post('/suppliers/' + supplier.id + '/payments', { amount_minor: 1200, payment_date: '2026-04-10' }), 201);
+    assert.equal(assertStatus(await request('/purchases/' + older.id), 200).paid_minor, 1000);
+    assert.equal(assertStatus(await request('/purchases/' + newer.id), 200).paid_minor, 400);
+    const settle = () => post('/suppliers/' + supplier.id + '/payments', { amount_minor: 1000, payment_date: '2026-04-11' });
+    const competing = await Promise.all([settle(), settle()]);
+    assert.deepEqual(competing.map(item => item.status).sort(), [201, 409], JSON.stringify(competing));
+    const detail = assertStatus(await request('/suppliers/' + supplier.id), 200);
+    assert.equal(detail.opening_paid_minor, 400);
+    assert.equal(detail.balance_minor, 0);
+    assert.equal(detail.payments[0].opening_applied_minor, 400);
+    assertStatus(await request('/suppliers/' + supplier.id, {
+      method: 'PATCH', body: { name: detail.name, active: true, opening_minor: 399 },
+    }), 409);
+  });
+
+  await t.test('independent installment/debt void and maintenance archive preserve prior payments', async () => {
+    const unpaid = { customer_id: 1, principal_minor: 300, due_date: '2030-01-01' };
+    const installment = assertStatus(await post('/installments', unpaid), 201);
+    assertStatus(await post('/installments/' + installment.id + '/void', { reason: 'cancel demo' }), 201);
+    assertStatus(await post('/installments/' + installment.id + '/payments', { amount_minor: 100 }), 409);
+    assert.equal(assertStatus(await request('/installments/' + installment.id), 200).status, 'voided');
+    const paidInstallment = assertStatus(await post('/installments', { ...unpaid, paid_minor: 100 }), 201);
+    assert.equal(assertStatus(await request('/installments/' + paidInstallment.id), 200).paid_minor, 100);
+    assertStatus(await post('/installments/' + paidInstallment.id + '/void', { reason: 'cancel demo' }), 409);
+
+    const debt = assertStatus(await post('/debts', { person_name: 'Void fixture', principal_minor: 1000, description: 'demo' }), 201);
+    assertStatus(await post('/debts/' + debt.id + '/void', { reason: 'demo' }), 201);
+    assertStatus(await post('/debts/' + debt.id + '/payments', { amount_minor: 100 }), 409);
+    assert.equal(assertStatus(await request('/debts/' + debt.id), 200).status, 'voided');
+    const initial = assertStatus(await post('/debts', { person_name: 'Paid fixture', principal_minor: 1000, paid_minor: 100 }), 201);
+    assertStatus(await post('/debts/' + initial.id + '/void', { reason: 'demo' }), 409);
+
+    const repair = assertStatus(await post('/maintenance', {
+      customer_name: 'Archival fixture', item: 'Phone', problem: 'test', price_minor: 100,
+    }), 201);
+    assertStatus(await request('/maintenance/' + repair.id, { method: 'DELETE' }), 200);
+    assertStatus(await post('/maintenance/' + repair.id + '/payments', { amount_minor: 100 }), 409);
+    assert.equal(assertStatus(await request('/maintenance?q=Archival'), 200).length, 0);
+  });
+
+  await t.test('damage correction applies only the difference and keeps a historical record', async () => {
+    assertStatus(await post('/inventory/adjustments', { product_id: 1, delta: 4, note: 'demo' }), 201);
+    const damage = assertStatus(await post('/damaged', { product_id: 1, quantity: 1, reason: 'demo damage' }), 201);
+    const path = '/damaged/' + damage.id;
+    assert.equal(assertStatus(await request(path), 200).unit_value_minor, 2500);
+    assertStatus(await post(path + '/correct', { quantity: 5, reason: 'quantity too high' }), 409);
+    assertStatus(await post(path + '/correct', { quantity: 3, reason: 'corrected', unit_value_minor: 2000, damaged_on: '2026-04-01' }), 201);
+    const corrected = assertStatus(await request(path), 200);
+    assert.equal(corrected.total_value_minor, 6000);
+    assert.equal(corrected.corrections[0].previous_quantity, 1);
+    const reportPath = '/reports/damaged?from=2026-04-01&to=2026-04-01';
+    assert.equal(assertStatus(await request(reportPath), 200).total_value_minor, 6000);
+    assertStatus(await post(path + '/reverse', { reason: 'demo' }), 201);
+    assert.equal(assertStatus(await request(reportPath), 200).voided_entries, 1);
+    assertStatus(await post(path + '/correct', { quantity: 1, reason: 'demo' }), 409);
+    assert.equal(assertStatus(await request('/products/1'), 200).stock, 4);
+  });
+
+  await t.test('withdrawals cannot overdraw the same profits and wallet transfer keeps counterparty', async () => {
+    const wallet = assertStatus(await post('/wallets', { name: 'Profit fixture', opening_minor: 1000, transaction_limit_minor: 500 }), 201);
+    const walletPath = '/wallets/' + wallet.id + '/transactions';
+    const transfer = assertStatus(await post(walletPath, {
+      kind: 'send', amount_minor: 500, commission_minor: 200, counterparty: '01000000000',
+    }), 201);
+    assert.equal(assertStatus(await request('/wallet-transactions?wallet_id=' + wallet.id), 200)[0].counterparty, '01000000000');
+    assertStatus(await post('/wallet-transactions/' + transfer.id + '/reverse', { reason: 'counterparty test' }), 201);
+    assert.equal(assertStatus(await request('/wallet-transactions?wallet_id=' + wallet.id), 200)[0].counterparty, '01000000000');
+    assertStatus(await post(walletPath, { kind: 'send', amount_minor: 500, commission_minor: 200 }), 201);
+    const withdraw = wallet_id => post('/wallet-profit-withdrawals', { amount_minor: 150, wallet_id });
+    const competing = await Promise.all([withdraw(wallet.id), withdraw(null)]);
+    assert.deepEqual(competing.map(item => item.status).sort(), [201, 409], JSON.stringify(competing));
+    const report = assertStatus(await request('/reports/wallets'), 200);
+    assert.equal(report.profit_withdrawn_minor, 150);
+    assert.equal(report.profit_available_minor, 40);
+    assertStatus(await post('/wallet-profit-withdrawals', { amount_minor: 40, wallet_id: wallet.id }), 201);
+    const withdrawal = assertStatus(await request('/wallet-profit-withdrawals'), 200)[0];
+    assertStatus(await post('/wallet-transactions/' + withdrawal.id + '/reverse', { reason: 'demo' }), 409);
+  });
+
+  await t.test('wallet defaults round minor units and adjustments bypass the cashier limit', async () => {
+    const wallet = assertStatus(await post('/wallets', {
+      name: 'Wallet pricing fixture', opening_minor: 1000, transaction_limit_minor: 90,
+      default_commission_bps: 1250, default_commission_min_minor: 7,
+      default_fee_bps: 1000, default_fee_min_minor: 3, default_fee_max_minor: 4,
+    }), 201);
+    const path = '/wallets/' + wallet.id;
+    const ledger = '/wallet-transactions?wallet_id=' + wallet.id;
+    assertStatus(await post(path + '/transactions', {
+      kind: 'send', amount_minor: 84, deferred: { customer_id: 1 },
+    }), 201);
+    const transfer = assertStatus(await request(ledger), 200)[0];
+    assert.equal(transfer.commission_minor, 11);
+    assert.equal(transfer.fee_minor, 4);
+    assert.equal(transfer.delta_minor, -88);
+    assert.equal(assertStatus(await request('/wallet-debts/' + transfer.wallet_debt_id), 200).principal_minor, 95);
+    assertStatus(await post(path + '/transactions', {
+      kind: 'receive', amount_minor: 84, commission_minor: 0, fee_minor: 0,
+    }), 201);
+    assert.equal(assertStatus(await request(ledger), 200)[0].fee_minor, 0);
+    const adjustment = assertStatus(await post(path + '/adjustments', { delta_minor: -200, reason: 'reconcile demo' }), 201);
+    assert.equal(assertStatus(await request(ledger), 200)[0].adjustment_id, adjustment.id);
+    assertStatus(await post(path + '/adjustments', { delta_minor: -1000, reason: 'insufficient' }), 409);
+    assertStatus(await post(path + '/active', { active: false }), 200);
+    assertStatus(await post(path + '/transactions', { kind: 'receive', amount_minor: 84 }), 409);
+  });
+
+  await t.test('private image routes enforce access, type, bytes, and remove metadata', async () => {
+    const pixels = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j0YsAAAAASUVORK5CYII=', 'base64');
+    const damage = assertStatus(await post('/damaged', { product_id: 1, quantity: 1, reason: 'image fixture' }), 201);
+    const maintenance = assertStatus(await post('/maintenance', {
+      customer_name: 'Image fixture', item: 'Phone', problem: 'image test',
+    }), 201);
+    for (const path of ['/damaged/' + damage.id, '/maintenance/' + maintenance.id]) {
+      const image = path + '/image';
+      assertStatus(await request(image, { method: 'PUT', image: Uint8Array.of(1, 2, 3) }), 415);
+      assertStatus(await request(image, { method: 'PUT', image: pixels }), 200);
+      assert.equal(assertStatus(await request(path), 200).has_image, 1);
+      const downloaded = await request(image);
+      assert.equal(downloaded.contentType, 'image/png');
+      assert.deepEqual(downloaded.image, new Uint8Array(pixels));
+      assertStatus(await request(image, { identity: 1 }), 403);
+      assertStatus(await request(image, { method: 'DELETE' }), 200);
+      assert.equal(assertStatus(await request(path), 200).has_image, 0);
+    }
+  });
+
+  await t.test('document dates and notes stay separate from invoice ledger dates', async () => {
+    const sale = assertStatus(await post('/invoices', {
+      items: [{ product_id: 1, quantity: 1 }], paid_minor: 2500, invoice_date: '2020-02-20', notes: 'ملاحظة تجريبية',
+    }), 201);
+    const invoice = assertStatus(await request('/invoices/' + sale.id), 200);
+    assert.equal(invoice.invoice_date, '2020-02-20');
+    assert.equal(invoice.notes, 'ملاحظة تجريبية');
+    assert.notEqual(invoice.created_at.slice(0, 10), invoice.invoice_date);
+    assert.equal(assertStatus(await request('/invoices?from=2020-02-20&to=2020-02-20'), 200).length, 1);
+    assert.equal(assertStatus(await request('/reports/sales?from=2020-02-20&to=2020-02-20'), 200).days.length, 0);
+  });
+
+  await t.test('standalone installments preserve item snapshots and cannot force paid status', async () => {
+    const stock = assertStatus(await request('/products/1'), 200).stock;
+    const installment = assertStatus(await post('/installments', {
+      customer_id: 1, items: [{ product_id: 1, quantity: 3 }], paid_minor: 1000,
+      due_date: '2030-02-20', payment_date: '2026-02-20',
+    }), 201);
+    const path = '/installments/' + installment.id;
+    const original = assertStatus(await request(path), 200);
+    assert.equal(original.principal_minor, 7500);
+    assert.equal(original.items[0].quantity, 3);
+    assert.equal(original.items[0].line_total_minor, 7500);
+    assert.equal(original.payment_date, '2026-02-20');
+    assert.equal(assertStatus(await request('/products/1'), 200).stock, stock);
+    assertStatus(await post(path + '/status', { status: 'overdue' }), 200);
+    assert.equal(assertStatus(await request(path), 200).status, 'overdue');
+    assertStatus(await post(path + '/status', { status: 'paid' }), 404);
+    assertStatus(await request(path, {
+      method: 'PATCH', body: { due_date: '2030-02-20', principal_minor: 2000 },
+    }), 404);
+    assertStatus(await request(path, {
+      method: 'PATCH', body: { due_date: '2030-02-20', product_name: 'Manual fixture', principal_minor: 2000 },
+    }), 200);
+    const edited = assertStatus(await request(path), 200);
+    assert.equal(edited.product_name, 'Manual fixture');
+    assert.deepEqual(edited.items, []);
+    assert.equal(edited.principal_minor, 2000);
+    assertStatus(await post(path + '/payments', { amount_minor: 1000 }), 201);
+    assert.equal(assertStatus(await request(path), 200).status, 'paid');
+  });
+
+  await t.test('supplier stock receipts are explicit, idempotent and reverse atomically', async () => {
+    const supplier = assertStatus(await post('/suppliers', { name: 'Receiving fixture' }), 201);
+    const purchase = assertStatus(await post('/purchases', {
+      supplier_id: supplier.id, description: 'historical purchase', total_minor: 2000, purchase_date: '2026-03-01',
+    }), 201);
+    const path = '/purchases/' + purchase.id + '/receipts';
+    const stock = async () => assertStatus(await request('/products/1'), 200).stock;
+    const openingStock = await stock();
+    assert.deepEqual(assertStatus(await request(path), 200), []);
+    const receipt = { reference: 'RC-001', items: [{ product_id: 1, quantity: 3 }], received_on: '2026-03-02' };
+    assertStatus(await post(path, receipt, { identity: 1 }), 403);
+    assertStatus(await post(path, { ...receipt, items: [...receipt.items, { product_id: 999, quantity: 2 }] }), 409);
+    assert.equal(await stock(), openingStock);
+    assert.deepEqual(assertStatus(await request(path), 200), []);
+    const key = randomUUID();
+    const sameKey = await Promise.all([post(path, receipt, { key }), post(path, receipt, { key })]);
+    const record = assertStatus(sameKey[0], 201);
+    assert.deepEqual(assertStatus(sameKey[1], 201), record);
+    assert.equal(await stock(), openingStock + 3);
+    const list = assertStatus(await request(path), 200);
+    assert.equal(list[0].items[0].product_barcode, 'DEMO-100');
+    assertStatus(await post(path, { ...receipt, reference: 'rc-001' }), 409);
+    const reverse = path + '/' + record.id + '/reverse';
+    assertStatus(await post('/inventory/adjustments', { product_id: 1, delta: -(openingStock + 1), note: 'simulate stock movement' }), 201);
+    assert.equal(await stock(), 2);
+    assertStatus(await post(reverse, { reason: 'cannot remove sold or removed units' }), 409);
+    assert.equal(assertStatus(await request(path), 200)[0].reversed_by, null);
+    assertStatus(await post('/inventory/adjustments', { product_id: 1, delta: 1, note: 'replace one unit' }), 201);
+    const reversals = await Promise.all([post(reverse, { reason: 'supplier return' }), post(reverse, { reason: 'supplier return' })]);
+    assert.deepEqual(reversals.map(result => result.status).sort(), [201, 409], JSON.stringify(reversals));
+    assert.equal(await stock(), 0);
+    assert.equal(assertStatus(await request(path), 200)[0].reversal_reason, 'supplier return');
+    assert.equal(assertStatus(await request('/purchases/' + purchase.id), 200).paid_minor, 0);
+    const movements = assertStatus(await request('/inventory/movements?product_id=1'), 200);
+    assert.ok(movements.some(row => row.purchase_stock_receipt_id === record.id && row.delta === 3));
+    assert.ok(movements.some(row => row.purchase_stock_reversal_id && row.delta === -3));
   });
 });

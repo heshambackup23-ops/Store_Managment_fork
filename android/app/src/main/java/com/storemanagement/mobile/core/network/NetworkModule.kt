@@ -31,7 +31,7 @@ object NetworkModule {
     @Provides
     @Singleton
     fun provideAuthInterceptor(tokenStore: SecureTokenStore): Interceptor = Interceptor { chain ->
-        val request = chain.request()
+        val request = chain.request().newBuilder().header("X-Store-Client", "android").build()
         val token = tokenStore.readToken()
         val authorizedRequest = if (token.isNullOrBlank()) {
             request

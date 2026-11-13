@@ -6,9 +6,12 @@ import { allowedOrigin, authRequired, protectedAuth, publicAuth } from './auth'
 import { backup } from './backup'
 import { business, businessPermissions } from './business'
 import { catalog, catalogPermissions } from './catalog'
+import { customerLedger } from './customer-ledger'
 import { dashboard } from './dashboard'
 import { ApiError, fail, ok } from './http'
 import type { ApiEnv } from './http'
+import { mobileCompatibility } from './mobile-compat'
+import { mobileWriteCompatibility } from './mobile-write-compat'
 
 const app = new Hono<ApiEnv>()
 
@@ -38,9 +41,12 @@ app.get('/health', async (c) => {
 const api = new Hono<ApiEnv>()
 api.route('/', publicAuth)
 api.use('*', authRequired)
+api.route('/', mobileWriteCompatibility)
+api.route('/', mobileCompatibility)
 api.route('/', protectedAuth)
 api.route('/', dashboard)
 api.route('/', catalog)
+api.route('/', customerLedger)
 api.route('/', adminRoutes([...catalogPermissions, ...adminPermissions, ...businessPermissions, 'backup.export']))
 api.route('/', notifications)
 api.route('/', business)

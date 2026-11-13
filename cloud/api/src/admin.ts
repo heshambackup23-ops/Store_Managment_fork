@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
-import { emailSchema, hashPassword, passwordSchema, usernameSchema } from './auth'
+import { credentialMode, emailSchema, hashPassword, issueAccessKey, passwordSchema, usernameSchema } from './auth'
 import {
   auditedWrite, body, fail, hasPermission, identifier, notFoundIfUnchanged, ok,
   patchStatement, permit, searchPrefix, searchText, selectPage, timestamp,
@@ -16,17 +16,21 @@ export const adminPermissions = [
 const humanName = z.string().trim().min(1).max(150)
 const nullableText = z.string().trim().max(500).nullable().optional()
 const active = z.union([z.boolean(), z.literal(0), z.literal(1)]).transform(Number)
-const staffCreate = z.object({
+const staffDetails = z.object({
   name: humanName,
   username: usernameSchema.nullable().optional(),
   email: emailSchema,
-  password: passwordSchema,
   role_id: z.number().int().positive(),
   active: active.optional(),
 }).strict()
-const staffEdit = staffCreate.omit({ password: true }).partial()
+const staffCreate = z.union([
+  staffDetails.extend({ credential_mode: z.literal('password').optional(), password: passwordSchema }),
+  staffDetails.extend({ credential_mode: z.literal('access_key') }),
+])
+const staffEdit = staffDetails.partial()
 const staffTable = 'users u JOIN roles r ON r.id = u.role_id'
-const staffFields = 'u.id, u.name, u.username, u.email, u.role_id, r.name AS role, u.active, u.created_at, u.updated_at'
+const staffFields = `u.id, u.name, u.username, u.email, u.role_id, r.name AS role, u.active, u.created_at, u.updated_at,
+  ${credentialMode} AS credential_mode`
 const roleFields = `r.id, r.name, r.is_system, r.created_at,
   (SELECT json_group_array(permission) FROM role_permissions WHERE role_id = r.id) AS permissions_json`
 const settings = z.object({
@@ -80,11 +84,14 @@ export function adminRoutes(allPermissions: string[]) {
     requireSuperadmin(c)
     const data = await body(c, staffCreate)
     const db = c.env.DB
+    const credential = data.credential_mode === 'access_key'
+      ? await issueAccessKey(c)
+      : { hash: await hashPassword(c, data.password), key: undefined }
     const result = await auditedWrite(c, db.prepare(`
       INSERT INTO users (name, username, email, password_hash, role_id, active) VALUES (?, ?, ?, ?, ?, ?)
-    `).bind(data.name, data.username ?? null, data.email, await hashPassword(c, data.password), data.role_id, data.active ?? 1),
+    `).bind(data.name, data.username ?? null, data.email, credential.hash, data.role_id, data.active ?? 1),
     'create', 'staff', null)
-    return ok(c, await staffMember(c, result.meta.last_row_id), 201)
+    return ok(c, { ...await staffMember(c, result.meta.last_row_id), access_key: credential.key }, 201)
   })
 
   admin.patch('/staff/:id', permit('staff.update'), async (c) => {
@@ -102,20 +109,33 @@ export function adminRoutes(allPermissions: string[]) {
     return ok(c, await staffMember(c, id))
   })
 
+  async function resetCredential(c: ApiContext, id: number, hash: string, action: 'reset_password' | 'reset_access_key') {
+    const db = c.env.DB
+    const [result] = await db.batch([
+      db.prepare(`UPDATE users SET password_hash = ?, updated_at = ${timestamp} WHERE id = ?`)
+        .bind(hash, id),
+      db.prepare(`INSERT INTO audit_logs (actor_id, action, entity_type, entity_id)
+        SELECT ?, ?, 'staff', ? WHERE changes() > 0`).bind(c.get('actor').id, action, id),
+      db.prepare('DELETE FROM auth_sessions WHERE user_id = ?').bind(id),
+    ])
+    notFoundIfUnchanged(result)
+  }
+
   admin.post('/staff/:id/password', permit('staff.reset_password'), async (c) => {
     requireSuperadmin(c)
     const id = identifier.parse(c.req.param('id'))
     const { password } = await body(c, z.object({ password: passwordSchema }).strict())
-    const db = c.env.DB
-    const [result] = await db.batch([
-      db.prepare(`UPDATE users SET password_hash = ?, updated_at = ${timestamp} WHERE id = ?`)
-        .bind(await hashPassword(c, password), id),
-      db.prepare(`INSERT INTO audit_logs (actor_id, action, entity_type, entity_id)
-        SELECT ?, 'reset_password', 'staff', ? WHERE changes() > 0`).bind(c.get('actor').id, id),
-      db.prepare('DELETE FROM auth_sessions WHERE user_id = ?').bind(id),
-    ])
-    notFoundIfUnchanged(result)
+    await resetCredential(c, id, await hashPassword(c, password), 'reset_password')
     return ok(c, { id })
+  })
+
+  admin.post('/staff/:id/access-key', permit('staff.reset_password'), async (c) => {
+    requireSuperadmin(c)
+    const id = identifier.parse(c.req.param('id'))
+    if (id === c.get('actor').id) fail(422, 'use_profile', 'جدّد مفتاح حسابك من الملف الشخصي.')
+    const credential = await issueAccessKey(c)
+    await resetCredential(c, id, credential.hash, 'reset_access_key')
+    return ok(c, { id, access_key: credential.key })
   })
 
   admin.get('/roles', permit('roles.view'), async (c) => {

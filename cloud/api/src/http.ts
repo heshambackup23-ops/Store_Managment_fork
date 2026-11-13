@@ -8,6 +8,7 @@ export type Actor = {
   email: string
   username: string | null
   role: string
+  credential_mode: 'password' | 'access_key'
   permissions: string[]
 }
 
