@@ -148,7 +148,7 @@ mobileWalletDamage.post('/damaged/:id/void', async (c, next) => {
 })
 
 type Wallet = {
-  id: number; name: string; provider: string; phone: string; balance_minor: number; active: number
+  id: number; name: string; provider: string; phone: string; balance_minor: number; active: number; warn_at_percent: number
   transaction_limit_minor: number | null; daily_send_limit_minor: number | null; daily_receive_limit_minor: number | null
   monthly_send_limit_minor: number | null; monthly_receive_limit_minor: number | null
   default_commission_bps: number; default_commission_min_minor: number; default_fee_bps: number
