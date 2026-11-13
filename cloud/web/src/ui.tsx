@@ -19,7 +19,7 @@ export interface Field {
   reference?: { path: string; label?: string; searchable?: boolean }
   required?: boolean
   nullable?: boolean
-  initial?: string
+  initial?: string | (() => string)
   min?: number
   placeholder?: string
   read?: (row: Row) => string
@@ -98,7 +98,8 @@ function initialValues(fields: Field[], row?: Row): Record<string, string> {
     if (field.kind === 'date' && typeof value === 'string') return [field.name, value.slice(0, 10)]
     if (field.kind === 'check' && value !== undefined) return [field.name, value ? 'true' : 'false']
     if ((field.kind === 'multi' || field.kind === 'items') && Array.isArray(value)) return [field.name, JSON.stringify(value)]
-    return [field.name, value === null || value === undefined ? field.initial || '' : String(value)]
+    const initial = typeof field.initial === 'function' ? field.initial() : field.initial
+    return [field.name, value === null || value === undefined ? initial || '' : String(value)]
   }))
 }
 
@@ -179,7 +180,7 @@ export function FormInput({ field, value, set, disabled }: { field: Field; value
                 <option value="">اختر من القائمة</option>
                 {field.options?.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
               </select>
-            : <input id={inputId} disabled={disabled} type={kind === 'money' || kind === 'signed-money' ? 'text' : kind} inputMode={kind === 'money' || kind === 'signed-money' ? 'decimal' : undefined}
+            : <input id={inputId} name={field.name} disabled={disabled} type={kind === 'money' || kind === 'signed-money' ? 'text' : kind} inputMode={kind === 'money' || kind === 'signed-money' ? 'decimal' : undefined}
                 min={field.min} step={kind === 'number' ? 1 : undefined} required={field.required} placeholder={field.placeholder}
                 autoComplete={kind === 'password' ? 'new-password' : undefined}
                 value={value} onChange={event => set(event.target.value)} />}
@@ -267,7 +268,9 @@ export function ActionDialog({ action, row, close, done, extra, prepare, waiting
     setError('')
     try {
       const method = action.method || 'POST'
-      const body = Object.fromEntries(visible.map(field => [field.name, encodeField(field, values[field.name] || '')]))
+      const submitted = new FormData(event.currentTarget as HTMLFormElement)
+      const body = Object.fromEntries(visible.map(field => [field.name, encodeField(field,
+        field.kind === 'date' ? String(submitted.get(field.name) ?? values[field.name] ?? '') : values[field.name] || '')]))
       const transformed = action.transform?.(body, row) ?? body
       const result = await request<Row>(action.endpoint(row), { method, body: method === 'DELETE' ? undefined : prepare?.(transformed) ?? transformed, financial: action.financial })
       const secret = result.data?.access_key

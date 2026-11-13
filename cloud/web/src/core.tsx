@@ -51,7 +51,7 @@ const productFields: Field[] = [
     { value: 'installation', label: 'تاريخ التركيب' },
   ] },
   { ...optional('warranty_guarantor', 'اسم جهة الضمان'), visible: warrantyEnabled },
-  { ...optional('units_per_pack', 'عدد القطع في العبوة', 'number'), min: 1, visible: values => values.tracking === 'quantity' },
+  { ...optional('units_per_pack', 'عدد القطع في العبوة', 'number'), min: 1, nullable: false, initial: '1', visible: values => values.tracking === 'quantity' },
   { ...optional('pack_barcode', 'باركود العبوة'), visible: values => values.tracking === 'quantity' },
   optional('description', 'الوصف', 'textarea'),
   optional('notes', 'ملاحظات', 'textarea'),

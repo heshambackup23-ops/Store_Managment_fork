@@ -36,6 +36,11 @@ function deleteEntry(path: string, permission: string, confirmation: string): Ac
 
 const notes: Field = { name: 'note', label: 'ملاحظات', kind: 'textarea' }
 
+function cairoDate() {
+  const parts = new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Cairo', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date())
+  return ['year', 'month', 'day'].map(type => parts.find(part => part.type === type)?.value).join('-')
+}
+
 function reference(name: string, label: string, path: string, mandatory = false, lookup?: string): Field {
   return { name, label, kind: 'reference', min: 1, reference: { path, label: lookup }, required: mandatory, nullable: !mandatory }
 }
@@ -301,7 +306,7 @@ export const businessModules: Record<string, ModuleConfig> = {
     create: { ...createAction('تسجيل شراء', '/purchases', 'suppliers.manage', [
       reference('supplier_id', 'المورد', '/suppliers', true), { name: 'reference', label: 'المرجع', nullable: true },
       required('description', 'الوصف', 'textarea'), required('total_minor', 'إجمالي الشراء بالجنيه', 'money'),
-      required('purchase_date', 'تاريخ الشراء', 'date'),
+      { ...required('purchase_date', 'تاريخ الشراء', 'date'), initial: cairoDate },
       { name: 'due_date', label: 'استحقاق المورد', kind: 'date' },
       { name: 'payment_type', label: 'نوع السداد', kind: 'select', initial: 'credit',
         options: [{ value: 'credit', label: 'آجل' }, { value: 'cash', label: 'نقدي' }] },

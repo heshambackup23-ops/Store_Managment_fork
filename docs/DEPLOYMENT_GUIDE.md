@@ -27,4 +27,6 @@
 
 ينشر GitHub Actions من فرع `cloudflare-full-migration` فقط بعد فحوص Worker وD1 وبناء الواجهة. يطبّق ترحيلات D1، ثم ينشر Worker وPages، ثم يتحقق من الصحة وربط واجهة Pages بالـAPI. إعداداته هي متغير المستودع `HENRA_STORE_DEPLOY_ENABLED=true` وبيئة `henra-store-demo` المقيدة بالفرع، وفيها متغيرا `HENRA_STORE_CF_ACCOUNT_ID` و`HENRA_STORE_D1_ID` وسر `HENRA_STORE_CF_API_TOKEN`. يبقى `AUTH_PEPPER` في Cloudflare. رمز Cloudflare المخصص للتجربة ينتهي في 11 فبراير 2027؛ جدّده في GitHub قبل الموعد. لإيقاف النشر الآلي مع استمرار الاختبارات اضبط متغير التفعيل على `false`.
 
+راجع [تجهيز بيئة تشغيل هلال](PRODUCTION_DEPLOYMENT_AR.md) لإعداد الموارد المعزولة، وفحصها، واختبار النسخة الخاصة قبل النشر اليدوي.
+
 المراجع [Pages bindings](https://developers.cloudflare.com/pages/functions/bindings/#service-bindings) و[Pages Git integration](https://developers.cloudflare.com/pages/configuration/git-integration/) و[Wrangler commands](https://developers.cloudflare.com/workers/wrangler/commands/).
