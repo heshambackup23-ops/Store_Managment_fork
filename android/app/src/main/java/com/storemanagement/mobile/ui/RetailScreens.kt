@@ -29,6 +29,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
@@ -51,6 +52,12 @@ private val deviceStatuses = listOf(
     null to "الكل", "available" to "متاح", "sold" to "مباع", "quarantined" to "معزول للفحص",
     "voided" to "ملغى", "returned_to_supplier" to "مرتجع للمورد",
 )
+
+internal const val retailShiftScreenTag = "retail-shifts-screen"
+internal const val retailDeviceScreenTag = "retail-device-screen"
+internal const val retailShiftOpenTag = "retail-shift-open"
+internal const val retailShiftCloseTag = "retail-shift-close"
+internal const val retailShiftConfirmTag = "retail-shift-confirm"
 
 internal fun UserDto.canOperateRetailShifts() = "page.retail_shifts.operate" in permissions
 internal fun UserDto.canApproveRetailShifts() = "page.retail_shifts.approve" in permissions
@@ -119,16 +126,19 @@ internal fun RetailShiftsScreen(
         action = next
     }
 
-    Column(modifier.fillMaxSize().padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    Column(modifier.fillMaxSize().testTag(retailShiftScreenTag).padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         val id = selected
         if (id == null) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                if (user.canOperateRetailShifts()) Button(onClick = { start(ShiftAction.Open) }) { Text("فتح وردية") }
+                if (user.canOperateRetailShifts()) {
+                    Button(onClick = { start(ShiftAction.Open) }, modifier = Modifier.testTag(retailShiftOpenTag)) { Text("فتح وردية") }
+                }
                 TextButton(enabled = !state.isLoading, onClick = { viewModel.loadShifts(status) }) { Text("تحديث الورديات") }
             }
             RetailStatusFilter(shiftStatuses, status) { status = it }
             RetailRecordList(
                 state, "لا توجد ورديات مطابقة.", { it.id },
+                modifier = Modifier.weight(1f),
                 onLoadMore = { viewModel.loadShifts(status, state.currentPage + 1) },
             ) { shift ->
                 ManagedCard(onClick = { selected = shift.id }) {
@@ -149,13 +159,16 @@ internal fun RetailShiftsScreen(
             detail.error?.let { ErrorBanner(it) }
             detail.record?.takeIf { it.id == id }?.let { shift ->
                 LazyColumn(
+                    modifier = Modifier.weight(1f),
                     contentPadding = PaddingValues(bottom = 16.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     item {
                         RetailShiftSummary(shift)
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            if (shift.canClose(user)) Button(onClick = { start(ShiftAction.Close) }) { Text("إغلاق الوردية") }
+                            if (shift.canClose(user)) {
+                                Button(onClick = { start(ShiftAction.Close) }, modifier = Modifier.testTag(retailShiftCloseTag)) { Text("إغلاق الوردية") }
+                            }
                             if (shift.canApprove(user)) Button(onClick = { start(ShiftAction.Approve) }) { Text("اعتماد فرق الوردية") }
                         }
                     }
@@ -304,7 +317,7 @@ private fun ShiftActionDialog(
             }
         },
         confirmButton = {
-            Button(enabled = canEdit && valid, onClick = {
+            Button(enabled = canEdit && valid, modifier = Modifier.testTag(retailShiftConfirmTag), onClick = {
                 val payload = listOf(register.trim(), minor, shift?.expectedMinor, reason.trim()).joinToString("\u0000")
                 val key = if (submittedPayload == null || submittedPayload == payload) requestKey else UUID.randomUUID().toString()
                 submittedPayload = payload
@@ -340,7 +353,7 @@ internal fun RetailDevicesScreen(
         selected?.let(viewModel::loadDevice)
     }
 
-    Column(modifier.fillMaxSize().padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    Column(modifier.fillMaxSize().testTag(retailDeviceScreenTag).padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         val id = selected
         if (id == null) {
             OutlinedTextField(query, { query = it.take(100) }, label = { Text("الرقم التسلسلي أو IMEI") },
@@ -348,6 +361,7 @@ internal fun RetailDevicesScreen(
             RetailStatusFilter(deviceStatuses, status) { status = it }
             RetailRecordList(
                 state, "لا توجد أجهزة مطابقة.", { it.id },
+                modifier = Modifier.weight(1f),
                 onLoadMore = { viewModel.loadDevices(search, status, state.currentPage + 1) },
             ) { device ->
                 ManagedCard(onClick = { selected = device.id }) { RetailDeviceIdentity(device) }
@@ -359,7 +373,7 @@ internal fun RetailDevicesScreen(
             }
             if (detail.isLoading) LoadingRow()
             detail.error?.let { ErrorBanner(it) }
-            detail.record?.takeIf { it.id == id }?.let { RetailDeviceDetails(it) }
+            detail.record?.takeIf { it.id == id }?.let { RetailDeviceDetails(it, Modifier.weight(1f)) }
         }
     }
 }
@@ -373,8 +387,9 @@ private fun RetailDeviceIdentity(device: RetailDeviceDto) {
 }
 
 @Composable
-private fun RetailDeviceDetails(device: RetailDeviceDto) {
+private fun RetailDeviceDetails(device: RetailDeviceDto, modifier: Modifier = Modifier) {
     LazyColumn(
+        modifier = modifier,
         contentPadding = PaddingValues(bottom = 16.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
@@ -455,13 +470,24 @@ private fun <T> RetailRecordList(
     emptyMessage: String,
     key: (T) -> Any,
     onLoadMore: () -> Unit,
+    modifier: Modifier = Modifier,
     content: @Composable (T) -> Unit,
 ) {
-    LazyColumn(contentPadding = PaddingValues(bottom = 16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    if (state.items.isEmpty()) {
+        Column(modifier.fillMaxWidth()) {
+            val error = state.error
+            when {
+                state.isLoading -> LoadingRow()
+                error != null -> ErrorBanner(error)
+                else -> EmptyState(emptyMessage)
+            }
+        }
+        return
+    }
+    LazyColumn(modifier, contentPadding = PaddingValues(bottom = 16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         items(state.items, key = key) { content(it) }
         if (state.isLoading) item { LoadingRow() }
         state.error?.let { error -> item { ErrorBanner(error) } }
-        if (state.items.isEmpty() && !state.isLoading && state.error == null) item { EmptyState(emptyMessage) }
         if (state.currentPage < state.lastPage) item {
             OutlinedButton(enabled = !state.isLoading, onClick = onLoadMore) { Text("تحميل المزيد") }
         }

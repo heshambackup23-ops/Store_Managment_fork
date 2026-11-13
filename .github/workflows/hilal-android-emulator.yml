@@ -131,6 +131,16 @@ jobs:
             --port 8787 --persist-to "$state" > "$RUNNER_TEMP/hilal-emulator/worker.log" 2>&1 < /dev/null &
           curl --fail --silent --show-error --retry 12 --retry-connrefused --retry-delay 2 \
             --max-time 5 http://127.0.0.1:8787/health | jq -e '.success and .data.database == "ready"'
+          token="$(jq -nc --arg username "$STORE_USER_USERNAME" --arg password "$STORE_USER_PASSWORD" \
+            '{username:$username,password:$password,device_name:"emulator-api-precheck"}' | \
+            curl --fail --silent --show-error --header 'Content-Type: application/json' \
+              --header 'X-Store-Client: android' --data-binary @- http://127.0.0.1:8787/api/v1/auth/token | \
+            jq -er '.data | select(.user.permissions | index("page.retail_shifts.operate")) | .access_token')"
+          curl --fail --silent --show-error --header "Authorization: Bearer $token" \
+            --header 'X-Store-Client: android' 'http://127.0.0.1:8787/api/v1/retail/shifts?page=1' | \
+            jq -e '.success and .data == [] and .meta.current_page == 1 and .meta.total == 0'
+          curl --fail --silent --show-error --request DELETE --header "Authorization: Bearer $token" \
+            --header 'X-Store-Client: android' http://127.0.0.1:8787/api/v1/auth/token > /dev/null
           adb reverse tcp:8787 tcp:8787
       - name: Test sign-in, product creation, Arabic PDF and sign-out
         working-directory: android
@@ -160,4 +170,5 @@ jobs:
           path: |
             ${{ runner.temp }}/hilal-emulator/*-*.txt
             ${{ runner.temp }}/hilal-emulator/boot.log
+            ${{ runner.temp }}/hilal-emulator/worker.log
           if-no-files-found: ignore

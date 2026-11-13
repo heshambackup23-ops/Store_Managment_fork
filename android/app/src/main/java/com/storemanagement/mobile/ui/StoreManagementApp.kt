@@ -106,6 +106,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.res.painterResource
@@ -850,6 +851,7 @@ private fun StoreHomeScreen(
             NavigationBar {
                 availableTabs.filterNot { it == StoreTab.Customers }.forEach { tab ->
                     NavigationBarItem(
+                        modifier = Modifier.testTag("store-tab-${tab.name}"),
                         selected = activeTab == tab,
                         onClick = {
                             selectedTab = tab.name
@@ -2124,8 +2126,10 @@ private fun MoreHubScreen(
             if (canViewWallets) MoreActionRow("المحافظ", "الأرصدة والنقدية والحدود", Icons.Filled.AccountBalanceWallet, onOpenWallets)
             if (canViewWalletCashier) MoreActionRow("كاشير المحافظ", "تسجيل التحويلات والتحصيلات", Icons.Filled.AccountBalanceWallet, onOpenWalletCashier)
             if (canViewProductCashier) MoreActionRow("نقطة البيع", "بحث المنتجات والسلة والتحصيل", Icons.Filled.Store, onOpenProductCashier)
-            if (canViewRetailShifts) MoreActionRow("ورديات الكاشير", "الفتح والإغلاق واعتماد الفروق", Icons.Filled.Payments, onOpenRetailShifts)
-            if (canViewRetailDevices) MoreActionRow("الأجهزة المتتبعة", "بحث السيريال وIMEI والضمان", Icons.Filled.Inventory2, onOpenRetailDevices)
+            if (canViewRetailShifts) MoreActionRow("ورديات الكاشير", "الفتح والإغلاق واعتماد الفروق", Icons.Filled.Payments, onOpenRetailShifts,
+                Modifier.testTag("retail-menu-shifts"))
+            if (canViewRetailDevices) MoreActionRow("الأجهزة المتتبعة", "بحث السيريال وIMEI والضمان", Icons.Filled.Inventory2, onOpenRetailDevices,
+                Modifier.testTag("retail-menu-devices"))
             if (canViewDamaged) MoreActionRow("الهالك", "تسجيل التالف وعكس القيود بالسبب", Icons.Filled.Delete, onOpenDamaged)
             if (canViewMaintenance) MoreActionRow("الصيانة", "طلبات الصيانة وحالتها", Icons.Filled.Build, onOpenMaintenance)
         }
@@ -2179,8 +2183,9 @@ private fun BackupScreen(
 }
 
 @Composable
-private fun MoreActionRow(label: String, description: String, icon: ImageVector, onClick: () -> Unit) {
+private fun MoreActionRow(label: String, description: String, icon: ImageVector, onClick: () -> Unit, modifier: Modifier = Modifier) {
     Surface(
+        modifier = modifier,
         onClick = onClick,
         shape = RoundedCornerShape(8.dp),
         color = MaterialTheme.colorScheme.surface,

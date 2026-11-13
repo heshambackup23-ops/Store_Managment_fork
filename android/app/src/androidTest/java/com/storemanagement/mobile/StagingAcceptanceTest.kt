@@ -5,11 +5,18 @@ import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextReplacement
+import androidx.compose.ui.test.printToString
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.storemanagement.mobile.ui.retailDeviceScreenTag
+import com.storemanagement.mobile.ui.retailShiftCloseTag
+import com.storemanagement.mobile.ui.retailShiftConfirmTag
+import com.storemanagement.mobile.ui.retailShiftOpenTag
+import com.storemanagement.mobile.ui.retailShiftScreenTag
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONObject
@@ -55,27 +62,25 @@ class StagingAcceptanceTest {
         compose.onNodeWithText("حفظ المنتج").performClick()
         waitForText("منتج من محاكي هلال")
 
-        compose.onNodeWithText("المزيد").performClick()
-        compose.onNodeWithText("ورديات الكاشير").performScrollTo().performClick()
+        compose.onNodeWithTag("store-tab-More").performClick()
+        compose.onNodeWithTag("retail-menu-shifts").performScrollTo().performClick()
+        compose.onNodeWithTag(retailShiftScreenTag).assertExists()
         waitForText("لا توجد ورديات مطابقة.")
-        compose.onNodeWithText("فتح وردية").performClick()
+        compose.onNodeWithTag(retailShiftOpenTag).performClick()
         compose.onNodeWithText("اسم درج النقدية").performTextReplacement("درج محاكي هلال")
         compose.onNodeWithText("عهدة الفتح بالجنيه").performTextReplacement("50.00")
-        compose.onAllNodes(hasText("فتح وردية") and hasClickAction()).fetchSemanticsNodes().let { buttons ->
-            compose.onAllNodes(hasText("فتح وردية") and hasClickAction())[buttons.lastIndex].performClick()
-        }
+        compose.onNodeWithTag(retailShiftConfirmTag).performClick()
         waitForText("درج محاكي هلال")
-        compose.onNodeWithText("إغلاق الوردية").performScrollTo().performClick()
+        compose.onNodeWithTag(retailShiftCloseTag).performScrollTo().performClick()
         compose.onNodeWithText("النقد الفعلي بالجنيه").performTextReplacement("49.00")
-        compose.onNodeWithText("سبب الفرق (مطلوب)").performTextReplacement("فرق اختبار المحاكي")
-        compose.onAllNodes(hasText("إغلاق الوردية") and hasClickAction()).fetchSemanticsNodes().let { buttons ->
-            compose.onAllNodes(hasText("إغلاق الوردية") and hasClickAction())[buttons.lastIndex].performClick()
-        }
+        compose.onNodeWithText("سبب الفرق (مطلوب)").performScrollTo().performTextReplacement("فرق اختبار المحاكي")
+        compose.onNodeWithTag(retailShiftConfirmTag).performClick()
         waitForText("تنتظر الاعتماد")
         compose.onNodeWithText("اعتماد فرق الوردية").assertDoesNotExist()
 
-        compose.onNodeWithText("المزيد").performClick()
-        compose.onNodeWithText("الأجهزة المتتبعة").performScrollTo().performClick()
+        compose.onNodeWithTag("store-tab-More").performClick()
+        compose.onNodeWithTag("retail-menu-devices").performScrollTo().performClick()
+        compose.onNodeWithTag(retailDeviceScreenTag).assertExists()
         waitForText("لا توجد أجهزة مطابقة.")
 
         compose.onNodeWithContentDescription("تسجيل الخروج").performClick()
@@ -83,8 +88,16 @@ class StagingAcceptanceTest {
     }
 
     private fun waitForText(text: String) {
-        compose.waitUntil(timeoutMillis = 30_000) {
-            compose.onAllNodesWithText(text).fetchSemanticsNodes().isNotEmpty()
+        try {
+            compose.waitUntil(timeoutMillis = 30_000) {
+                compose.onAllNodesWithText(text).fetchSemanticsNodes().isNotEmpty()
+            }
+        } catch (failure: AssertionError) {
+            val tree = runCatching { compose.onRoot().printToString(maxDepth = 15) }.getOrElse { it.toString() }
+            throw AssertionError("Expected visible text '$text'.\n$tree", failure)
+        } catch (failure: Exception) {
+            val tree = runCatching { compose.onRoot().printToString(maxDepth = 15) }.getOrElse { it.toString() }
+            throw AssertionError("Expected visible text '$text'.\n$tree", failure)
         }
     }
 }
