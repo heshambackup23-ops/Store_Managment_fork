@@ -1,0 +1,140 @@
+name: Hilal Android Emulator
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [cloudflare-full-migration]
+    paths:
+      - 'android/**'
+      - 'cloud/api/**'
+      - '.github/workflows/hilal-android-emulator.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  staging:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 28
+    env:
+      WRANGLER_SEND_METRICS: 'false'
+      HILAL_EMULATOR_IMAGE: system-images;android-35;google_apis;x86_64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: cloud/api/package-lock.json
+      - name: Install Android platform and emulator image
+        shell: bash
+        run: |
+          sdkmanager="${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager"
+          "$sdkmanager" --list --channel=3 > "$RUNNER_TEMP/hilal-sdk-packages.txt"
+          if [ -f "${ANDROID_HOME}/platforms/android-37/android.jar" ]; then
+            echo 'HILAL_ANDROID_MINOR=0' >> "$GITHUB_ENV"
+          else
+            package=$(awk -F'|' '{gsub(/[[:space:]]/, "", $1); if ($1 ~ /^platforms;android-37(\.[0-9]+)?$/) print $1}' \
+              "$RUNNER_TEMP/hilal-sdk-packages.txt" | sort -Vu | tail -n 1)
+            test -n "$package"
+            "$sdkmanager" --channel=3 "$package"
+            minor=0
+            if [[ "$package" =~ \.([0-9]+)$ ]]; then minor="${BASH_REMATCH[1]}"; fi
+            echo "HILAL_ANDROID_MINOR=$minor" >> "$GITHUB_ENV"
+          fi
+          "$sdkmanager" emulator platform-tools "$HILAL_EMULATOR_IMAGE"
+      - name: Boot an Android 15 emulator
+        shell: bash
+        run: |
+          test -c /dev/kvm
+          sudo chmod a+rw /dev/kvm
+          emulator="$ANDROID_HOME/emulator/emulator"
+          adb="$ANDROID_HOME/platform-tools/adb"
+          mkdir -p "$RUNNER_TEMP/hilal-emulator"
+          echo no | "$ANDROID_HOME/cmdline-tools/latest/bin/avdmanager" create avd \
+            --name hilal-ci --package "$HILAL_EMULATOR_IMAGE" --force
+          "$emulator" -accel-check
+          nohup "$emulator" -avd hilal-ci -no-window -no-boot-anim -no-snapshot -no-audio \
+            -gpu swiftshader_indirect -camera-back none -camera-front none \
+            > "$RUNNER_TEMP/hilal-emulator/boot.log" 2>&1 < /dev/null &
+          "$adb" start-server
+          timeout 180 "$adb" wait-for-device
+          timeout 240 bash -c 'until [ "$(adb shell getprop sys.boot_completed | tr -d "\r")" = 1 ]; do sleep 2; done'
+          "$adb" shell input keyevent 82
+          for setting in window_animation_scale transition_animation_scale animator_duration_scale; do
+            "$adb" shell settings put global "$setting" 0
+          done
+      - name: Build the staging APK and Android test APK
+        working-directory: android
+        run: bash gradlew :app:assembleStagingDebug :app:assembleStagingDebugAndroidTest -PstoreCompileSdkMinor="$HILAL_ANDROID_MINOR"
+      - name: Launch the standard staging APK and check Cloudflare connectivity
+        working-directory: android
+        shell: bash
+        run: |
+          adb install -t app/build/outputs/apk/staging/debug/*.apk
+          adb install -t app/build/outputs/apk/androidTest/staging/debug/*.apk
+          timeout 180 adb shell am instrument -w -r \
+            -e class 'com.storemanagement.mobile.StagingAcceptanceTest#launchesPublishedStagingAndReachesCloudApi' \
+            com.storemanagement.mobile.staging.test/androidx.test.runner.AndroidJUnitRunner \
+            | tee "$RUNNER_TEMP/hilal-emulator/cloud-startup.txt"
+          grep -Fq 'OK (1 test)' "$RUNNER_TEMP/hilal-emulator/cloud-startup.txt"
+      - name: Seed and start an isolated Worker and D1
+        working-directory: cloud/api
+        shell: bash
+        env:
+          STORE_USER_NAME: مسؤول محاكي هلال
+          STORE_USER_EMAIL: emulator-operator@example.invalid
+          STORE_USER_USERNAME: emulator-operator
+          STORE_USER_PASSWORD: hilal-emulator-fixture-only
+        run: |
+          npm ci
+          state="$RUNNER_TEMP/hilal-d1"
+          pepper="$(openssl rand -hex 32)"
+          export AUTH_PEPPER="$pepper"
+          node scripts/provision-user.mjs "$RUNNER_TEMP/hilal-emulator-user.generated.sql"
+          node scripts/import-laravel-catalog.mjs fixtures/mysql-catalog.synthetic.json \
+            --emit-sql "$RUNNER_TEMP/hilal-emulator-catalog.generated.sql"
+          npx --no-install wrangler d1 migrations apply DB --local --persist-to "$state"
+          npx --no-install wrangler d1 execute DB --local --persist-to "$state" \
+            --file "$RUNNER_TEMP/hilal-emulator-user.generated.sql"
+          npx --no-install wrangler d1 execute DB --local --persist-to "$state" \
+            --file "$RUNNER_TEMP/hilal-emulator-catalog.generated.sql"
+          printf 'AUTH_PEPPER=%s\n' "$pepper" > .dev.vars
+          nohup node node_modules/wrangler/bin/wrangler.js dev --local --ip 127.0.0.1 \
+            --port 8787 --persist-to "$state" > "$RUNNER_TEMP/hilal-emulator/worker.log" 2>&1 < /dev/null &
+          curl --fail --silent --show-error --retry 12 --retry-connrefused --retry-delay 2 \
+            --max-time 5 http://127.0.0.1:8787/health | jq -e '.success and .data.database == "ready"'
+          adb reverse tcp:8787 tcp:8787
+      - name: Test sign-in, product creation, Arabic PDF and sign-out
+        working-directory: android
+        shell: bash
+        run: |
+          bash gradlew :app:assembleStagingDebug :app:assembleStagingDebugAndroidTest \
+            -PstoreCompileSdkMinor="$HILAL_ANDROID_MINOR" \
+            -PstoreApiStagingUrl=http://127.0.0.1:8787/api/
+          adb install -r -t app/build/outputs/apk/staging/debug/*.apk
+          adb install -r -t app/build/outputs/apk/androidTest/staging/debug/*.apk
+          timeout 180 adb shell am instrument -w -r \
+            -e class 'com.storemanagement.mobile.StagingAcceptanceTest#signsInReadsAndCreatesProductAndSignsOutAgainstIsolatedWorker,com.storemanagement.mobile.data.AndroidInvoicePdfTest' \
+            com.storemanagement.mobile.staging.test/androidx.test.runner.AndroidJUnitRunner \
+            | tee "$RUNNER_TEMP/hilal-emulator/isolated-operations.txt"
+          grep -Fq 'OK (2 tests)' "$RUNNER_TEMP/hilal-emulator/isolated-operations.txt"
+      - name: Confirm the Android write reached D1
+        working-directory: cloud/api
+        shell: bash
+        run: |
+          npx --no-install wrangler d1 execute DB --local --persist-to "$RUNNER_TEMP/hilal-d1" \
+            --command "SELECT name, price_minor FROM products WHERE name = 'منتج من محاكي هلال'" \
+            --json | jq -e '.[0].results == [{"name":"منتج من محاكي هلال","price_minor":1325}]'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: hilal-android-emulator-results
+          path: |
+            ${{ runner.temp }}/hilal-emulator/*-*.txt
+            ${{ runner.temp }}/hilal-emulator/boot.log
+          if-no-files-found: ignore
