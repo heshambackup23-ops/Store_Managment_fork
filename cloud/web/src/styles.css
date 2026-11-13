@@ -64,7 +64,7 @@
   * { box-sizing: border-box; }
   body { margin: 0; min-inline-size: 320px; line-height: 1.5; }
   h1, h2, h3, p { margin-block: 0; }
-  a { color: var(--accent); }
+  :where(a) { color: var(--accent); }
   button, input, select, textarea { font: inherit; }
   button { cursor: pointer; }
   button:disabled { cursor: default; opacity: .6; }
