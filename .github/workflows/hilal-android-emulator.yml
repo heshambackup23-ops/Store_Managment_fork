@@ -47,6 +47,7 @@ jobs:
             echo "HILAL_ANDROID_MINOR=$minor" >> "$GITHUB_ENV"
           fi
           "$sdkmanager" emulator platform-tools "$HILAL_EMULATOR_IMAGE"
+          echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
       - name: Boot an Android 15 emulator
         shell: bash
         run: |
@@ -84,6 +85,8 @@ jobs:
           done
           tail -n 25 "$boot_log"
           echo "ANDROID_SERIAL=$ANDROID_SERIAL" >> "$GITHUB_ENV"
+          "$adb" shell wm size 1080x1920
+          "$adb" shell wm density 360
           "$adb" shell input keyevent 82
           for setting in window_animation_scale transition_animation_scale animator_duration_scale; do
             "$adb" shell settings put global "$setting" 0
