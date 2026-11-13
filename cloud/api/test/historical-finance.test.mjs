@@ -136,3 +136,43 @@ test('invoice import refuses stock drift, conflicting destination sales and unve
   assert.equal(result.status, 1)
   assert.match(result.stderr, /historical refund needs independently dated evidence/)
 })
+
+test('documented historical refund closes the linked installment without restoring stock twice', async (t) => {
+  const input = JSON.parse(await readFile(fixture, 'utf8'))
+  input.tables.invoices[0].status = 'refunded'
+  input.tables.invoices[0].updated_at = '2026-10-08T13:00:00+03:00'
+  const installment = input.tables.installments.find(row => row.invoice_id === 201)
+  installment.status = 'مسترد'
+  installment.remaining = '0.00'
+  installment.next_payment_date = null
+  installment.updated_at = input.tables.invoices[0].updated_at
+  input.invoice_refund_evidence = {
+    201: {
+      refunded_at: '2026-10-08T10:00:00Z', returned_amount: '3.70', stock_restored: true,
+      reference: 'HILAL-REFUND-201', reason: 'مرتجع مؤيد بإيصال اصطناعي',
+    },
+  }
+  const folder = await temp(t)
+  const source = join(folder, 'refund.json')
+  const output = join(folder, 'refund.generated.sql')
+  await writeFile(source, JSON.stringify(input))
+  assert.equal(run(reconcile, source).status, 0)
+  const result = run(importer, source, ['--emit-sql', output])
+  assert.equal(result.status, 0, result.stderr)
+  assert.equal(JSON.parse(result.stdout).documented_cash_returned_minor, '370')
+  const db = await createDb()
+  t.after(() => db.close())
+  const sql = await readFile(output, 'utf8')
+  atomic(db, sql)
+  atomic(db, sql)
+  assert.equal(db.prepare('SELECT status FROM invoices WHERE id=201').get().status, 'refunded')
+  assert.equal(db.prepare('SELECT status FROM installments WHERE invoice_id=201').get().status, 'voided')
+  assert.equal(db.prepare('SELECT stock FROM products WHERE id=42').get().stock, 7)
+  assert.equal(db.prepare("SELECT count(*) AS n FROM inventory_movements WHERE source_type IN ('invoice','refund')").get().n, 0)
+  assert.deepEqual({ ...db.prepare('SELECT returned_minor,legacy_refund_reference FROM invoice_refunds').get() },
+    { returned_minor: 370, legacy_refund_reference: 'HILAL-REFUND-201' })
+  assert.throws(() => db.exec("UPDATE invoice_refunds SET returned_minor=0 WHERE invoice_id=201"), /IMMUTABLE_LEDGER/)
+  input.invoice_refund_evidence[201].returned_amount = '3.71'
+  await writeFile(source, JSON.stringify(input))
+  assert.match(run(importer, source).stderr, /disagrees with source timestamps or paid amount/)
+})

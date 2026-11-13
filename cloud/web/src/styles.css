@@ -167,6 +167,12 @@
   .notice.error { border-color: var(--danger); color: var(--danger); background: var(--danger-soft); }
 
   .metric-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: .9rem; }
+  .wallet-positions { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 23rem), 1fr)); gap: .9rem; }
+  .wallet-position header { margin-block-end: .9rem; }
+  .wallet-position header h3 { margin: 0; }
+  .wallet-usage { display: grid; gap: .75rem; }
+  .wallet-usage dd { margin: .2rem 0; }
+  .wallet-usage progress { display: block; inline-size: 100%; accent-color: var(--accent); }
   .metric { min-block-size: 108px; padding: 1rem; display: grid; align-content: space-between; gap: .85rem; }
   .metric p { color: var(--muted); font-size: .85rem; line-height: 1.5; }
   .metric strong { color: var(--text); font-size: clamp(1rem, 2.25vw, 1.5rem); font-variant-numeric: tabular-nums; }

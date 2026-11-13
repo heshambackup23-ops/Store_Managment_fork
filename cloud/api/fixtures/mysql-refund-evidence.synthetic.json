@@ -1,0 +1,9 @@
+{
+  "203": {
+    "refunded_at": "2026-10-08T10:00:00Z",
+    "returned_amount": "5.50",
+    "reason": "مرتجع تجريبي موثق",
+    "reference": "HILAL-REFUND-203",
+    "stock_restored": true
+  }
+}

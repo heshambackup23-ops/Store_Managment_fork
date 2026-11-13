@@ -94,17 +94,21 @@ try {
     const invoices = rowMap(tables.invoices, 'invoices')
     const linked = new Set()
     const installments = rowMap(tables.installments, 'installments', (row) => {
-      const balance = balances(row, 'product_price', 'paid_amount', 'remaining')
+      const balance = balances(row, 'product_price', 'paid_amount')
+      const storedRemaining = minor(row.remaining)
       if (row.invoice_id != null) {
         const key = id(row.invoice_id)
         expect(!linked.has(key) && invoices.has(key), 'missing invoice or duplicate installment link')
         linked.add(key)
         const invoice = invoices.get(key)
-        if (invoice.status !== 'refunded') {
-          expect(balance.total === minor(invoice.total_amount) && balance.paid === minor(invoice.paid_amount),
-            'linked invoice total or paid amount differs')
+        expect(balance.total === minor(invoice.total_amount) && balance.paid === minor(invoice.paid_amount),
+          'linked invoice total or paid amount differs')
+        if (invoice.status === 'refunded') {
+          expect(row.status === 'مسترد' && storedRemaining === 0n, 'historical refund did not close the linked installment')
+          return { ...balance, due: 0n, linked: true }
         }
       }
+      expect(storedRemaining === balance.due, 'stored remaining does not equal total minus paid')
       return { ...balance, linked: row.invoice_id != null }
     })
     return { count: installments.size, linked: linked.size,

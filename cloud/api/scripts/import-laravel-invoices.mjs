@@ -12,6 +12,34 @@ const { positionals, values } = parseArgs({
   },
 })
 
+function refundEvidence(input, invoices) {
+  const evidence = input.invoice_refund_evidence ?? {}
+  if (!evidence || typeof evidence !== 'object' || Array.isArray(evidence)) {
+    throw new Error('invoice_refund_evidence must be an object keyed by invoice ID')
+  }
+  const refunds = new Map()
+  const references = new Set()
+  for (const [sourceId, row] of Object.entries(evidence)) {
+    const key = id(sourceId)
+    if (String(key) !== sourceId || invoices.get(key)?.status !== 'refunded') {
+      throw new Error('invoice_refund_evidence references a non-refunded or unknown invoice')
+    }
+    if (!row || typeof row !== 'object' || Array.isArray(row) || row.stock_restored !== true) {
+      throw new Error(`Historical refund ID ${key} needs evidence that stock was restored before cutoff`)
+    }
+    const reference = text(row.reference, 120, true).trim()
+    if (references.has(reference)) throw new Error('historical refund references must be unique')
+    references.add(reference)
+    refunds.set(key, {
+      reference,
+      created_at: dateTime(row.refunded_at),
+      returned_minor: minor(row.returned_amount),
+      reason: text(row.reason, 500, true).trim(),
+    })
+  }
+  return refunds
+}
+
 function buildImport(input, actor) {
   const tables = input.tables
   const products = rowMap(rowsOf(tables, 'products', true), 'products', (row) => ({
@@ -29,20 +57,26 @@ function buildImport(input, actor) {
     if (rowsOf(tables, table, true).length) throw new Error(`review populated ${table} before importing invoices to avoid counting sales twice`)
   }
   const customerMap = new Map(Object.entries(input.invoice_customer_ids ?? {}).map(([key, value]) => [id(key), value == null ? null : id(value)]))
-  const invoices = rowMap(rowsOf(tables, 'invoices', true), 'invoices', (row, key) => {
-    if (row.status === 'refunded') throw new Error('historical refund needs independently dated evidence and reconciliation')
+  const sourceInvoices = rowsOf(tables, 'invoices', true)
+  const refunds = refundEvidence(input, rowMap(sourceInvoices, 'invoices'))
+  const invoices = rowMap(sourceInvoices, 'invoices', (row, key) => {
+    const refund = refunds.get(key)
+    if (row.status === 'refunded' && !refund) throw new Error('historical refund needs independently dated evidence and reconciliation')
     if (!customerMap.has(key)) throw new Error('missing explicit invoice_customer_ids entry')
     const customer = customerMap.get(key)
     if (customer !== null && !customers.has(customer)) throw new Error('mapped customer is absent from the cutoff snapshot')
     const paid = minor(row.paid_amount)
     const total = minor(row.total_amount)
     if (paid > total || (paid < total && customer === null)) throw new Error('paid amount or balance customer does not reconcile')
-    if (row.status !== (paid === total ? 'paid' : 'unpaid')) throw new Error('invoice status differs from its balance')
+    if (!refund && row.status !== (paid === total ? 'paid' : 'unpaid')) throw new Error('invoice status differs from its balance')
     const created = dateTime(row.created_at)
     const updated = dateTime(row.updated_at)
     if (updated > input.cutoff_at || created > updated) throw new Error('timestamp is inconsistent with the snapshot cutoff')
     const posting = day(row.invoice_date)
     if (posting > input.cutoff_at.slice(0, 10)) throw new Error('invoice date is after cutoff')
+    if (refund && (refund.created_at < created || refund.created_at > updated || refund.returned_minor !== paid)) {
+      throw new Error('historical refund evidence disagrees with source timestamps or paid amount')
+    }
     return {
       id: key, customer_id: customer, total_minor: total, paid_minor: paid,
       actor_id: actor, created_at: created, updated_at: updated, invoice_date: posting,
@@ -61,12 +95,17 @@ function buildImport(input, actor) {
     const total = minor(row.product_price)
     const paid = minor(row.paid_amount)
     const due = minor(row.remaining)
-    if (total < 1n || total !== invoice.total_minor || paid !== invoice.paid_minor || total - paid !== due) {
+    const refund = refunds.get(invoiceId)
+    const closedByRefund = refund && row.status === 'مسترد' && due === 0n
+    if (total < 1n || total !== invoice.total_minor || paid !== invoice.paid_minor
+      || (refund ? !closedByRefund : total - paid !== due)) {
       throw new Error(`linked installment ID ${key} does not match original invoice balance`)
     }
     const created = dateTime(row.created_at)
     const updated = dateTime(row.updated_at)
-    if (updated > input.cutoff_at || created > updated) throw new Error(`invalid timestamps for linked installment ID ${key}`)
+    if (updated > input.cutoff_at || created > updated || (refund && (refund.created_at < created || refund.created_at > updated))) {
+      throw new Error(`invalid timestamps for linked installment ID ${key}`)
+    }
     const dueDate = row.next_payment_date == null && due === 0n ? invoice.invoice_date : day(row.next_payment_date)
     const paymentDate = row.payment_date == null ? null : day(row.payment_date)
     const items = invoice.items.map(({ product, name, quantity, price }) => ({
@@ -86,7 +125,11 @@ function buildImport(input, actor) {
   const installmentRows = [...installments.values()].sort((left, right) => left.id - right.id)
   const references = new Set(sort.flatMap((invoice) => invoice.items.map((line) => line.product)))
   const productSnapshot = Array.from(references).sort((left, right) => left - right).map((key) => [key, products.get(key).stock])
-  const canonical = JSON.stringify({ cutoff: input.cutoff_at, invoices: sort, installments: installmentRows, productSnapshot },
+  const orderedRefunds = [...refunds.entries()].sort(([left], [right]) => left - right)
+  const canonical = JSON.stringify({
+    cutoff: input.cutoff_at, invoices: sort, installments: installmentRows, productSnapshot,
+    ...(orderedRefunds.length ? { refunds: orderedRefunds } : {}),
+  },
     (_, value) => typeof value === 'bigint' ? String(value) : value)
   const fingerprint = createHash('sha256').update(canonical).digest('hex')
   const batch = literal(fingerprint)
@@ -126,24 +169,32 @@ function buildImport(input, actor) {
       WHERE NOT EXISTS (SELECT 1 FROM installments WHERE id = ${row.id}
         AND invoice_id = ${row.invoice_id} AND historical_paid_minor = ${row.historical_paid_minor});`)
   }
+  for (const [key, refund] of orderedRefunds) {
+    const invoice = invoices.get(key)
+    commands.push(`INSERT INTO invoice_refunds(id,invoice_id,total_minor,returned_minor,reason,actor_id,created_at,legacy_refund_reference)
+      SELECT ${[key, key, invoice.total_minor, refund.returned_minor, refund.reason, actor, refund.created_at, refund.reference].map(literal).join(', ')}
+      WHERE NOT EXISTS (SELECT 1 FROM invoice_refunds WHERE invoice_id = ${key}
+        AND legacy_refund_reference = ${literal(refund.reference)});`)
+  }
   commands.push(`INSERT INTO business_operations (id, actor_id, request_key, operation, fingerprint)
     SELECT ${max}, ${actor}, ${literal('historical-invoice:' + fingerprint)}, 'import.reserve', ${batch}
     WHERE NOT EXISTS (SELECT 1 FROM business_operations WHERE id >= ${max});`)
-  return { fingerprint, invoices, installments, products, customers, productSnapshot, sql: commands.join('\n') + '\n' }
+  return { fingerprint, invoices, installments, refunds, products, customers, productSnapshot, sql: commands.join('\n') + '\n' }
 }
 
 function assertReconciled(db, plan) {
-  const rows = db.prepare('SELECT id, total_minor, paid_minor, historical_paid_minor, legacy_invoice_number FROM invoices').all()
+  const rows = db.prepare('SELECT id, total_minor, paid_minor, historical_paid_minor, legacy_invoice_number, refunded_at FROM invoices').all()
   if (rows.length !== plan.invoices.size || rows.some((row) => {
     const source = plan.invoices.get(row.id)
     return !source || BigInt(row.total_minor) !== source.total_minor || BigInt(row.paid_minor) !== source.paid_minor
       || row.historical_paid_minor !== row.paid_minor || row.legacy_invoice_number !== source.legacy_invoice_number
+      || row.refunded_at !== (plan.refunds.get(row.id)?.created_at ?? null)
   })) throw new Error('invoice headers did not reconcile')
   const counts = db.prepare(`SELECT (SELECT count(*) FROM invoice_items) AS items,
     (SELECT count(*) FROM invoice_payments) AS dated_payments,
-    (SELECT count(*) FROM inventory_movements WHERE source_type = 'invoice') AS stock_debits`).get()
+    (SELECT count(*) FROM inventory_movements WHERE source_type IN ('invoice', 'refund')) AS stock_replays`).get()
   const expectedItems = [...plan.invoices.values()].reduce((sum, invoice) => sum + invoice.items.length, 0)
-  if (counts.items !== expectedItems || counts.dated_payments || counts.stock_debits || db.prepare('PRAGMA foreign_key_check').all().length) {
+  if (counts.items !== expectedItems || counts.dated_payments || counts.stock_replays || db.prepare('PRAGMA foreign_key_check').all().length) {
     throw new Error('invoice children or foreign keys did not reconcile')
   }
   const actualItems = db.prepare('SELECT product_id, product_name, quantity, unit_price_minor, unit_cost_minor FROM invoice_items WHERE invoice_id = ? ORDER BY product_id')
@@ -155,12 +206,19 @@ function assertReconciled(db, plan) {
         || BigInt(row.unit_price_minor) !== source.price || row.unit_cost_minor !== 0
     })) throw new Error('historical invoice prices or item snapshots did not reconcile')
   }
-  const installmentRows = db.prepare('SELECT id, invoice_id, principal_minor, paid_minor, historical_paid_minor FROM installments').all()
+  const installmentRows = db.prepare('SELECT id, invoice_id, principal_minor, paid_minor, historical_paid_minor, voided_at FROM installments').all()
   if (installmentRows.length !== plan.installments.size || installmentRows.some((row) => {
     const source = plan.installments.get(row.id)
     return !source || row.invoice_id !== source.invoice_id || BigInt(row.principal_minor) !== source.principal_minor
       || BigInt(row.paid_minor) !== source.paid_minor || row.historical_paid_minor !== row.paid_minor
+      || row.voided_at !== (plan.refunds.get(row.invoice_id)?.created_at ?? null)
   })) throw new Error('linked installment balances did not reconcile')
+  const refunds = db.prepare('SELECT invoice_id, returned_minor, created_at, legacy_refund_reference FROM invoice_refunds').all()
+  if (refunds.length !== plan.refunds.size || refunds.some((row) => {
+    const expected = plan.refunds.get(row.invoice_id)
+    return !expected || row.legacy_refund_reference !== expected.reference || row.created_at !== expected.created_at
+      || BigInt(row.returned_minor) !== expected.returned_minor
+  })) throw new Error('historical refunds did not reconcile')
   const stock = db.prepare('SELECT stock FROM products WHERE id = ?')
   if (plan.productSnapshot.some(([product, quantity]) => stock.get(product).stock !== quantity)) {
     throw new Error('stock changed during invoice history import')
@@ -205,7 +263,11 @@ try {
     legacy_single_item_names_from_cutoff_catalog: invoices.filter((invoice) => invoice.fallback).length,
     total_minor: String(invoices.reduce((sum, invoice) => sum + invoice.total_minor, 0n)),
     historical_paid_minor: String(invoices.reduce((sum, invoice) => sum + invoice.paid_minor, 0n)),
-    outstanding_minor: String(invoices.reduce((sum, invoice) => sum + invoice.total_minor - invoice.paid_minor, 0n)),
+    refunded_invoices: plan.refunds.size,
+    documented_cash_returned_minor: String([...plan.refunds.values()].reduce((sum, refund) => sum + refund.returned_minor, 0n)),
+    outstanding_minor: String(invoices.reduce((sum, invoice) => (
+      plan.refunds.has(invoice.id) ? sum : sum + invoice.total_minor - invoice.paid_minor
+    ), 0n)),
     verified_idempotent_replay: true,
   }, null, 2))
 } catch (error) {

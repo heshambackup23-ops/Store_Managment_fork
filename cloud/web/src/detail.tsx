@@ -138,6 +138,7 @@ export function SupplierDetail({ user }: { user: User }) {
         moneyColumn('total_minor', 'قيمة الشراء'), moneyColumn('paid_minor', 'المدفوع'),
       ]} />
       <DetailTable title="أحدث دفعات حساب المورد" rows={result.payments} columns={[
+        { key: 'legacy_receipt_number', label: 'مرجع السند الأصلي' },
         dateColumn('payment_date', 'التاريخ'), moneyColumn('amount_minor', 'الدفعة'),
         moneyColumn('opening_applied_minor', 'المخصص للرصيد الافتتاحي'), { key: 'note', label: 'البيان' },
       ]} />
@@ -159,6 +160,8 @@ export function DamageDetail() {
           <div><dt>المنتج</dt><dd>{dataText(result.product_name)}</dd></div>
           <div><dt>الكمية</dt><dd>{dataText(result.quantity)}</dd></div>
           <div><dt>قيمة الوحدة</dt><dd>{money(result.unit_value_minor)}</dd></div>
+          {result.legacy_stock_before != null && <div><dt>الرصيد وقت تسجيل الهالك</dt>
+            <dd>{dataText(result.legacy_stock_before)} ← {dataText(result.legacy_stock_after)}</dd></div>}
           <div><dt>تاريخ الهالك</dt><dd>{formatDate(result.damaged_on)}</dd></div>
           <div><dt>السبب</dt><dd>{dataText(result.reason)}</dd></div>
           <div><dt>الملاحظات</dt><dd>{dataText(result.notes)}</dd></div>

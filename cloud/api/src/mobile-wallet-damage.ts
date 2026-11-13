@@ -60,16 +60,19 @@ function today() { return cairoCalendar.format(new Date()) }
 
 const damageFrom = `damaged_stock d JOIN products p ON p.id = d.product_id
   LEFT JOIN damaged_stock_reversals reversal ON reversal.damage_id = d.id
-  JOIN inventory_movements m ON m.id = COALESCE((
+  LEFT JOIN inventory_movements m ON m.id = COALESCE((
     SELECT MAX(im.id) FROM damaged_stock_corrections correction JOIN inventory_movements im
       ON im.source_type = 'adjustment' AND im.source_id = correction.id AND im.product_id = d.product_id
     WHERE correction.damage_id = d.id
   ), (SELECT im.id FROM inventory_movements im WHERE im.source_type = 'damage' AND im.source_id = d.id AND im.product_id = d.product_id))`
-const damageSelect = `d.id, d.product_id, p.name AS product_name, p.barcode AS product_barcode, d.quantity, d.reason,
+const damageSelect = `d.id, d.product_id, COALESCE(d.legacy_product_name, p.name) AS product_name,
+  CASE WHEN d.legacy_damage_fingerprint IS NULL THEN p.barcode ELSE d.legacy_product_barcode END AS product_barcode, d.quantity, d.reason,
   CASE WHEN reversal.id IS NULL THEN 'recorded' ELSE 'voided' END AS status,
   COALESCE(d.damaged_on, date(d.created_at)) AS damaged_on, d.notes, reversal.reason AS void_reason,
-  d.unit_cost_minor, d.quantity * d.unit_cost_minor AS total_minor, m.delta,
-  p.stock - COALESCE((SELECT SUM(im.delta) FROM inventory_movements im WHERE im.product_id = p.id AND im.id > m.id), 0) AS stock_after`
+  d.unit_cost_minor, d.quantity * d.unit_cost_minor AS total_minor, COALESCE(m.delta, -d.legacy_quantity) AS delta,
+  CASE WHEN m.id IS NULL THEN d.legacy_stock_after
+    ELSE p.stock - COALESCE((SELECT SUM(im.delta) FROM inventory_movements im WHERE im.product_id = p.id AND im.id > m.id), 0)
+  END AS stock_after`
 type Damage = Record<string, unknown> & { unit_cost_minor: number; total_minor: number; delta: number; stock_after: number; reason: string }
 const damageReasons: Record<string, string> = {
   broken: 'كسر', water: 'تلف بالمياه', defective: 'عيب تصنيع', not_working: 'لا يعمل',
@@ -92,7 +95,8 @@ mobileWalletDamage.get('/damaged', async (c, next) => {
   const query = searchText.optional().parse(c.req.query('q'))
   const status = z.enum(['recorded', 'voided']).optional().parse(c.req.query('status'))
   const predicates = []
-  if (query) predicates.push("(p.name LIKE ? ESCAPE '\\' OR p.barcode = ?)")
+  if (query) predicates.push(`(COALESCE(d.legacy_product_name, p.name) LIKE ? ESCAPE '\\'
+    OR CASE WHEN d.legacy_damage_fingerprint IS NULL THEN p.barcode ELSE d.legacy_product_barcode END = ?)`)
   if (status) predicates.push('reversal.id IS ' + (status === 'recorded' ? 'NULL' : 'NOT NULL'))
   return selectPage(c, damageSelect, damageFrom, predicates.length ? 'WHERE ' + predicates.join(' AND ') : '',
     query ? [searchPrefix(query), query] : [], 'damaged_on DESC, d.id DESC', row => damageView(row as Damage))
@@ -203,7 +207,7 @@ mobileWalletDamage.get('/wallets', async (c, next) => {
       receivables: asDecimal(sums.receivables_minor), capital: asDecimal(sums.working_capital_minor),
     },
     wallets: (wallets.results as Wallet[]).map(row => ({
-      ...cashierWallet(row), is_active: Boolean(row.active), warn_at_percent: 80, limits: limitRows(row, byWallet),
+      ...cashierWallet(row), is_active: Boolean(row.active), warn_at_percent: row.warn_at_percent ?? 80, limits: limitRows(row, byWallet),
     })),
   })
 })

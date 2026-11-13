@@ -8,6 +8,7 @@ import { businessModules, CommerceModule, DamageReport, InvoiceDetail, Pos, Sale
 import { coreModules, Dashboard, Notifications, Products, Profile, Roles, Settings, Staff } from './core'
 import { CustomerLedger, DamageDetail, PurchaseReceipts, SupplierDetail, WalletCashier } from './detail'
 import { DataModule, idOf, Notice, PageTitle } from './ui'
+import { WalletLedger } from './WalletOperations'
 import './styles.css'
 
 type Theme = 'light' | 'dark'
@@ -228,7 +229,9 @@ function Shell({ user, update, clear, theme, toggle }: {
               <Route key={name} path={'/' + name} element={<DataModule key={name} user={user} config={config} rowActions={name === 'customers' ? row =>
                 <Link className="link-button" to={'/customers/' + idOf(row) + '/ledger'}>دفتر العميل</Link> : undefined} />} />
             ))}
-            {Object.keys(businessModules).map(name => <Route key={name} path={'/' + name} element={<CommerceModule name={name} user={user} />} />)}
+            {Object.keys(businessModules).filter(name => name !== 'wallet-transactions').map(name =>
+              <Route key={name} path={'/' + name} element={<CommerceModule name={name} user={user} />} />)}
+            <Route path="/wallet-transactions" element={protect('wallets.view', <WalletLedger user={user} config={businessModules['wallet-transactions']} />)} />
             <Route path="/pos" element={<Pos key="sale" user={user} />} />
             <Route path="/pos/reissue/:invoiceId" element={<Pos key="reissue" user={user} />} />
             <Route path="/invoices/:id" element={protect('invoices.view', <InvoiceDetail user={user} />)} />

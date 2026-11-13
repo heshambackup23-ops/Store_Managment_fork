@@ -7,6 +7,7 @@ import { activeColumn, activeField, countColumn, createAction, dateColumn, editA
 import { ActionDialog, DataModule, dataText, FormInput, idOf, Modal, Notice, PageTitle } from './ui'
 import type { Action, Column, Field, ModuleConfig, Row } from './ui'
 import { WalletAudit, WalletPeriodReport } from './WalletPeriodReport'
+import { WalletPositions } from './WalletOperations'
 
 const remaining = (row: Row, total: string) => Number(row[total]) - Number(row.paid_minor)
 const remainingColumn = (total: string): Column => ({ key: 'remaining', label: 'المتبقي', render: row => money(remaining(row, total)) })
@@ -743,7 +744,8 @@ export function InvoiceDetail({ user }: { user: User }) {
           </div>}
           {Boolean(invoice.replaces_invoice_id) && <Link className="no-print" to={'/invoices/' + invoice.replaces_invoice_id}>عرض الفاتورة الأصلية</Link>}
           {Boolean(invoice.replacement_invoice_id) && <Link className="no-print" to={'/invoices/' + invoice.replacement_invoice_id}>عرض الفاتورة البديلة</Link>}
-          {invoice.refund && <Notice>تم رد {money(invoice.refund.returned_minor)}. {dataText(invoice.refund.reason)}</Notice>}
+          {invoice.refund && <Notice>تم رد {money(invoice.refund.returned_minor)}. {dataText(invoice.refund.reason)}
+            {Boolean(invoice.refund.legacy_refund_reference) && <> · المرجع {dataText(invoice.refund.legacy_refund_reference)}</>}</Notice>}
           {Boolean(invoice.notes) && <p>ملاحظات · {dataText(invoice.notes)}</p>}
           {receiptFooter && <p className="muted">{receiptFooter}</p>}
         </section>
@@ -860,6 +862,7 @@ export function WalletReport({ user }: { user: User }) {
       <div className="metric-grid">{walletMetrics.map(([key, label]) =>
         <article className="panel metric" key={key}><p>{label}</p><strong>{money(report[key])}</strong></article>,
       )}</div>}
+    <WalletPositions revision={revision} />
     <WalletPeriodReport revision={revision} />
     {user.role === 'superadmin' && <WalletAudit />}
   </>

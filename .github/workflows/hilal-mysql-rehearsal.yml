@@ -119,16 +119,18 @@ jobs:
             import { readFileSync, writeFileSync } from "node:fs";
             const file = process.argv[1];
             const data = JSON.parse(readFileSync(file, "utf8"));
-            data.invoice_customer_ids = {"201": 41, "202": null};
+            data.invoice_customer_ids = {"201": 41, "202": null, "203": 41};
             writeFileSync(file, JSON.stringify(data), {mode: 0o600});
           ' "$work/hilal-source.private.json"
           node scripts/restore-laravel-backup.mjs "$work/hilal-source.private.json" \
+            --invoice-refund-evidence fixtures/mysql-refund-evidence.synthetic.json \
             --emit-d1-sql "$work/hilal-load.generated.sql" > "$evidence/restore-report.json"
           node scripts/restore-laravel-backup.mjs "$evidence/hilal-laravel-v2.synthetic.zip" \
+            --invoice-refund-evidence fixtures/mysql-refund-evidence.synthetic.json \
             --source-time-zone UTC > "$evidence/legacy-zip-restore-report.json"
           node scripts/restore-laravel-backup.mjs "$evidence/hilal-catalog.synthetic.xlsx" \
             --source-time-zone UTC > "$evidence/legacy-xlsx-restore-report.json"
-          jq -e '.status == "verified" and .source_counts.invoices == 2' "$evidence/legacy-zip-restore-report.json"
+          jq -e '.status == "verified" and .source_counts.invoices == 3 and .checks.wallets.totals.receivables_minor == "700"' "$evidence/legacy-zip-restore-report.json"
           jq -e '.status == "verified" and .source_counts.products == 2' "$evidence/legacy-xlsx-restore-report.json"
           export AUTH_PEPPER="$(openssl rand -hex 32)"
           node scripts/provision-user.mjs "$work/operator.generated.sql"
@@ -136,12 +138,13 @@ jobs:
           npx --no-install wrangler d1 execute DB --local --persist-to "$work/d1" --file "$work/operator.generated.sql"
           npx --no-install wrangler d1 execute DB --local --persist-to "$work/d1" --file "$work/hilal-load.generated.sql"
           npx --no-install wrangler d1 execute DB --local --persist-to "$work/d1" --json \
-            --command "SELECT (SELECT count(*) FROM invoices) AS invoices, (SELECT sum(total_minor) FROM invoices) AS invoice_total_minor, (SELECT sum(paid_minor) FROM invoices) AS invoice_paid_minor, (SELECT sum(principal_minor-paid_minor) FROM installments) AS installment_due_minor, (SELECT sum(principal_minor-paid_minor) FROM personal_debts) AS personal_debt_due_minor, (SELECT sum(stock) FROM products) AS stock_units, (SELECT barcode FROM products WHERE id=42) AS barcode" \
-            | jq -e '.[0].results[0] | select(. == {invoices:2,invoice_total_minor:2830,invoice_paid_minor:1220,installment_due_minor:1610,personal_debt_due_minor:1075,stock_units:7,barcode:"000123"})' \
+            --file fixtures/mysql-d1-reconciliation.synthetic.sql \
+            | jq -e '.[0].results[0] | select(. == {invoices:3,invoice_total_minor:3380,invoice_paid_minor:1770,refund_minor:550,installment_due_minor:1610,personal_debt_due_minor:1075,stock_units:7,barcode:"000123",damage_units:2,damage_minor:250,supplier_due_minor:4225,supplier_receipt_minor:2800,supplier_allocations:"502:2025,504:775",provider_balance_minor:6600,drawer_minor:3350,receivables_minor:700,transfer_margin_minor:200,drawer_expense_minor:50,profit_available_minor:150,working_capital_minor:10500,foreign_key_violations:0})' \
             > "$evidence/d1-reconciliation.json"
           cat "$evidence/d1-reconciliation.json"
           # Contains only the pre-verified synthetic rows and the isolated target guard.
           cp "$work/hilal-load.generated.sql" "$evidence/hilal-d1.synthetic.generated.sql"
+          cp fixtures/mysql-refund-evidence.synthetic.json "$evidence/"
       - uses: actions/upload-artifact@v4
         if: always()
         with:

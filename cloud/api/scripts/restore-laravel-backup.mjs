@@ -9,6 +9,9 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { parseArgs } from 'node:util'
 import { dateTime, day, id, integer, literal, minor, rowMap, text } from './laravel-finance-export.mjs'
 import { readLegacyBackup } from './legacy-workbook.mjs'
+import { buildDamageRestore, verifyDamageRestore } from './restore-laravel-damage.mjs'
+import { supplierHistorySql, verifySupplierHistory } from './restore-laravel-suppliers.mjs'
+import { walletRestore, walletRestoreTables, assertWalletRestore } from './restore-laravel-wallets.mjs'
 
 const migrations = new URL('../migrations/', import.meta.url)
 const snapshotFormat = 'hilal-laravel-snapshot-v1'
@@ -16,7 +19,9 @@ const catalogTables = ['categories', 'products', 'customers']
 const debtTables = ['personal_debts', 'personal_debt_payments']
 const salesTables = ['sales', 'sales_items', 'payments', 'debts']
 const historyTables = ['invoices', 'installments']
-const businessTables = new Set([...catalogTables, ...debtTables, ...historyTables, 'maintenances'])
+const supplierTables = ['suppliers', 'purchases', 'supplier_payments']
+const sameIdTables = [...catalogTables, ...debtTables, ...historyTables, 'maintenances']
+const businessTables = new Set([...sameIdTables, 'damaged_items', ...supplierTables, ...walletRestoreTables])
 const systemTables = new Set([
   'users', 'profiles', 'roles', 'permissions', 'model_has_permissions', 'model_has_roles', 'role_has_permissions',
   'migrations', 'sessions', 'password_reset_tokens', 'personal_access_tokens', 'cache', 'cache_locks',
@@ -75,7 +80,7 @@ function normalizeRows(rows, table, timestamp, cutoff) {
   return rows.map((row, index) => {
     try {
       const normalized = { ...row }
-      for (const column of ['created_at', 'updated_at']) {
+      for (const column of ['created_at', 'updated_at', ...(table === 'damaged_items' ? ['voided_at'] : [])]) {
         normalized[column] = timestamp(row[column])
         if (cutoff && normalized[column] && normalized[column] > cutoff) throw new Error('timestamp follows the snapshot cutoff')
       }
@@ -276,9 +281,9 @@ INSERT INTO hilal_restore_guard VALUES (CASE WHEN ${invalid.join('\n  OR ')} THE
 DROP TABLE hilal_restore_guard;`
 }
 
-function verifyCounts(db, source) {
+function verifyCounts(db, source, actor, checks) {
   const target = {}
-  for (const table of businessTables) {
+  for (const table of sameIdTables) {
     const expected = rowMap(source[table] ?? [], table)
     const destination = table === 'maintenances' ? 'maintenance_requests' : table
     const actual = db.prepare(`SELECT id FROM ${destination}`).all()
@@ -286,6 +291,13 @@ function verifyCounts(db, source) {
       throw new Error(`Row IDs did not reconcile for ${table}.`)
     }
     target[table] = actual.length
+  }
+  verifyDamageRestore(db, source.damaged_items ?? [])
+  target.damaged_items = source.damaged_items?.length ?? 0
+  if (checks.suppliers) Object.assign(target, verifySupplierHistory(db, source, actor))
+  if (checks.wallets) {
+    assertWalletRestore(db, checks.wallets)
+    Object.assign(target, checks.wallets.source_counts)
   }
   const products = rowMap(source.products ?? [], 'products')
   for (const row of db.prepare('SELECT id, stock, price_minor FROM products').all()) {
@@ -313,14 +325,14 @@ function verifyCounts(db, source) {
   return target
 }
 
-async function applyIsolated(db, sql, actor, source) {
+async function applyIsolated(db, sql, actor, source, checks) {
   db.exec('PRAGMA foreign_keys = ON')
   await initialize(db)
   db.prepare("INSERT INTO users (id,name,email,password_hash,role_id) VALUES (?, 'Local restore operator', 'restore@example.invalid', 'unusable', 1)").run(actor)
   db.exec('BEGIN IMMEDIATE')
   try {
     db.exec(sql)
-    const counts = verifyCounts(db, source)
+    const counts = verifyCounts(db, source, actor, checks)
     db.exec('COMMIT')
     return counts
   } catch (error) {
@@ -383,13 +395,13 @@ async function readSources(paths, options) {
   return { ...input, tables }
 }
 
-async function copyToNewSqlite(path, sql, actor, source) {
+async function copyToNewSqlite(path, sql, actor, source, checks) {
   const reservation = await open(path, 'wx', 0o600)
   await reservation.close()
   let output
   try {
     output = new DatabaseSync(path)
-    await applyIsolated(output, sql, actor, source)
+    await applyIsolated(output, sql, actor, source, checks)
     output.close()
   } catch (error) {
     if (output?.isOpen) output.close()
@@ -430,6 +442,10 @@ export async function restoreLaravelBackup(path, options = {}) {
     if (!cutoff) throw new Error('Invoice history requires the backup cutoff timestamp with an explicit offset.')
     requireInvoiceTables(input.tables)
   } else if (linked.length) throw new Error('Linked installments require their source invoices.')
+  const hasWalletData = walletRestoreTables.some(table => source[table]?.length)
+  if ((hasWalletData || source.damaged_items?.length) && !cutoff) {
+    throw new Error('Wallet and damage history require the backup cutoff timestamp with an explicit offset.')
+  }
   if (source.personal_debt_payments?.length && !source.personal_debts?.length) throw new Error('Debt payments require the original debts.')
   if (!Object.values(source).some((rows) => rows.length)) throw new Error('The selected source has no restorable business rows.')
 
@@ -450,6 +466,7 @@ export async function restoreLaravelBackup(path, options = {}) {
     })
     if (invoices.length) await include('invoices', {
       format: 'hilal-mysql-finance-v1', cutoff_at: cutoff,
+      invoice_refund_evidence: options.invoiceRefundEvidence ?? input.invoice_refund_evidence,
       invoice_customer_ids: mapCustomers(invoices, source.customers, options.invoiceCustomerIds ?? input.invoice_customer_ids),
       tables: Object.fromEntries(['products', 'customers', ...historyTables, ...salesTables].map(
         (name) => [name, name === 'installments' ? linked : source[name] ?? []],
@@ -468,15 +485,30 @@ export async function restoreLaravelBackup(path, options = {}) {
       parts.push(result.sql)
       checks.maintenance = result.checks
     }
+    if (supplierTables.some(table => source[table]?.length)) {
+      const plan = supplierHistorySql(source, actor)
+      parts.push(plan.sql)
+      checks.suppliers = plan.checks
+    }
+    if (hasWalletData) {
+      const plan = walletRestore(source, { actor, cutoff, timestamp })
+      parts.push(plan.sql)
+      checks.wallets = plan.checks
+    }
+    if (source.damaged_items?.length) {
+      const plan = buildDamageRestore(source.damaged_items, source.products ?? [], actor, cutoff)
+      parts.push(plan.sql)
+      checks.damage = plan.checks
+    }
     const sql = parts.join('\n\n') + '\n'
     const verification = new DatabaseSync(':memory:')
     let counts
     try {
-      counts = await applyIsolated(verification, sql, actor, source)
+      counts = await applyIsolated(verification, sql, actor, source, checks)
     } finally {
       verification.close()
     }
-    if (options.output) await copyToNewSqlite(resolve(options.output), sql, actor, source)
+    if (options.output) await copyToNewSqlite(resolve(options.output), sql, actor, source, checks)
     if (options.emitD1Sql) await writeFile(options.emitD1Sql, sql, { flag: 'wx', mode: 0o600 })
     return { ...manifest, cutoff_at: cutoff, restored_counts: counts, checks, dated_invoice_payments_inferred: 0 }
   } finally {
@@ -492,6 +524,7 @@ async function main() {
       'source-time-zone': { type: 'string' },
       'cutoff-at': { type: 'string' },
       'invoice-customer-map': { type: 'string' },
+      'invoice-refund-evidence': { type: 'string' },
       'add-workbook': { type: 'string', multiple: true },
       'actor-id': { type: 'string' },
       'pages': { type: 'string' },
@@ -504,6 +537,7 @@ async function main() {
     sourceTimeZone: values['source-time-zone'],
     cutoffAt: values['cutoff-at'],
     invoiceCustomerIds: values['invoice-customer-map'] ? JSON.parse(await readFile(values['invoice-customer-map'], 'utf8')) : undefined,
+    invoiceRefundEvidence: values['invoice-refund-evidence'] ? JSON.parse(await readFile(values['invoice-refund-evidence'], 'utf8')) : undefined,
     addWorkbooks: values['add-workbook'],
     actorId: values['actor-id'],
     pages: values.pages?.split(','),

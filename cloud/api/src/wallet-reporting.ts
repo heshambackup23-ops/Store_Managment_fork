@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
-import { fail, ok, permit, searchPrefix, selectPage, type ApiEnv } from './http';
+import { fail, ok, page, paginated, permit, searchPrefix, selectPage, type ApiEnv } from './http';
 
 export const walletReporting = new Hono<ApiEnv>();
 const calendar = new Intl.DateTimeFormat('en-CA', {
@@ -58,6 +58,30 @@ function number(value: unknown) {
   if (!Number.isSafeInteger(result)) return fail(409, 'aggregate_range', 'مجموع التقرير خارج النطاق الرقمي المدعوم.');
   return result;
 }
+
+walletReporting.get('/wallets/positions', permit('wallets.view'), async c => {
+  const today = businessDate(Date.now());
+  const paging = page(c);
+  const db = c.env.DB;
+  const [items, count] = await db.batch<Record<string, unknown>>([
+    db.prepare(`SELECT
+    w.id, w.name, w.provider, w.active, w.balance_minor, w.warn_at_percent,
+    w.transaction_limit_minor, w.daily_send_limit_minor, w.daily_receive_limit_minor,
+    w.monthly_send_limit_minor, w.monthly_receive_limit_minor,
+    COALESCE(SUM(CASE WHEN t.kind = 'send' AND t.business_day = calendar.today THEN t.amount_minor END), 0) AS daily_sent_minor,
+    COALESCE(SUM(CASE WHEN t.kind = 'receive' AND t.business_day = calendar.today THEN t.amount_minor END), 0) AS daily_received_minor,
+    COALESCE(SUM(CASE WHEN t.kind = 'send' THEN t.amount_minor END), 0) AS monthly_sent_minor,
+    COALESCE(SUM(CASE WHEN t.kind = 'receive' THEN t.amount_minor END), 0) AS monthly_received_minor
+    FROM (SELECT * FROM wallets ORDER BY active DESC, name, id LIMIT ? OFFSET ?) w
+    CROSS JOIN (SELECT ? AS today) calendar
+    LEFT JOIN wallet_transactions t ON t.wallet_id = w.id AND t.kind IN ('send','receive')
+      AND t.business_day BETWEEN date(calendar.today,'start of month') AND calendar.today
+      AND NOT EXISTS (SELECT 1 FROM wallet_transactions r WHERE r.reversal_of = t.id)
+    GROUP BY w.id ORDER BY w.active DESC, w.name, w.id`).bind(paging.limit, paging.offset, today),
+    db.prepare('SELECT count(*) AS total FROM wallets'),
+  ]);
+  return paginated(c, items.results, number(count.results[0]?.total), paging);
+});
 
 function transferTotals(row: Record<string, unknown> | undefined): Totals {
   return Object.fromEntries(transferColumns.map(key => [key, number(row?.[key])])) as Totals;

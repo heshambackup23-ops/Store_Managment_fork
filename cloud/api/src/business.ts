@@ -561,9 +561,9 @@ business.get('/suppliers/:id', permit('suppliers.view'), async c => {
     db.prepare('SELECT * FROM supplier_balances WHERE id = ?').bind(supplierId),
     db.prepare('SELECT * FROM purchases WHERE supplier_id = ? ORDER BY purchase_date DESC, id DESC LIMIT 25').bind(supplierId),
     db.prepare(`
-      SELECT id, amount_minor, payment_date, opening_applied_minor, note FROM supplier_receipts WHERE supplier_id = ?
+      SELECT id, amount_minor, payment_date, opening_applied_minor, note, legacy_receipt_number FROM supplier_receipts WHERE supplier_id = ?
       UNION ALL
-      SELECT s.id, s.amount_minor, COALESCE(s.payment_date, date(s.created_at)), 0, s.note
+      SELECT s.id, s.amount_minor, COALESCE(s.payment_date, date(s.created_at)), 0, s.note, s.legacy_receipt_number
       FROM supplier_payments s JOIN purchases p ON p.id = s.purchase_id WHERE p.supplier_id = ?
       ORDER BY payment_date DESC, id DESC LIMIT 25
     `).bind(supplierId, supplierId),
@@ -761,15 +761,54 @@ business.post('/wallets/:id/adjustments', permit('wallets.manage'), async c => {
   ]);
 });
 
+const walletTransactionFilters = z.object({
+  wallet_id: z.coerce.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
+  kind: z.enum(['opening', 'send', 'receive', 'expense', 'settlement_in', 'settlement_out', 'reversal']).optional(),
+  status: z.enum(['effective', 'reversed']).optional(),
+  q: z.string().trim().max(80).optional(),
+  from: date.optional(),
+  to: date.optional(),
+  export: z.enum(['1']).optional(),
+});
 business.get('/wallet-transactions', permit('wallets.view'), c => {
-  const walletId = c.req.query('wallet_id');
-  return list(c, 't.*, w.name AS wallet_name, r.id AS reversed_by, d.id AS wallet_debt_id, p.id AS profit_withdrawal_id, a.id AS adjustment_id',
-    `wallet_transactions t JOIN wallets w ON w.id = t.wallet_id
+  const filter = walletTransactionFilters.parse(c.req.query());
+  if (filter.from && filter.to && filter.from > filter.to) {
+    return fail(422, 'invalid_dates', 'تاريخ بداية الفترة يأتي بعد نهايتها.');
+  }
+  const clauses: string[] = [];
+  const parameters: (string | number)[] = [];
+  for (const [value, clause] of [
+    [filter.wallet_id, 't.wallet_id = ?'], [filter.kind, 't.kind = ?'],
+    [filter.from, 't.business_day >= ?'], [filter.to, 't.business_day <= ?'],
+  ] as const) {
+    if (value !== undefined) { clauses.push(clause); parameters.push(value); }
+  }
+  if (filter.status === 'effective') clauses.push("r.id IS NULL AND t.kind <> 'reversal'");
+  if (filter.status === 'reversed') clauses.push("(r.id IS NOT NULL OR t.kind = 'reversal')");
+  if (filter.q) {
+    clauses.push("(CAST(t.id AS TEXT) = ? OR t.counterparty LIKE ? ESCAPE '\\' OR w.name LIKE ? ESCAPE '\\')");
+    parameters.push(filter.q.replace(/^#/, ''), searchPrefix(filter.q), searchPrefix(filter.q));
+  }
+  const cash = hasPermission(c.get('actor'), 'wallets.cash') ? 't.cash_delta_minor' : 'NULL';
+  const columns = `t.id, t.wallet_id, t.kind, t.amount_minor, t.commission_minor, t.fee_minor, t.delta_minor,
+    ${cash} AS cash_delta_minor, t.business_day, t.reversal_of, t.note, t.actor_id, t.created_at, t.counterparty,
+    w.name AS wallet_name, r.id AS reversed_by, d.id AS wallet_debt_id, p.id AS profit_withdrawal_id, a.id AS adjustment_id`;
+  const tables = `wallet_transactions t JOIN wallets w ON w.id = t.wallet_id
       LEFT JOIN wallet_transactions r ON r.reversal_of = t.id
       LEFT JOIN wallet_debts d ON d.wallet_transaction_id = t.id
       LEFT JOIN wallet_profit_withdrawals p ON p.id = t.id AND p.wallet_id = t.wallet_id
-      LEFT JOIN wallet_adjustments a ON a.id = t.id AND a.wallet_id = t.wallet_id` + (walletId ? ' WHERE t.wallet_id = ?' : ''),
-    walletId ? [id.parse(Number(walletId))] : [], 't.id DESC');
+      LEFT JOIN wallet_adjustments a ON a.id = t.id AND a.wallet_id = t.wallet_id`;
+  const where = clauses.length ? 'WHERE ' + clauses.join(' AND ') : '';
+  const order = 't.business_day DESC, t.created_at DESC, t.id DESC';
+  if (filter.export) {
+    if (!hasPermission(c.get('actor'), 'wallets.cash')) return fail(403, 'forbidden', 'تصدير الكشف يتطلب صلاحية حركات النقدية.');
+    return c.env.DB.prepare(`SELECT ${columns} FROM ${tables} ${where} ORDER BY ${order} LIMIT 1001`)
+      .bind(...parameters).all().then(({ results }) => {
+        if (results.length > 1000) return fail(422, 'export_limit', 'حدد فترة أقصر أو محفظة واحدة لتصدير ما يصل إلى ١٬٠٠٠ سجل.');
+        return ok(c, results);
+      });
+  }
+  return selectPage(c, columns, tables, where, parameters, order);
 });
 
 const walletTransaction = z.object({
@@ -917,7 +956,9 @@ business.post('/wallet-profit-withdrawals', permit('wallets.cash'), permit('wall
 });
 
 const damageColumns = `d.*, d.unit_cost_minor AS unit_value_minor, d.quantity * d.unit_cost_minor AS total_value_minor,
-  p.name AS product_name, p.barcode AS product_barcode, r.id AS reversed_by, r.reason AS reversal_reason,
+  COALESCE(d.legacy_product_name, p.name) AS product_name,
+  CASE WHEN d.legacy_damage_fingerprint IS NULL THEN p.barcode ELSE d.legacy_product_barcode END AS product_barcode,
+  r.id AS reversed_by, r.reason AS reversal_reason,
   EXISTS (SELECT 1 FROM damaged_stock_images img WHERE img.record_id = d.id) AS has_image`;
 const damageTables = `damaged_stock d JOIN products p ON p.id = d.product_id
   LEFT JOIN damaged_stock_reversals r ON r.damage_id = d.id`;

@@ -70,7 +70,7 @@ test('canonical backup ZIP restores Arabic names, exact money and stock to a fre
   assert.equal(result.status, 'verified')
   assert.equal(result.cutoff_at, '2026-10-31T18:00:00.000Z')
   assert.deepEqual(result.restored_counts, {
-    categories: 1, products: 1, customers: 1, personal_debts: 1, personal_debt_payments: 1, invoices: 1, installments: 1, maintenances: 1,
+    categories: 1, products: 1, customers: 1, personal_debts: 1, personal_debt_payments: 1, invoices: 1, installments: 1, maintenances: 1, damaged_items: 0,
   })
   assert.equal(result.checks.invoices.outstanding_minor, '2000')
   assert.equal(result.checks['personal-debts'].remaining_minor, '2402')
@@ -135,11 +135,11 @@ test('unmapped historical modules and local-time ambiguities do not produce a ta
   const destination = join(dir, 'blocked.sqlite')
   const snapshot = {
     format: 'hilal-laravel-snapshot-v1', cutoff_at: cutoff, source_time_zone: 'Africa/Cairo',
-    excluded_table_counts: { personal_access_tokens: 2 }, tables: { products: [], wallets: [{ id: 10 }] },
+    excluded_table_counts: { personal_access_tokens: 2 }, tables: { products: [], app_notifications: [{ id: 10 }] },
   }
   await writeFile(input, JSON.stringify(snapshot))
   const result = await restoreLaravelBackup(input, { output: destination })
-  assert.deepEqual(result.blocked_counts, { wallets: 1 })
+  assert.deepEqual(result.blocked_counts, { app_notifications: 1 })
   assert.deepEqual(result.excluded_system_counts, { personal_access_tokens: 2 })
   await assert.rejects(stat(destination), { code: 'ENOENT' })
 
