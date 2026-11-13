@@ -1,10 +1,10 @@
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { createReadStream } from 'node:fs'
-import { mkdir, mkdtemp, realpath, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises'
 import { isAbsolute, join, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { getPlatformProxy } from 'wrangler'
+import { getPlatformProxy, unstable_splitSqlQuery } from 'wrangler'
 
 const api = fileURLToPath(new URL('../', import.meta.url))
 const wrangler = join(api, 'node_modules', 'wrangler', 'bin', 'wrangler.js')
@@ -25,6 +25,23 @@ function run(args) {
 
 function identifier(name) {
   return `"${name.replaceAll('"', '""')}"`
+}
+
+function orderRestoreStatements(sql) {
+  const pragmas = []
+  const tables = []
+  const rows = []
+  const schema = []
+  for (const statement of unstable_splitSqlQuery(sql)) {
+    const start = statement.trimStart()
+    if (/^PRAGMA\s+defer_foreign_keys\s*=/i.test(start)) pragmas.push(statement)
+    else if (/^CREATE\s+TABLE\b/i.test(start)) tables.push(statement)
+    else if (/^(INSERT|REPLACE|DELETE|UPDATE)\b/i.test(start)) rows.push(statement)
+    else schema.push(statement)
+  }
+  // SQLite must resolve foreign table names even for nullable links in a deferred batch.
+  // Load rows before triggers so a snapshot restores existing ledgers without applying their effects twice.
+  return [...pragmas, ...tables, ...rows, ...schema].map(sql => sql.replace(/;\s*$/, '') + ';').join('\n') + '\n'
 }
 
 async function summarize(persist) {
@@ -64,6 +81,7 @@ process.env.WRANGLER_REGISTRY_PATH = join(directory, 'registry')
 try {
   const before = await summarize(true)
   run(['export', 'DB', '--local', '--output', backup])
+  await writeFile(backup, orderRestoreStatements(await readFile(backup, 'utf8')), { mode: 0o600 })
   run(['execute', 'DB', '--local', '--file', backup, ...restoreTarget])
   const after = await summarize({ path: join(isolated, 'v3') })
   if (JSON.stringify(before) !== JSON.stringify(after)) {

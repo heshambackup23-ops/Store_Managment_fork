@@ -14,7 +14,7 @@ val stagingApiUrl = providers.gradleProperty("storeApiStagingUrl")
     .orElse("https://henra-store-demo-ui.pages.dev/api/")
 val productionApiUrl = providers.gradleProperty("storeApiProductionUrl")
     .orElse("https://api.example.invalid/api/")
-val storeCompileSdk = providers.gradleProperty("storeCompileSdk").map(String::toInt).orElse(37)
+val storeCompileSdkMinor = providers.gradleProperty("storeCompileSdkMinor").map(String::toInt).orElse(0)
 val releaseStoreFile = providers.gradleProperty("storeReleaseStoreFile").orNull
 val releaseStorePassword = providers.gradleProperty("storeReleaseStorePassword").orNull
 val releaseKeyAlias = providers.gradleProperty("storeReleaseKeyAlias").orNull
@@ -27,7 +27,13 @@ require(!releaseSigningValues.any { !it.isNullOrBlank() } || hasReleaseSigning) 
 
 android {
     namespace = "com.storemanagement.mobile"
-    compileSdk = storeCompileSdk.get()
+    if (storeCompileSdkMinor.get() == 0) {
+        compileSdk = 37
+    } else {
+        compileSdk {
+            version = release(37) { minorApiLevel = storeCompileSdkMinor.get() }
+        }
+    }
 
     defaultConfig {
         applicationId = "com.storemanagement.mobile"

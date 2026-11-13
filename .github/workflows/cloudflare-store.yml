@@ -52,10 +52,28 @@ jobs:
           distribution: temurin
           java-version: '17'
       - name: Install the Android platform
-        run: '"${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36"'
+        shell: bash
+        run: |
+          sdkmanager="${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager"
+          "$sdkmanager" --list --channel=3 > "$RUNNER_TEMP/hilal-sdk-packages.txt"
+          if [ -f "${ANDROID_HOME}/platforms/android-37/android.jar" ]; then
+            echo 'HILAL_ANDROID_MINOR=0' >> "$GITHUB_ENV"
+          else
+            package=$(awk -F'|' '{gsub(/[[:space:]]/, "", $1); if ($1 ~ /^platforms;android-37(\.[0-9]+)?$/) print $1}' \
+              "$RUNNER_TEMP/hilal-sdk-packages.txt" | sort -Vu | tail -n 1)
+            if [ -z "$package" ]; then
+              echo 'The Google SDK repository did not list an API 37 platform for this runner.' >&2
+              awk -F'|' '$1 ~ /platforms;/ {print $1}' "$RUNNER_TEMP/hilal-sdk-packages.txt"
+              exit 1
+            fi
+            "$sdkmanager" --channel=3 "$package"
+            minor=0
+            if [[ "$package" =~ \.([0-9]+)$ ]]; then minor="${BASH_REMATCH[1]}"; fi
+            echo "HILAL_ANDROID_MINOR=$minor" >> "$GITHUB_ENV"
+          fi
       - name: Test and assemble the staging app
         working-directory: android
-        run: bash gradlew :app:testStagingDebugUnitTest :app:assembleStagingDebug -PstoreCompileSdk=36
+        run: bash gradlew :app:testStagingDebugUnitTest :app:assembleStagingDebug -PstoreCompileSdkMinor="$HILAL_ANDROID_MINOR"
       - uses: actions/upload-artifact@v4
         with:
           name: hilal-store-staging-apk
