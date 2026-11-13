@@ -68,6 +68,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.material.icons.filled.CheckCircle
@@ -1244,6 +1247,14 @@ internal data class QuickAction(
     val onClick: () -> Unit,
 )
 
+internal data class DashboardRetailAction(
+    val label: String,
+    val context: String,
+    val icon: ImageVector,
+    val tag: String,
+    val onClick: () -> Unit,
+)
+
 @Composable
 private fun toneContainer(tone: StatusTone): Color = when (tone) {
     StatusTone.Positive -> MaterialTheme.colorScheme.primaryContainer
@@ -1271,7 +1282,8 @@ private fun greetingForNow(): String {
 
 @Composable
 private fun SectionTitle(text: String) {
-    Text(text, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
+    Text(text, modifier = Modifier.semantics { heading() },
+        style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
 }
 
 @Composable
@@ -1281,6 +1293,7 @@ internal fun HomeDashboardScreen(
     metrics: List<DashboardMetric>,
     alerts: List<DashboardAlert>,
     quickActions: List<QuickAction>,
+    retailActions: List<DashboardRetailAction>,
     modifier: Modifier = Modifier,
 ) {
     val today = remember { SimpleDateFormat("EEEE d MMMM yyyy", Locale.forLanguageTag("ar")).format(Date()) }
@@ -1291,6 +1304,32 @@ internal fun HomeDashboardScreen(
         Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Text("${greetingForNow()}، $userName", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
             Text(today, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        if (retailActions.isNotEmpty()) {
+            SectionTitle("تشغيل المتجر")
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                retailActions.forEach { action ->
+                    Surface(
+                        onClick = action.onClick,
+                        modifier = Modifier.fillMaxWidth().testTag(action.tag),
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.primaryContainer,
+                        contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                    ) {
+                        Row(
+                            Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Icon(action.icon, contentDescription = null, modifier = Modifier.size(24.dp))
+                            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                Text(action.label, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                                RetailLiveStatus(action.context)
+                            }
+                        }
+                    }
+                }
+            }
         }
         if (quickActions.isNotEmpty()) {
             SectionTitle("إجراءات سريعة")

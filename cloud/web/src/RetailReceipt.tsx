@@ -6,10 +6,10 @@ import type { Field, Row } from './ui'
 import { trackingOf } from './RetailDevices'
 import { BranchSelect } from './RetailBranches'
 import type { Tracking } from './RetailDevices'
+import { displayQuantity, formatQuantity, measurementLabel, quantityScale, quantityStep, stockQuantity, validQuantity } from './measurement'
 
 type CodeDraft = { serial_number: string; imei1: string; imei2: string }
-import { formatQuantity, measurementLabel, quantityScale, quantityStep, stockQuantity, validQuantity } from './measurement'
-
+type OrderLine = { product_id: number; product_name: string; remaining_quantity: number; quantity_scale?: number; tracking?: string }
 type Line = { id: number; name: string; tracking: Tracking; quantity: number; scale: number; devices: CodeDraft[] }
 const productField: Field = { name: 'product_id', label: 'الصنف المستلم', kind: 'reference', reference: { path: '/products' } }
 const blankCode = () => ({ serial_number: '', imei1: '', imei2: '' })
@@ -112,36 +112,74 @@ export function RetailReceipt({ endpoint, close, done }: { endpoint: string; clo
   const [scale, setScale] = useState(1)
   const [pack, setPack] = useState(false)
   const [lines, setLines] = useState<Line[]>([])
+  const [order, setOrder] = useState<OrderLine[]>()
+  const [orderError, setOrderError] = useState('')
+  const [orderRevision, refreshOrder] = useState(0)
   const latestLines = useRef(lines)
   latestLines.current = lines
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const orderPath = endpoint.replace(/\/receipts$/, '')
+  const orderId = orderPath.split('/').at(-1)
+  const orderLine = order?.find(line => String(line.product_id) === product)
+  const maxQuantity = Math.min(
+    orderLine && trackingOf(orderLine.tracking) !== 'quantity' ? 40 : 1000000 / scale,
+    orderLine ? displayQuantity(orderLine.remaining_quantity, orderLine.quantity_scale) : Infinity,
+  )
+  const quantityInUnits = Number(quantity) * (pack ? packSize : 1)
+  const present = lines.reduce((sum, line) => sum + line.devices.filter(code =>
+    line.tracking === 'imei' ? code.imei1.trim() : code.serial_number.trim()).length, 0)
+  const expected = lines.reduce((sum, line) => sum + line.devices.length, 0)
+
+  useEffect(() => {
+    const abort = new AbortController()
+    setOrder(undefined); setOrderError('')
+    request<{ items?: OrderLine[] }>(orderPath, { signal: abort.signal }).then(result => {
+      if (!abort.signal.aborted) setOrder(result.data.items ?? [])
+    }).catch(failure => { if (!abort.signal.aborted) setOrderError(failure.message) })
+    return () => abort.abort()
+  }, [orderPath, orderRevision])
 
   useEffect(() => {
     const id = Number(product)
     setPack(false); setPackSize(1); setScale(1)
     if (!Number.isSafeInteger(id) || id < 1) return
+    if (orderLine) setScale(quantityScale(orderLine.quantity_scale))
     const abort = new AbortController()
     request<Row>('/products/' + id, { signal: abort.signal }).then(result => {
       if (abort.signal.aborted) return
       setScale(quantityScale(result.data.quantity_scale))
-      if (trackingOf(result.data.tracking) === 'quantity') setPackSize(Number(result.data.units_per_pack) || 1)
+      if (trackingOf(result.data.tracking) === 'quantity' && quantityScale(result.data.quantity_scale) === 1) {
+        setPackSize(Number(result.data.units_per_pack) || 1)
+      }
     }).catch(() => { /* Adding the line shows a lookup error if the item is unavailable. */ })
     return () => abort.abort()
-  }, [product])
+  }, [product, orderLine])
+
+  function selectOrderProduct(value: string) {
+    const item = order?.find(line => String(line.product_id) === value)
+    setProduct(value)
+    setQuantity(item ? String(Math.min(displayQuantity(item.remaining_quantity, item.quantity_scale),
+      trackingOf(item.tracking) === 'quantity' ? 1000000 / quantityScale(item.quantity_scale) : 40)) : '1')
+  }
 
   async function add() {
     if (busy) return
     setError('')
-    const id = Number(product), count = Number(quantity) * (pack ? packSize : 1)
+    const id = Number(product)
     if (!Number.isSafeInteger(id) || id < 1) { setError('اختر الصنف.'); return }
     if (lines.some(line => line.id === id)) { setError('الصنف موجود بالفعل في السند.'); return }
+    if (pack && !Number.isInteger(Number(quantity))) { setError('أدخل عددًا صحيحًا من العبوات.'); return }
     setBusy(true)
     try {
       const { data } = await request<Row>('/products/' + id)
       const tracking = trackingOf(data.tracking)
       const scale = quantityScale(data.quantity_scale)
+      const count = quantityInUnits
       if (!validQuantity(count, scale)) throw new Error('أدخل كمية صالحة بوحدة ' + measurementLabel(scale) + '.')
+      if (order?.length && (!orderLine || count > displayQuantity(orderLine.remaining_quantity, orderLine.quantity_scale))) {
+        throw new Error('اختر بندًا من الطلب وأدخل كمية لا تتجاوز المتبقي لاستلامه.')
+      }
       if (tracking !== 'quantity' && count > 40) throw new Error('قسّم دفعة الأجهزة إلى سندات أصغر، حتى ٤٠ قطعة للصنف.')
       setLines(previous => [...previous, { id, name: String(data.name), tracking, quantity: count, scale, devices: tracking === 'quantity' ? [] : Array.from({ length: count }, blankCode) }])
       setProduct(''); setQuantity('1')
@@ -176,29 +214,54 @@ export function RetailReceipt({ endpoint, close, done }: { endpoint: string; clo
 
   return <Modal title="تسجيل استلام" close={() => { if (!busy) close() }}>
     <form className="modal-form" onSubmit={submit}>
-      <BranchSelect label="فرع الاستلام" value={branch} set={setBranch} disabled={busy} />
-      <label className="field">مرجع الاستلام<input required maxLength={100} value={ref} disabled={busy} onChange={event => setRef(event.target.value)} /></label>
-      <label className="field">تاريخ الاستلام<input type="date" value={date} disabled={busy} onChange={event => setDate(event.target.value)} /></label>
-      <fieldset className="panel panel-inner form-section" disabled={busy}><legend>إضافة صنف إلى الاستلام</legend>
-        <FormInput field={productField} value={product} set={setProduct} />
-      {packSize > 1 && <label className="check-field"><input type="checkbox" checked={pack} onChange={event => setPack(event.target.checked)} /> الكمية بالعبوات ({packSize} قطعة لكل عبوة)</label>}
-        <label className="field">الكمية المستلمة ({measurementLabel(scale)})<input type="number" min={quantityStep(scale)} step={quantityStep(scale)} max={1000000 / scale} value={quantity} onChange={event => setQuantity(event.target.value)} /></label>
-        <button className="secondary" type="button" onClick={add} disabled={lines.length >= 40}>أضف صنفًا</button>
-      </fieldset>
-      {lines.map(line => <fieldset className="panel panel-inner form-section" key={line.id} disabled={busy}>
-        <legend>{line.name} · {formatQuantity(stockQuantity(line.quantity, line.scale), line.scale)}</legend>
+      <p className="retail-context">أمر الشراء <strong><bdi>#{orderId}</bdi></strong></p>
+      <div className="form-grid">
+        <BranchSelect label="فرع الاستلام" value={branch} set={setBranch} disabled={busy} />
+        <label className="field">مرجع الاستلام<input required maxLength={100} value={ref} disabled={busy} onChange={event => setRef(event.target.value)} /></label>
+        <label className="field">تاريخ الاستلام<input type="date" value={date} disabled={busy} onChange={event => setDate(event.target.value)} /></label>
+      </div>
+      {!order && !orderError && <p role="status">جارٍ تحميل بنود الطلب…</p>}
+      {orderError && <Notice error>{orderError} <button type="button" className="secondary" onClick={() => refreshOrder(value => value + 1)}>أعد تحميل الطلب</button></Notice>}
+      {order && <fieldset className="panel panel-inner form-section" disabled={busy}><legend>إضافة صنف إلى الاستلام</legend>
+        {order.length ? <label className="field">بند من أمر الشراء
+          <select value={product} onChange={event => selectOrderProduct(event.target.value)}><option value="">اختر صنفًا متبقيًا</option>
+            {order.filter(line => line.remaining_quantity > 0 && !lines.some(draft => draft.id === line.product_id)).map(line =>
+              <option key={line.product_id} value={line.product_id}>{line.product_name} · {formatQuantity(line.remaining_quantity, line.quantity_scale)}</option>)}
+          </select>
+          {!order.some(line => line.remaining_quantity > 0) && <small>اكتمل استلام جميع بنود هذا الطلب.</small>}
+        </label> : <><p className="muted">فاتورة شراء دون بنود محددة. اختر الصنف من دليل المنتجات.</p>
+          <FormInput field={productField} value={product} set={setProduct} /></>}
+        {packSize > 1 && maxQuantity >= packSize && <label className="check-field"><input type="checkbox" checked={pack} onChange={event => {
+          setPack(event.target.checked); setQuantity('1')
+        }} /> الكمية بالعبوات ({packSize} قطعة لكل عبوة)</label>}
+        <label className="field">الكمية المستلمة ({pack ? 'عبوة' : measurementLabel(scale)})
+          <input type="number" min={pack ? 1 : quantityStep(scale)} step={pack ? 1 : quantityStep(scale)}
+            max={pack ? Math.floor(maxQuantity / packSize) : maxQuantity} value={quantity} onChange={event => setQuantity(event.target.value)} />
+          {pack && <small>تعادل {formatQuantity(stockQuantity(quantityInUnits, scale), scale)}.</small>}
+        </label>
+        <button className="secondary" type="button" onClick={add} disabled={lines.length >= 40 || !product}>أضف صنفًا</button>
+      </fieldset>}
+      {lines.map(line => {
+        const ordered = order?.find(item => item.product_id === line.id)
+        const received = stockQuantity(line.quantity, line.scale)
+        return <fieldset className="panel panel-inner form-section" key={line.id} disabled={busy}>
+        <legend>{line.name} · {formatQuantity(received, line.scale)}</legend>
+        {ordered && <p className="muted">المتبقي بعد هذه الدفعة {formatQuantity(ordered.remaining_quantity - received, line.scale)}</p>}
         {line.devices.length > 0 && <ReceiptBulkCodes line={line} endpoint={endpoint} disabled={busy} apply={codes => applyCodes(line.id, codes)} />}
         {line.devices.map((device, index) => <div className="form-grid" key={index}>
           <label className="field">رقم مسلسل القطعة {index + 1}
-            <input required={line.tracking === 'serial'} maxLength={100} value={device.serial_number} onChange={event => setCode(line.id, index, 'serial_number', event.target.value)} />
+            <input dir="ltr" required={line.tracking === 'serial'} maxLength={100} value={device.serial_number} onChange={event => setCode(line.id, index, 'serial_number', event.target.value)} />
           </label>
           {line.tracking === 'imei' && <>
-            <label className="field">IMEI 1 للقطعة {index + 1}<input required inputMode="numeric" pattern="[0-9]{15}" value={device.imei1} onChange={event => setCode(line.id, index, 'imei1', event.target.value)} /></label>
-            <label className="field">IMEI 2 للقطعة {index + 1} (اختياري)<input inputMode="numeric" pattern="[0-9]{15}" value={device.imei2} onChange={event => setCode(line.id, index, 'imei2', event.target.value)} /></label>
+            <label className="field">IMEI 1 للقطعة {index + 1}<input dir="ltr" required inputMode="numeric" pattern="[0-9]{15}" value={device.imei1} onChange={event => setCode(line.id, index, 'imei1', event.target.value)} /></label>
+            <label className="field">IMEI 2 للقطعة {index + 1} (اختياري)<input dir="ltr" inputMode="numeric" pattern="[0-9]{15}" value={device.imei2} onChange={event => setCode(line.id, index, 'imei2', event.target.value)} /></label>
           </>}
         </div>)}
         <button type="button" className="link-button" onClick={() => setLines(previous => previous.filter(item => item.id !== line.id))}>احذف {line.name}</button>
-      </fieldset>)}
+      </fieldset>
+      })}
+      {lines.length > 0 && <p className="retail-context" role="status">بنود السند <strong>{displayLine(lines.length)}</strong>
+        {expected > 0 && <> · أرقام القطع المدخلة <strong>{displayLine(present)} من {displayLine(expected)}</strong></>}</p>}
       <label className="field">الملاحظات<textarea maxLength={500} value={note} disabled={busy} onChange={event => setNote(event.target.value)} /></label>
       {error && <Notice error>{error}</Notice>}
       <div className="form-actions"><button className="primary" disabled={busy || !lines.length}>{busy ? 'جارٍ التسجيل…' : 'احفظ الاستلام'}</button>

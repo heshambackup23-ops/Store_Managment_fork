@@ -35,7 +35,11 @@ interface StoreApi {
     suspend fun currentUser(): ApiEnvelope<UserDto>
 
     @GET("v1/retail/shifts")
-    suspend fun retailShifts(@Query("status") status: String?, @Query("page") page: Int): ApiPage<RetailShiftDto>
+    suspend fun retailShifts(
+        @Query("status") status: String?,
+        @Query("page") page: Int,
+        @Query("per_page") perPage: Int? = null,
+    ): ApiPage<RetailShiftDto>
 
     @GET("v1/retail/settings")
     suspend fun retailSettings(): ApiEnvelope<RetailSettingsDto>

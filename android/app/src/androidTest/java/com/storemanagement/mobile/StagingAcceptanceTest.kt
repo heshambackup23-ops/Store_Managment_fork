@@ -17,6 +17,7 @@ import androidx.compose.ui.test.performTextReplacement
 import androidx.compose.ui.test.printToString
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.storemanagement.mobile.ui.retailDeviceScreenTag
+import com.storemanagement.mobile.ui.retailDeviceScanButtonTag
 import com.storemanagement.mobile.ui.retailShiftCloseTag
 import com.storemanagement.mobile.ui.retailShiftConfirmTag
 import com.storemanagement.mobile.ui.retailShiftOpenTag
@@ -53,6 +54,17 @@ class StagingAcceptanceTest {
     fun sellsTrackedDeviceAndClosesShiftAgainstIsolatedWorker() {
         assertEquals("http://127.0.0.1:8787/api/", BuildConfig.API_BASE_URL)
         signIn("emulator-operator", "مسؤول محاكي هلال")
+
+        compose.onNodeWithTag("retail-home-review-shifts").performSemanticsAction(SemanticsActions.OnClick)
+        waitFor("pending shift review screen") { compose.onAllNodes(hasTestTag(retailShiftScreenTag)).fetchSemanticsNodes().isNotEmpty() }
+        waitForText("لا توجد ورديات مطابقة.")
+        compose.onNodeWithTag("store-tab-Dashboard").performSemanticsAction(SemanticsActions.OnClick)
+        waitForText("لا توجد وردية مفتوحة")
+        compose.onNodeWithTag("retail-home-my-shift").performSemanticsAction(SemanticsActions.OnClick)
+        waitForText("اسم درج النقدية")
+        clickText("إلغاء")
+        compose.onNodeWithTag("store-tab-Dashboard").performSemanticsAction(SemanticsActions.OnClick)
+        compose.onNodeWithTag("retail-home-scan-device").assertExists()
 
         compose.onNodeWithTag("store-tab-Products").performSemanticsAction(SemanticsActions.OnClick)
         waitForText("دفتر ملاحظات")
@@ -110,6 +122,7 @@ class StagingAcceptanceTest {
         compose.onNodeWithText("اعتماد فرق الوردية").assertDoesNotExist()
 
         openRetailMenu("retail-menu-devices", retailDeviceScreenTag)
+        compose.onNodeWithTag(retailDeviceScanButtonTag).assertExists()
         val deviceSearch = compose.onNodeWithText("الرقم التسلسلي أو IMEI")
         deviceSearch.performTextReplacement("NO-EMULATOR-DEVICE")
         waitForText("لا توجد أجهزة مطابقة.")

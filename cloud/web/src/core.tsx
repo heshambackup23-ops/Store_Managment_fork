@@ -6,6 +6,7 @@ import { RetailQuantityCost } from './RetailQuantityCost'
 import { displayQuantity, formatQuantity, measurementLabel } from './measurement'
 import type { User } from './api'
 import { AccessKeyDialog, DataModule, idOf, Modal, Notice, PageTitle } from './ui'
+import { workFor } from './navigation'
 import type { Action, Column, Field, ModuleConfig, Row } from './ui'
 
 export const required = (name: string, label: string, kind: Field['kind'] = 'text'): Field => ({ name, label, kind, required: true })
@@ -284,6 +285,9 @@ const dashboardMetrics = [
 export function Dashboard({ user }: { user: User }) {
   const [metrics, setMetrics] = useState<Row>()
   const [error, setError] = useState('')
+  const [pendingShifts, setPendingShifts] = useState<number>()
+  const work = workFor(user)
+  const canReviewShifts = allowed(user, 'retail.shifts.approve')
   useEffect(() => {
     const controller = new AbortController()
     request<Row>('/dashboard', { signal: controller.signal })
@@ -291,17 +295,39 @@ export function Dashboard({ user }: { user: User }) {
       .catch(error => { if (!controller.signal.aborted) setError(error.message) })
     return () => controller.abort()
   }, [])
-  const quick = [
-    ['/pos', 'نقطة البيع', 'invoices.create'], ['/invoices', 'الفواتير', 'invoices.view'],
-    ['/products', 'المنتجات', 'products.view'], ['/reports', 'تقارير المبيعات', 'reports.view'],
-  ].filter(([, , permission]) => allowed(user, permission))
+  useEffect(() => {
+    if (!canReviewShifts) return
+    const controller = new AbortController()
+    request<Row[]>('/retail/shifts?status=pending_approval&per_page=1', { signal: controller.signal })
+      .then(result => { if (!controller.signal.aborted) setPendingShifts(result.meta?.total ?? result.data.length) })
+      .catch(() => { /* The shift queue remains available directly. */ })
+    return () => controller.abort()
+  }, [canReviewShifts, user.id])
+  const review = [
+    { visible: canReviewShifts, path: '/retail-shifts?status=pending_approval', label: 'فروق الورديات', count: pendingShifts },
+    { visible: allowed(user, 'retail.discounts.approve'), path: '/retail-discounts', label: 'اعتمادات الخصم' },
+    { visible: allowed(user, 'inventory.stocktake.approve'), path: '/retail-stocktakes', label: 'فروق الجرد' },
+    { visible: allowed(user, 'products.view') && Number(metrics?.low_stock ?? 0) + Number(metrics?.out_of_stock ?? 0) > 0,
+      path: '/products', label: 'أصناف منخفضة أو نافدة', count: Number(metrics?.low_stock ?? 0) + Number(metrics?.out_of_stock ?? 0) },
+  ].filter(item => item.visible)
   const shown = metrics ? dashboardMetrics.filter(([key]) => key in metrics) : []
   return (
     <>
-      <PageTitle title="لوحة التحكم" description="متابعة المبيعات والمخزون وحسابات المتجر." />
+      <PageTitle title="لوحة التحكم" action={work.cashier && <Link className="primary" to="/pos">بيع جديد</Link>} />
+      {work.shortcuts.length > 0 && <nav aria-label="مهام حسابك" className="workspace-cards section-space">
+        {work.shortcuts.map(item => <Link className="panel workspace-card" key={item.path} to={item.path}>
+          <strong>{item.path === '/retail-shifts' && !work.manager ? 'ورديتي' : item.label}</strong>
+        </Link>)}
+      </nav>}
+      {review.length > 0 && <section className="dashboard-section panel section-space">
+        <h2>{work.manager ? 'يحتاج مراجعتك' : 'تنبيهات المخزون'}</h2>
+        <ul className="worklist">{review.map(item => <li key={item.path}>
+          <Link to={item.path}>{item.label}</Link>{item.count !== undefined && <span className="status-pill">{integer(item.count)}</span>}
+        </li>)}</ul>
+      </section>}
       {error ? <Notice error>{error}</Notice> : !metrics ? <Notice>جارٍ تحميل مؤشرات المتجر…</Notice> : (
         <>
-          <div className="metric-grid">
+          <div className="metric-grid section-space" aria-label="مؤشرات المتجر">
             {shown.map(([key, label, format]) => <article key={key} className={'metric panel' + (key === 'sales_minor' ? ' highlight' : '')}>
               <p>{label}</p><strong>{format(metrics[key])}</strong>
             </article>)}
@@ -309,14 +335,6 @@ export function Dashboard({ user }: { user: User }) {
           {!shown.length && <Notice>لا تتوفر مؤشرات ضمن صلاحيات حسابك.</Notice>}
         </>
       )}
-      {quick.length > 0 && <div className="dashboard-sections">
-        <section className="dashboard-section panel">
-          <h2>وصول سريع</h2>
-          <ul className="dash-list">
-            {quick.map(([path, label]) => <li key={path}><Link to={path}>{label}</Link><span aria-hidden="true">←</span></li>)}
-          </ul>
-        </section>
-      </div>}
     </>
   )
 }

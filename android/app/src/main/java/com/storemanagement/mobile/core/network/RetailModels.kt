@@ -26,6 +26,7 @@ data class RetailShiftDto(
     @SerialName("approved_at") val approvedAt: String? = null,
     val totals: List<RetailTenderTotalDto> = emptyList(),
     @SerialName("cash_movement_totals") val cashMovementTotals: List<RetailCashTotalDto> = emptyList(),
+    @SerialName("branch_name") val branchName: String? = null,
 )
 
 @Serializable

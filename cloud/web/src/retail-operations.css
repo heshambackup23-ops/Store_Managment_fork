@@ -1,0 +1,88 @@
+.retail-filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 0.75rem;
+  margin-block: 0.75rem;
+}
+
+.retail-filter-bar .field {
+  flex: 1 1 13rem;
+  margin: 0;
+}
+
+.retail-context {
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-soft);
+}
+
+.retail-status {
+  display: inline-block;
+  padding: 0.25rem 0.65rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-soft);
+  font-size: 0.875rem;
+  font-weight: 650;
+}
+
+.retail-status[data-tone="attention"] {
+  color: var(--danger);
+  background: var(--danger-soft);
+}
+
+.retail-switcher {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-block-end: 1rem;
+}
+
+.retail-switcher button {
+  min-height: 44px;
+}
+
+.retail-document-links,
+.retail-stat-list {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.retail-steps {
+  display: grid;
+  gap: 0.85rem;
+  padding-inline-start: 1.5rem;
+}
+
+.retail-steps > li {
+  padding-inline-start: 0.3rem;
+}
+
+.retail-timeline {
+  list-style: none;
+  margin: 0;
+  padding-inline-start: 0;
+}
+
+.retail-timeline li {
+  border-inline-start: 2px solid var(--border);
+  padding: 0.2rem 1rem 0.85rem;
+  overflow-wrap: anywhere;
+}
+
+.retail-timeline li > p {
+  margin-block: 0.3rem;
+}
+
+@media (max-width: 36rem) {
+  .retail-filter-bar .field {
+    flex-basis: 100%;
+  }
+  .retail-filter-bar > button {
+    min-height: 44px;
+  }
+}

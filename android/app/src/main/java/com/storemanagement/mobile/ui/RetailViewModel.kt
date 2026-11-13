@@ -56,6 +56,7 @@ internal class RetailViewModel @Inject constructor(
     private val checkoutDevicesState = MutableStateFlow(RemotePage<RetailDeviceDto>())
     private val checkoutCustomersState = MutableStateFlow(RemotePage<CustomerDto>())
     private val checkoutMutationState = MutableStateFlow(RetailMutation())
+    private val myShiftState = MutableStateFlow(RetailDetail<RetailShiftDto>(isLoading = true))
     val shifts = shiftState.asStateFlow()
     val devices = deviceState.asStateFlow()
     val cashMovements = movementState.asStateFlow()
@@ -67,6 +68,7 @@ internal class RetailViewModel @Inject constructor(
     val checkoutDevices = checkoutDevicesState.asStateFlow()
     val checkoutCustomers = checkoutCustomersState.asStateFlow()
     val checkoutMutation = checkoutMutationState.asStateFlow()
+    val myShift = myShiftState.asStateFlow()
 
     private var shiftListJob: Job? = null
     private var deviceListJob: Job? = null
@@ -78,6 +80,7 @@ internal class RetailViewModel @Inject constructor(
     private var checkoutDevicesJob: Job? = null
     private var checkoutCustomersJob: Job? = null
     private var checkoutWriteJob: Job? = null
+    private var myShiftJob: Job? = null
     private var shiftStatus: String? = null
     private var ownerId: Long? = null
 
@@ -86,7 +89,7 @@ internal class RetailViewModel @Inject constructor(
         ownerId = userId
         listOf(
             shiftListJob, deviceListJob, movementJob, shiftDetailJob, deviceDetailJob, writeJob,
-            checkoutContextJob, checkoutDevicesJob, checkoutCustomersJob, checkoutWriteJob,
+            checkoutContextJob, checkoutDevicesJob, checkoutCustomersJob, checkoutWriteJob, myShiftJob,
         ).forEach { it?.cancel() }
         shiftState.value = RemotePage()
         deviceState.value = RemotePage()
@@ -99,13 +102,37 @@ internal class RetailViewModel @Inject constructor(
         checkoutDevicesState.value = RemotePage()
         checkoutCustomersState.value = RemotePage()
         checkoutMutationState.value = RetailMutation()
+        myShiftState.value = RetailDetail(isLoading = true)
+    }
+
+    fun loadMyShift(userId: Long) {
+        myShiftJob?.cancel()
+        myShiftState.value = RetailDetail(isLoading = true)
+        myShiftJob = viewModelScope.launch {
+            myShiftState.value = when (val result = calls.execute { findMyShift(userId) }) {
+                is ApiResult.Success -> RetailDetail(record = result.value)
+                is ApiResult.Failure -> RetailDetail(error = errorMessage(result.error))
+            }
+        }
+    }
+
+    private suspend fun findMyShift(userId: Long): RetailShiftDto? {
+        var page = 1
+        while (page <= 10_000) {
+            val response = api.retailShifts("open", page, 100)
+            val shift = response.data.firstOrNull { it.actorId == userId }
+            if (shift != null) return shift
+            if (page >= (response.meta?.lastPage ?: 1)) return null
+            page += 1
+        }
+        return null
     }
 
     fun loadCheckoutContext(userId: Long, canOperate: Boolean) {
         checkoutContextJob?.cancel()
         checkoutContextJob = loadDetail(checkoutContextState) {
             val required = api.retailSettings().data.requireShift
-            val ownedShift = if (canOperate) api.retailShifts("open", 1).data.firstOrNull { it.actorId == userId } else null
+            val ownedShift = if (canOperate) findMyShift(userId) else null
             RetailCheckoutContext(required, ownedShift)
         }
     }

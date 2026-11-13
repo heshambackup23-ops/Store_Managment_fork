@@ -52,6 +52,7 @@ import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.AccountBalanceWallet
 import androidx.compose.material.icons.filled.BarChart
 import androidx.compose.material.icons.filled.Build
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.Delete
@@ -447,8 +448,13 @@ private fun StoreHomeScreen(
         }
     } ?: MoreSection.Home
     var retailRefreshVersion by remember { mutableStateOf(0) }
+    var retailEntryShiftStatus by rememberSaveable(user.id) { mutableStateOf<String?>(null) }
+    var retailEntryShiftId by rememberSaveable(user.id) { mutableStateOf<Long?>(null) }
+    var retailEntryOpenShift by rememberSaveable(user.id) { mutableStateOf(false) }
+    var retailEntryScan by rememberSaveable(user.id) { mutableStateOf(false) }
+    val myRetailShift by retailViewModel.myShift.collectAsStateWithLifecycle()
     LaunchedEffect(retailSessionExpired, moreSection) {
-        if (retailSessionExpired && moreSection in listOf(MoreSection.RetailShifts, MoreSection.RetailDevices, MoreSection.ProductCashier)) {
+        if (retailSessionExpired) {
             onSessionExpired()
         }
     }
@@ -466,8 +472,8 @@ private fun StoreHomeScreen(
             MoreSection.Wallets -> "المحافظ"
             MoreSection.WalletCashier -> "كاشير المحافظ"
             MoreSection.ProductCashier -> "نقطة البيع"
-            MoreSection.RetailShifts -> "ورديات الكاشير"
-            MoreSection.RetailDevices -> "الأجهزة المتتبعة"
+            MoreSection.RetailShifts -> retailShiftTitle
+            MoreSection.RetailDevices -> retailDeviceTitle
             MoreSection.Damaged -> "الهالك"
             MoreSection.Notifications -> "الإشعارات"
             MoreSection.Maintenance -> "الصيانة"
@@ -589,6 +595,10 @@ private fun StoreHomeScreen(
         if (tab == StoreTab.More) moreSectionName = MoreSection.Home.name
     }
     val openSection: (MoreSection) -> Unit = { section ->
+        retailEntryShiftStatus = null
+        retailEntryShiftId = null
+        retailEntryOpenShift = false
+        retailEntryScan = false
         selectedTab = StoreTab.More.name
         moreSectionName = section.name
         searchQuery = ""
@@ -603,6 +613,7 @@ private fun StoreHomeScreen(
         val query = searchQuery.ifBlank { null }
         when (activeTab) {
             StoreTab.Dashboard -> {
+                if (force && user.canOperateRetailShifts()) retailViewModel.loadMyShift(user.id)
                 // Reopening the dashboard must not refetch five lists every time.
                 val now = System.currentTimeMillis()
                 if (force || now - dashboardLoadedAt[0] > 60_000L) {
@@ -669,6 +680,12 @@ private fun StoreHomeScreen(
 
 
     val isDashboardTab = activeTab == StoreTab.Dashboard
+    LaunchedEffect(isDashboardTab, user.id, user.permissions) {
+        if (isDashboardTab && user.canOperateRetailShifts()) {
+            retailViewModel.useSession(user.id)
+            retailViewModel.loadMyShift(user.id)
+        }
+    }
     val todayIso = remember(isDashboardTab) { SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date()) }
     val stats = remember(isDashboardTab, products, installments.items, personalDebts.items, maintenances.items, invoices.items, todayIso) {
         if (isDashboardTab) {
@@ -737,6 +754,39 @@ private fun StoreHomeScreen(
         if ("page.damaged.manage" in user.permissions) add(QuickAction("تسجيل هالك", Icons.Filled.Delete) { storeViewModel.searchDamagedProducts(null); damagedDialogOpen = true })
         if ("page.installments.manage" in user.permissions) add(QuickAction("دين عليّ", Icons.Filled.Payments) { personalDebtEditTarget = null; personalDebtDialogOpen = true })
         if ("page.maintenance.manage" in user.permissions) add(QuickAction("طلب صيانة", Icons.Filled.Build) { maintenanceEditTarget = null; maintenanceDialogOpen = true })
+    }
+    val retailActions = buildList {
+        if (user.canOperateRetailShifts()) {
+            val shift = myRetailShift.record
+            val label = when {
+                shift != null -> "ورديتي الحالية"
+                myRetailShift.isLoading || myRetailShift.error != null -> retailShiftTitle
+                else -> "فتح وردية"
+            }
+            val detail = when {
+                shift != null -> listOfNotNull(shift.branchName, shift.registerName, "مفتوحة").joinToString(" · ")
+                myRetailShift.isLoading -> "جارٍ التحقق من الوردية…"
+                myRetailShift.error != null -> "افتح القائمة للتحقق من الحالة"
+                else -> "لا توجد وردية مفتوحة"
+            }
+            add(DashboardRetailAction(label, detail, Icons.Filled.Payments, "retail-home-my-shift") {
+                openSection(MoreSection.RetailShifts)
+                retailEntryShiftId = shift?.id
+                retailEntryOpenShift = shift == null && !myRetailShift.isLoading && myRetailShift.error == null
+            })
+        }
+        if (user.canApproveRetailShifts()) {
+            add(DashboardRetailAction("مراجعة فروق الورديات", "الورديات بانتظار اعتماد الفرق", Icons.Filled.CheckCircle, "retail-home-review-shifts") {
+                openSection(MoreSection.RetailShifts)
+                retailEntryShiftStatus = "pending_approval"
+            })
+        }
+        if (canViewRetailDevices) {
+            add(DashboardRetailAction("مسح رقم الجهاز", "ابحث بالسيريال أو IMEI في الأجهزة المتتبعة", Icons.Filled.QrCodeScanner, "retail-home-scan-device") {
+                openSection(MoreSection.RetailDevices)
+                retailEntryScan = true
+            })
+        }
     }
 
     Scaffold(
@@ -886,6 +936,7 @@ private fun StoreHomeScreen(
                 metrics = dashboardMetrics,
                 alerts = dashboardAlerts,
                 quickActions = quickActions,
+                retailActions = retailActions,
                 modifier = Modifier.padding(padding),
             )
             StoreTab.Products -> ProductListScreen(
@@ -1183,8 +1234,13 @@ private fun StoreHomeScreen(
                     },
                     modifier = Modifier.padding(padding),
                 )
-                MoreSection.RetailShifts -> RetailShiftsScreen(user, retailViewModel, retailRefreshVersion, Modifier.padding(padding))
-                MoreSection.RetailDevices -> RetailDevicesScreen(user, retailViewModel, retailRefreshVersion, Modifier.padding(padding))
+                MoreSection.RetailShifts -> RetailShiftsScreen(
+                    user, retailViewModel, retailRefreshVersion, Modifier.padding(padding),
+                    initialStatus = retailEntryShiftStatus, initialShiftId = retailEntryShiftId, openOnEntry = retailEntryOpenShift,
+                )
+                MoreSection.RetailDevices -> RetailDevicesScreen(
+                    user, retailViewModel, retailRefreshVersion, Modifier.padding(padding), scanOnEntry = retailEntryScan,
+                )
                 MoreSection.Damaged -> DamagedScreen(
                     state = damagedItems,
                     statusFilter = damagedStatusFilter,
@@ -2121,9 +2177,9 @@ private fun MoreHubScreen(
             if (canViewWalletCashier) MoreActionRow("كاشير المحافظ", "تسجيل التحويلات والتحصيلات", Icons.Filled.AccountBalanceWallet, onOpenWalletCashier)
             if (canViewProductCashier) MoreActionRow("نقطة البيع", "بحث المنتجات والسلة والتحصيل", Icons.Filled.Store, onOpenProductCashier,
                 Modifier.testTag("retail-menu-checkout"))
-            if (canViewRetailShifts) MoreActionRow("ورديات الكاشير", "الفتح والإغلاق واعتماد الفروق", Icons.Filled.Payments, onOpenRetailShifts,
+            if (canViewRetailShifts) MoreActionRow(retailShiftTitle, "الفتح والإغلاق واعتماد الفروق", Icons.Filled.Payments, onOpenRetailShifts,
                 Modifier.testTag("retail-menu-shifts"))
-            if (canViewRetailDevices) MoreActionRow("الأجهزة المتتبعة", "بحث السيريال وIMEI والضمان", Icons.Filled.Inventory2, onOpenRetailDevices,
+            if (canViewRetailDevices) MoreActionRow(retailDeviceTitle, "بحث السيريال وIMEI والضمان", Icons.Filled.Inventory2, onOpenRetailDevices,
                 Modifier.testTag("retail-menu-devices"))
             if (canViewDamaged) MoreActionRow("الهالك", "تسجيل التالف وعكس القيود بالسبب", Icons.Filled.Delete, onOpenDamaged)
             if (canViewMaintenance) MoreActionRow("الصيانة", "طلبات الصيانة وحالتها", Icons.Filled.Build, onOpenMaintenance)

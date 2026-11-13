@@ -63,6 +63,8 @@ export function RetailSerialStocktakes({ user }: { user: User }) {
   const canIntake = allowed(user, 'inventory.manage') && allowed(user, 'products.cost.manage')
   const [kind, setKind] = useState<'count' | 'opening'>('count')
   const [branch, setBranch] = useState(1)
+  const [scan, setScan] = useState('')
+  const [scanMessage, setScanMessage] = useState('')
   const [product, setProduct] = useState<Product>()
   const [source, setSource] = useState<Product>()
   const [hasSource, setHasSource] = useState(false)
@@ -79,14 +81,19 @@ export function RetailSerialStocktakes({ user }: { user: User }) {
   const [total, setTotal] = useState(0)
   const [revision, refresh] = useState(0)
   const [busy, setBusy] = useState(false)
+  const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
+  const scannedCodes = lines(scanned)
+  const uniqueCodes = new Set(scannedCodes.map(code => code.toLowerCase()))
 
   useEffect(() => {
     const abort = new AbortController()
+    setLoading(true)
     request<Row[]>(`${endpoint}?page=${page}&per_page=20`, { signal: abort.signal }).then(result => {
       if (!abort.signal.aborted) { setRows(result.data); setTotal(result.meta?.total ?? result.data.length) }
     }).catch(error => { if (!abort.signal.aborted) setError(error.message) })
+      .finally(() => { if (!abort.signal.aborted) setLoading(false) })
     return () => abort.abort()
   }, [page, revision])
 
@@ -103,18 +110,33 @@ export function RetailSerialStocktakes({ user }: { user: User }) {
     return () => abort.abort()
   }, [product, source, hasSource, revision, branch])
 
+  function addScan(event: FormEvent) {
+    event.preventDefault()
+    const code = scan.trim()
+    if (!code) return
+    if (uniqueCodes.has(code.toLowerCase())) {
+      setScanMessage('هذا الرقم موجود بالفعل في قائمة المسح.')
+      setScan('')
+      return
+    }
+    setScanned(previous => [...lines(previous), code].join('\n'))
+    setScan('')
+    setScanMessage('أُضيف الرقم إلى العدّ. تُراجع مطابقته عند تسجيل المحضر.')
+  }
+
   async function submit(event: FormEvent) {
     event.preventDefault()
     if (!product || !position || position.product_id !== product.id || position.branch_id !== branch || busy || (hasSource && sourcePosition?.product_id !== source?.id)) return
     setBusy(true); setError(''); setSuccess('')
     try {
+      if (kind === 'count' && scannedCodes.length !== uniqueCodes.size) throw new Error('احذف الأرقام المكررة من قائمة العدّ.')
       const devices = canIntake ? readAdditions(additions) : []
       const { data } = await request<Detail>(endpoint, { method: 'POST', financial: true, body: {
         kind, product_id: product.id, branch_id: branch, position: asSnapshot(position), source_reference: reference.trim(), reason: reason.trim(), additions: devices,
-        ...(kind === 'count' ? { scanned: lines(scanned) } : hasSource && sourcePosition && source
+        ...(kind === 'count' ? { scanned: scannedCodes } : hasSource && sourcePosition && source
           ? { source: { product_id: source.id, position: asSnapshot(sourcePosition) } } : {}),
       } })
-      setDetail(data); setScanned(''); setAdditions(''); setReference(''); setReason(''); setPage(1); refresh(value => value + 1)
+      setDetail(data); setScanned(''); setScan(''); setScanMessage(''); setAdditions(''); setReference(''); setReason(''); setPage(1); refresh(value => value + 1)
       setSuccess('تم حفظ محضر الأجهزة.')
     } catch (error) { setError(error instanceof Error ? error.message : 'تعذّر حفظ المحضر.') }
     finally { setBusy(false) }
@@ -146,32 +168,49 @@ export function RetailSerialStocktakes({ user }: { user: User }) {
           <option value="count">جرد بالسيريال أو IMEI</option><option value="opening">محضر رصيد افتتاحي</option>
         </select>
       </label>}
-      <SerialProductSearch label="اسم الصنف المتتبع أو الباركود" onChoose={setProduct} />
-      <BranchSelect label="فرع جرد الأجهزة" value={branch} set={id => { setBranch(id); setHasSource(false); setScanned(''); setAdditions('') }} disabled={busy} />
+      <SerialProductSearch label="اسم الصنف المتتبع أو الباركود" onChoose={selected => {
+        if (product?.id !== selected?.id) { setScan(''); setScanMessage(''); setScanned(''); setAdditions('') }
+        setProduct(selected)
+      }} />
+      <BranchSelect label="فرع جرد الأجهزة" value={branch} set={id => {
+        setBranch(id); setHasSource(false); setScan(''); setScanMessage(''); setScanned(''); setAdditions('')
+      }} disabled={busy} />
       {kind === 'opening' && branch === 1 && <label className="check-field"><input type="checkbox" checked={hasSource} onChange={event => setHasSource(event.target.checked)} /> انقل القطع من صنف كمي قائم</label>}
       {hasSource && <SerialProductSearch label="اسم الصنف الكمي القديم أو الباركود" source onChoose={setSource} />}
       {sourcePosition && <p>{sourcePosition.product_name} · {integer(sourcePosition.branch_stock)} قطعة متاحة للنقل</p>}
+      {kind === 'count' && <form className="retail-filter-bar" onSubmit={addScan}>
+        <label className="field">امسح رقم جهاز أو أدخله
+          <input dir="ltr" value={scan} maxLength={100} autoComplete="off" disabled={busy || !product}
+            onChange={event => { setScan(event.target.value); setScanMessage('') }} />
+        </label>
+        <button className="secondary" disabled={busy || !product || !scan.trim()}>أضف الرقم للعدّ</button>
+      </form>}
+      {scanMessage && <p className="muted" role="status">{scanMessage}</p>}
       <form className="form-section" onSubmit={submit}>
         {kind === 'count' && <label className="field">الأرقام الموجودة فعليًا
           <textarea dir="ltr" value={scanned} onChange={event => setScanned(event.target.value)} rows={5} aria-describedby="serial-count-help" />
           <small id="serial-count-help">امسح أو الصق رقمًا واحدًا لكل جهاز وفي سطر مستقل. اترك القائمة فارغة فقط إذا كان العدد الفعلي صفرًا.</small>
         </label>}
+        {kind === 'count' && scannedCodes.length > 0 && <p className="retail-context" role="status">
+          {integer(uniqueCodes.size)} رقم في العدّ
+          {scannedCodes.length !== uniqueCodes.size && <> · {integer(scannedCodes.length - uniqueCodes.size)} تكرار يحتاج الإزالة</>}
+        </p>}
         {canIntake && <label className="field">{kind === 'opening' ? 'بيانات القطع الافتتاحية' : 'قطع زائدة غير مسجلة'}
           <textarea dir="ltr" value={additions} required={kind === 'opening'} onChange={event => setAdditions(event.target.value)} rows={4} aria-describedby="serial-intake-help" />
           <small id="serial-intake-help">جهاز واحد لكل سطر. افصل الحقول بفاصلة منقوطة أو Tab، بالترتيب السيريال؛ IMEI الأول؛ IMEI الثاني؛ التكلفة بالجنيه. اترك الحقول الاختيارية فارغة واحتفظ بفواصلها.</small>
         </label>}
         <label className="field">مرجع المستند أو الجرد<input value={reference} onChange={event => setReference(event.target.value)} required maxLength={120} /></label>
         <label className="field">سبب تسجيل المحضر<input value={reason} onChange={event => setReason(event.target.value)} required maxLength={1000} /></label>
-        <button className="primary" disabled={busy || !position || (hasSource && !sourcePosition)}>سجّل محضر الأجهزة</button>
+        <button className="primary" disabled={busy || !position || (hasSource && !sourcePosition) || (kind === 'count' && scannedCodes.length !== uniqueCodes.size)}>سجّل محضر الأجهزة</button>
       </form>
     </>}
     <h3>محاضر الأجهزة</h3>
-    {rows.length ? <div className="table-scroll"><table>
+    {loading ? <p className="muted" role="status">جارٍ تحميل محاضر الأجهزة…</p> : rows.length ? <div className="table-scroll"><table>
       <thead><tr>{['الصنف', 'النوع والمرجع', 'المفقود', 'المسترد', 'الجديد', 'الحالة', 'الإجراء'].map(label => <th key={label} scope="col">{label}</th>)}</tr></thead>
       <tbody>{rows.map(row => <tr key={row.id}>
         <th scope="row">{row.product_name}</th><td>{row.kind === 'opening' ? 'افتتاح' : 'جرد'} · {row.source_reference}</td>
         <td>{integer(row.missing_count)}</td><td>{integer(row.recovered_count)}</td><td>{integer(row.added_count)}</td>
-        <td>{statusLabels[row.status] ?? row.status} · {formatDate(row.created_at)}</td>
+        <td><span className="retail-status" data-tone={row.status === 'stale' ? 'attention' : undefined}>{statusLabels[row.status] ?? row.status}</span> · {formatDate(row.created_at)}</td>
         <td><button className="link-button" onClick={() => void open(row.id)}>راجع المحضر {row.id}</button></td>
       </tr>)}</tbody>
     </table></div> : <p>لا توجد محاضر أجهزة.</p>}
@@ -180,6 +219,7 @@ export function RetailSerialStocktakes({ user }: { user: User }) {
       <h3>{detail.product_name} · محضر {detail.id}</h3>
       <p>{statusLabels[detail.status] ?? detail.status} · {detail.source_reference}{detail.source_product_name && ` · من ${detail.source_product_name}`}</p>
       <p>{detail.reason}{detail.approval_reason && ` · ${detail.approval_reason}`}</p>
+      {detail.status === 'stale' && <Notice>تغيّر المخزون بعد العدّ. أنشئ محضرًا جديدًا بالكمية والأرقام الموجودة فعليًا.</Notice>}
       {detail.observations.length > 0 && <ul className="dash-list">{detail.observations.map(row => <li key={row.id}><bdi>{identityLabel(row)}</bdi> · {dispositionLabels[row.disposition]}</li>)}</ul>}
       {detail.additions.length > 0 && <ul className="dash-list">{detail.additions.map(row => <li key={identityLabel(row)}><bdi>{identityLabel(row)}</bdi> · جهاز جديد{row.unit_cost_minor !== undefined && ` · ${money(row.unit_cost_minor)}`}</li>)}</ul>}
       {canApprove && detail.actor_id !== user.id && detail.status === 'pending_approval' &&

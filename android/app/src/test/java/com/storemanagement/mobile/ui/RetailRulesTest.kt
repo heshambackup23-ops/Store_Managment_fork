@@ -10,6 +10,17 @@ import org.junit.Test
 
 class RetailRulesTest {
     @Test
+    fun recognizesPlainAndLabeledDeviceScansWithoutUsingWebLinks() {
+        assertEquals("490154203237518", retailScannedIdentifier(" ٤٩٠١٥٤٢٠٣٢٣٧٥١٨ "))
+        assertEquals("490154203237518", retailScannedIdentifier("S/N: HILAL-IMEI\nIMEI 1: 490154203237518"))
+        assertEquals("HILAL-IMEI", retailScannedIdentifier("S/N: HILAL-IMEI\nOTHER: example"))
+        assertNull(retailScannedIdentifier("https://example.invalid/device/490154203237518"))
+        assertNull(retailScannedIdentifier("S/N: https://example.invalid"))
+        assertNull(retailScannedIdentifier("LINE1\nLINE2"))
+        assertNull(retailScannedIdentifier("123\u202e456"))
+    }
+
+    @Test
     fun parsesEgyptianCurrencyWithoutRoundingOrAcceptingOversizeValues() {
         assertEquals(7_025L, retailMinorUnits("٧٠٫٢٥"))
         assertEquals(0L, retailMinorUnits("0"))

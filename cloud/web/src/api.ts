@@ -22,11 +22,12 @@ interface Envelope<T> {
   data: T
   meta?: Pagination
   message?: string
+  code?: string
   error?: { message?: string } | string
 }
 
 export class RequestError extends Error {
-  constructor(message: string, readonly status: number) {
+  constructor(message: string, readonly status: number, readonly code?: string) {
     super(message)
   }
 }
@@ -63,6 +64,7 @@ interface RequestOptions {
   body?: unknown
   file?: File
   financial?: boolean
+  idempotencyKey?: string
   signal?: AbortSignal
 }
 
@@ -79,11 +81,12 @@ const errors: Record<number, string> = {
 export async function request<T>(path: string, options: RequestOptions = {}): Promise<Envelope<T>> {
   const method = options.method || 'GET'
   const body = options.file ?? (options.body === undefined ? undefined : JSON.stringify(options.body))
-  const operation = options.financial ? await prepareOperation(path, typeof body === 'string' ? body : '') : undefined
+  const operation = options.financial && !options.idempotencyKey ? await prepareOperation(path, typeof body === 'string' ? body : '') : undefined
+  const operationKey = options.idempotencyKey || operation?.key
   const headers = new Headers({ Accept: 'application/json' })
   if (body !== undefined) headers.set('Content-Type', options.file?.type || 'application/json')
   if (method !== 'GET') headers.set('X-CSRF', '1')
-  if (operation) headers.set('Idempotency-Key', operation.key)
+  if (operationKey) headers.set('Idempotency-Key', operationKey)
   let response: Response
   try {
     response = await fetch(apiUrl(path), {
@@ -97,7 +100,7 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
   } catch (error) {
     if (options.signal?.aborted) throw error
     throw new RequestError(
-      operation ? 'تعذر تأكيد العملية. أعد المحاولة بالبيانات نفسها أو راجع سجل العمليات.' : 'تعذر الاتصال بالخادم.',
+      operationKey ? 'تعذر تأكيد العملية. أعد المحاولة بالبيانات نفسها أو راجع سجل العمليات.' : 'تعذر الاتصال بالخادم.',
       0,
     )
   }
@@ -110,10 +113,10 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
     if (response.status < 500 && ![408, 409, 429].includes(response.status)) operation?.clear()
     const detail = typeof result?.error === 'string' ? result.error : result?.error?.message
     const fallback = errors[response.status] || 'الخدمة غير متاحة مؤقتًا.'
-    const message = operation && response.status >= 500
+    const message = operationKey && response.status >= 500
       ? 'تعذر تأكيد العملية. أعد المحاولة بالبيانات نفسها أو راجع سجل العمليات.'
       : [fallback, result?.message || detail].filter(Boolean).join(' ')
-    throw new RequestError(message, response.status)
+    throw new RequestError(message, response.status, result?.code)
   }
   if (!result) {
     if (response.status === 204) {
@@ -121,7 +124,7 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
       return { success: true, data: undefined as T }
     }
     throw new RequestError(
-      operation ? 'تعذر قراءة نتيجة العملية. أعد المحاولة بالبيانات نفسها أو راجع سجل العمليات.' : 'تعذر قراءة استجابة الخادم.',
+      operationKey ? 'تعذر قراءة نتيجة العملية. أعد المحاولة بالبيانات نفسها أو راجع سجل العمليات.' : 'تعذر قراءة استجابة الخادم.',
       response.status,
     )
   }

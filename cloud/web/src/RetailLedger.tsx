@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
+import { Link, useSearchParams } from 'react-router-dom'
 import { allowed, formatDate, integer, money, readMoney, request } from './api'
 import type { User } from './api'
 import { Modal, Notice, PageTitle } from './ui'
@@ -17,7 +18,7 @@ type Period = { status: 'open' | 'closed' | 'before_start'; entry_count: number;
   closure?: { operation_id: number; actor_name: string; reason: string; created_at: string } }
 type Line = { account: string; debit_minor: number; credit_minor: number }
 type Entry = { id: number; posting_day: string; description: string; kind: keyof typeof kindNames;
-  source_ref: string | null; actor_name: string; reversed: number; reverses_id: number | null; lines: Line[] }
+  source?: string; source_ref: string | null; actor_name: string; reversed: number; reverses_id: number | null; lines: Line[] }
 type Issue = { source: string; source_ref: string; posting_day: string; description: string; issue: keyof typeof issueNames;
   unclassified_minor: number; resolution_reason: string | null }
 type Action = { mode: 'start' | 'entry' | 'close' } | { mode: 'reverse'; entry: Entry } | { mode: 'resolve'; issue: Issue }
@@ -40,7 +41,7 @@ function ledgerDay(period: string, today: string) {
 
 function newLine(side: InputLine['side']): InputLine { return { account: '', side, amount: '' } }
 
-function LedgerForm({ action, period, today, accounts, close, save }: { action: Action; period: string; today: string;
+function LedgerForm({ action, book, period, today, accounts, close, save }: { action: Action; book: BookName; period: string; today: string;
   accounts: Account[]; close: () => void; save: (value: { note: string; day: string; lines?: Line[] }) => Promise<void> }) {
   const [day, setDay] = useState(action.mode === 'reverse' ? today : ledgerDay(period, today))
   const [note, setNote] = useState('')
@@ -77,8 +78,9 @@ function LedgerForm({ action, period, today, accounts, close, save }: { action: 
   return <Modal title={titles[action.mode]} close={() => { if (!busy) close() }}>
     <form onSubmit={submit} className="form-card">
       {error && <Notice error>{error}</Notice>}
-      {action.mode === 'close' && <p>يُحفظ ميزان المراجعة لشهر <bdi>{period}</bdi>. سجّل أي تصحيح لاحق في شهر مفتوح.</p>}
-      {action.mode === 'start' && <p>أول شهر للدفتر هو <bdi>{period}</bdi>. سجّل الأرصدة الافتتاحية من المستندات المعتمدة.</p>}
+      <p><strong>{books[book]}</strong> · شهر <bdi>{period}</bdi></p>
+      {action.mode === 'close' && <p>يُحفظ ميزان المراجعة عند الإقفال. سجّل أي تصحيح لاحق في شهر مفتوح.</p>}
+      {action.mode === 'start' && <p>سجّل الأرصدة الافتتاحية من المستندات المعتمدة بعد بدء الدفتر.</p>}
       {action.mode === 'reverse' && <p>سيُنشأ قيد يعكس القيد #{action.entry.id} بالكامل.</p>}
       {action.mode === 'resolve' && <>
         <p>{action.issue.description} · <bdi>#{action.issue.source_ref}</bdi> · {issueNames[action.issue.issue]}</p>
@@ -114,11 +116,14 @@ function LedgerForm({ action, period, today, accounts, close, save }: { action: 
 }
 
 export function RetailLedger({ user }: { user: User }) {
+  const [params, setParams] = useSearchParams()
   const [settings, setSettings] = useState<Settings>()
-  const [book, setBook] = useState<BookName>('operating')
-  const [period, setPeriod] = useState('')
+  const book: BookName = params.get('book') === 'practice' ? 'practice' : 'operating'
+  const requestedPeriod = params.get('period') || ''
+  const period = /^\d{4}-(0[1-9]|1[0-2])$/.test(requestedPeriod) ? requestedPeriod : settings?.today.slice(0, 7) || ''
   const [report, setReport] = useState<Period>()
-  const [view, setView] = useState<View>('trial')
+  const requestedView = params.get('view')
+  const view: View = requestedView === 'entries' || requestedView === 'issues' && book === 'operating' ? requestedView : 'trial'
   const [rows, setRows] = useState<(Entry | Issue)[]>([])
   const [page, setPage] = useState(1)
   const [pages, setPages] = useState(1)
@@ -132,12 +137,22 @@ export function RetailLedger({ user }: { user: User }) {
   const started = settings?.books.find(row => row.book === book)
   const periodPath = `${base}/${book}/periods/${period}`
   const accountNames = new Map(settings?.accounts.map(account => [account.code, account.name]))
+  function changeScope(values: Record<string, string>, replace = false) {
+    const next = new URLSearchParams(params)
+    for (const [key, value] of Object.entries(values)) {
+      if (value) next.set(key, value)
+      else next.delete(key)
+    }
+    setParams(next, { replace })
+    setPage(1)
+    setError('')
+    setSuccess('')
+  }
 
   useEffect(() => {
     const controller = new AbortController()
     request<Settings>(base, { signal: controller.signal }).then(({ data }) => {
       setSettings(data)
-      setPeriod(previous => previous || data.today.slice(0, 7))
     }).catch(error => { if (!controller.signal.aborted) setError(error.message) })
     return () => controller.abort()
   }, [revision])
@@ -191,26 +206,38 @@ export function RetailLedger({ user }: { user: User }) {
         source: action.issue.source, source_ref: action.issue.source_ref, code: action.issue.issue }; break
     }
     await request(endpoint, { method: 'POST', body: data, financial: true })
+    if ((action.mode === 'entry' || action.mode === 'reverse') && value.day.slice(0, 7) !== period) {
+      changeScope({ period: value.day.slice(0, 7) }, true)
+    }
     setSuccess(action.mode === 'close' ? 'تم إقفال الشهر وحفظ ميزان المراجعة.' : 'تم حفظ العملية في دفتر الأستاذ.')
     setError('')
     setAction(undefined)
-    if (action.mode === 'entry' || action.mode === 'reverse') setPeriod(value.day.slice(0, 7))
     refresh(current => current + 1)
   }
 
   const total = report?.trial_balance.reduce((sum, row) => ({ debit: sum.debit + BigInt(row.debit_minor), credit: sum.credit + BigInt(row.credit_minor) }), { debit: 0n, credit: 0n })
   const activeMonth = report?.status === 'open'
   const canCloseMonth = activeMonth && report.next_close === period && period < (settings?.today.slice(0, 7) ?? '')
-    && report.pending === 0 && report.unresolved === 0
+    && report.pending === 0 && report.unresolved === 0 && total?.debit === total?.credit
+  const previousMonth = Boolean(period && period < (settings?.today.slice(0, 7) ?? ''))
+
+  function documentLink(source: string | undefined, ref: string | null) {
+    if (!ref || !/^\d+$/.test(ref)) return null
+    if (source && ['sale', 'sale_cost', 'historical_invoice_payment'].includes(source) && allowed(user, 'invoices.view')) {
+      return <Link to={'/invoices/' + ref}>فاتورة <bdi>#{ref}</bdi></Link>
+    }
+    if (source === 'purchase' && allowed(user, 'suppliers.view')) return <Link to={'/purchases/' + ref + '/receipts'}>شراء <bdi>#{ref}</bdi></Link>
+    if (source === 'wallet_transaction' && allowed(user, 'wallets.view')) return <Link to={'/wallet-transactions?q=%23' + ref}>حركة محفظة <bdi>#{ref}</bdi></Link>
+    return <bdi>#{ref}</bdi>
+  }
 
   return <>
     <PageTitle title="دفتر الأستاذ وإقفال الشهر" description="تُرحّل حركات المتجر بتاريخ تسجيلها بتوقيت القاهرة، وتُعرض القيود بالجنيه المصري." />
     <div className="panel toolbar">
-      <label className="field"><span>الدفتر</span><select value={book} onChange={event => {
-        setBook(event.target.value === 'practice' ? 'practice' : 'operating'); setView('trial'); setPage(1); setError(''); setSuccess('')
-      }}>{Object.entries(books).map(([id, name]) => <option key={id} value={id}>{name}</option>)}</select></label>
+      <label className="field"><span>الدفتر</span><select value={book} onChange={event => changeScope({ book: event.target.value, view: '' })}>
+        {Object.entries(books).map(([id, name]) => <option key={id} value={id}>{name}</option>)}</select></label>
       <label className="field"><span>شهر العمل</span><input type="month" value={period} min="2000-01" max={settings?.today.slice(0, 7)}
-        onChange={event => { setPeriod(event.target.value); setPage(1); setSuccess(''); setError('') }} /></label>
+        onChange={event => changeScope({ period: event.target.value }, true)} /></label>
     </div>
     {book === 'practice' && <Notice>دفتر التدريب مستقل عن حركات المتجر ويقبل قيود التدريب اليدوية.</Notice>}
     {error && <Notice error>{error}</Notice>}
@@ -221,6 +248,7 @@ export function RetailLedger({ user }: { user: User }) {
     </section>}
     {report && <>
       <section className="panel form-card section-space">
+        <h2 className="ledger-scope">{books[book]} · <bdi>{period}</bdi></h2>
         {report.closure ? <Notice>مقفل بواسطة {report.closure.actor_name} في {formatDate(report.closure.created_at)} · {report.closure.reason}</Notice>
           : report.status === 'before_start' ? <p>الفترة تسبق أول شهر للدفتر.</p>
           : <p>شهر مفتوح · {integer(report.entry_count)} قيد{book === 'operating' && ` · ${integer(report.pending)}${report.more_pending ? '+' : ''} حركة للترحيل · ${integer(report.unresolved)} حركة للمراجعة`}</p>}
@@ -229,12 +257,23 @@ export function RetailLedger({ user }: { user: User }) {
           {activeMonth && canPost && book === 'operating' && <button className="secondary" disabled={busy || report.pending === 0} onClick={() => void sync()}>رحّل حركات المتجر</button>}
           {canCloseMonth && canClose && <button className="secondary" disabled={busy} onClick={() => setAction({ mode: 'close' })}>إقفال الشهر</button>}
         </div>
-        {activeMonth && report.next_close !== period && <p>الشهر التالي المطلوب إقفاله هو <bdi>{report.next_close}</bdi>.</p>}
+        {activeMonth && <section className="form-section" aria-label="الجاهزية للإقفال">
+          <h3>الجاهزية للإقفال</h3>
+          <ul className="worklist">
+            <li><span>ميزان المراجعة</span><strong>{total?.debit === total?.credit ? 'متوازن' : 'يحتاج مراجعة'}</strong></li>
+            <li><span>نهاية الفترة</span><strong>{previousMonth ? 'الشهر منتهٍ' : 'الشهر ما زال جاريًا'}</strong></li>
+            {book === 'operating' && <>
+              <li><span>حركات للترحيل</span><strong>{integer(report.pending)}{report.more_pending ? '+' : ''}</strong></li>
+              <li><button className="link-button" type="button" onClick={() => changeScope({ view: 'issues' })}>حركات تحتاج مراجعة</button><strong>{integer(report.unresolved)}</strong></li>
+            </>}
+            {report.next_close !== period && <li>الشهر التالي المطلوب إقفاله <bdi>{report.next_close}</bdi></li>}
+          </ul>
+        </section>}
       </section>
       <div className="panel toolbar section-space" aria-label="عرض الدفتر">
         {([['trial', 'ميزان المراجعة'], ['entries', 'قيود اليومية'], ...(book === 'operating' ? [['issues', 'حركات تحتاج مراجعة']] : [])] as [View, string][])
           .map(([value, label]) => <button type="button" key={value} aria-pressed={view === value} className={view === value ? 'primary' : 'secondary'}
-            onClick={() => { setView(value); setPage(1) }}>{label}</button>)}
+            onClick={() => changeScope({ view: value })}>{label}</button>)}
       </div>
       {view === 'trial' && <div className="panel table-wrap section-space"><table>
         <thead><tr><th>الحساب</th><th>رصيد أول المدة</th><th>مدين خلال الشهر</th><th>دائن خلال الشهر</th><th>رصيد آخر المدة</th></tr></thead>
@@ -245,14 +284,14 @@ export function RetailLedger({ user }: { user: User }) {
       {view === 'entries' && <div className="panel table-wrap section-space"><table>
         <thead><tr><th>رقم القيد</th><th>التاريخ</th><th>البيان</th><th>الحسابات</th><th>الإجراء</th></tr></thead>
         <tbody>{(rows as Entry[]).map(row => <tr key={row.id}><td><bdi>#{row.id}</bdi></td><td><bdi>{row.posting_day}</bdi></td>
-          <td>{row.description}<br /><small>{kindNames[row.kind]} · {row.actor_name} {row.source_ref && <bdi>#{row.source_ref}</bdi>}</small></td>
+          <td>{row.description}<br /><small>{kindNames[row.kind]} · {row.actor_name} {documentLink(row.source, row.source_ref)}</small></td>
           <td>{row.lines.map((line, index) => <div key={index}>{accountNames.get(line.account)} · {line.debit_minor ? 'مدين' : 'دائن'} {money(line.debit_minor || line.credit_minor)}</div>)}</td>
           <td>{row.kind === 'manual' && !row.reversed && canPost && <button className="secondary" onClick={() => setAction({ mode: 'reverse', entry: row })}>عكس</button>}
             {row.reversed ? 'معكوس' : row.reverses_id ? <bdi>#{row.reverses_id}</bdi> : null}</td></tr>)}</tbody>
       </table>{rows.length === 0 && <Notice>لا توجد قيود في هذا الشهر.</Notice>}</div>}
       {view === 'issues' && <div className="panel table-wrap section-space"><table>
         <thead><tr><th>حركة المصدر</th><th>التاريخ</th><th>المراجعة</th><th>الإجراء</th></tr></thead>
-        <tbody>{(rows as Issue[]).map(row => <tr key={`${row.source}/${row.source_ref}`}><td>{row.description} · <bdi>#{row.source_ref}</bdi></td>
+        <tbody>{(rows as Issue[]).map(row => <tr key={`${row.source}/${row.source_ref}`}><td>{row.description} · {documentLink(row.source, row.source_ref)}</td>
           <td><bdi>{row.posting_day}</bdi></td><td>{issueNames[row.issue]}{row.resolution_reason && <p>{row.resolution_reason}</p>}</td>
           <td>{!row.resolution_reason && activeMonth && canPost && <button className="secondary" onClick={() => setAction({ mode: 'resolve', issue: row })}>معالجة</button>}</td></tr>)}</tbody>
       </table>{rows.length === 0 && <Notice>لا توجد حركات معلّقة للمراجعة.</Notice>}</div>}
@@ -260,7 +299,7 @@ export function RetailLedger({ user }: { user: User }) {
         onClick={() => setPage(page - 1)}>السابق</button><span>{integer(page)} / {integer(pages)}</span>
         <button className="secondary" disabled={page >= pages} onClick={() => setPage(page + 1)}>التالي</button></div>}
     </>}
-    {settings && action && <LedgerForm action={action} period={period} today={settings.today} accounts={settings.accounts}
+    {settings && action && <LedgerForm action={action} book={book} period={period} today={settings.today} accounts={settings.accounts}
       close={() => setAction(undefined)} save={save} />}
   </>
 }

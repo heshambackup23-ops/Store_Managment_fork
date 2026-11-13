@@ -13,9 +13,14 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -25,13 +30,22 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextDirection
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.storemanagement.mobile.core.network.ApproveRetailShiftDto
@@ -40,6 +54,9 @@ import com.storemanagement.mobile.core.network.OpenRetailShiftDto
 import com.storemanagement.mobile.core.network.RetailDeviceDto
 import com.storemanagement.mobile.core.network.RetailShiftDto
 import com.storemanagement.mobile.core.network.UserDto
+import com.google.mlkit.vision.barcode.common.Barcode
+import com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions
+import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
 import kotlinx.coroutines.delay
 import java.math.BigDecimal
 import java.util.UUID
@@ -59,6 +76,9 @@ internal const val retailDeviceScreenTag = "retail-device-screen"
 internal const val retailShiftOpenTag = "retail-shift-open"
 internal const val retailShiftCloseTag = "retail-shift-close"
 internal const val retailShiftConfirmTag = "retail-shift-confirm"
+internal const val retailDeviceScanButtonTag = "retail-device-scan"
+internal const val retailShiftTitle = "ورديات الكاشير"
+internal const val retailDeviceTitle = "الأجهزة المتتبعة"
 
 internal fun UserDto.canOperateRetailShifts() = "page.retail_shifts.operate" in permissions
 internal fun UserDto.canApproveRetailShifts() = "page.retail_shifts.approve" in permissions
@@ -90,15 +110,21 @@ internal fun RetailShiftsScreen(
     viewModel: RetailViewModel,
     refreshVersion: Int,
     modifier: Modifier = Modifier,
+    initialStatus: String? = null,
+    initialShiftId: Long? = null,
+    openOnEntry: Boolean = false,
 ) {
     val state by viewModel.shifts.collectAsStateWithLifecycle()
     val detail by viewModel.shift.collectAsStateWithLifecycle()
     val movements by viewModel.cashMovements.collectAsStateWithLifecycle()
     val mutation by viewModel.mutation.collectAsStateWithLifecycle()
-    var status by rememberSaveable(user.id) { mutableStateOf<String?>(null) }
-    var selected by rememberSaveable(user.id) { mutableStateOf<Long?>(null) }
-    var action by rememberSaveable(user.id) { mutableStateOf<ShiftAction?>(null) }
-    var requestKey by rememberSaveable(user.id) { mutableStateOf<String?>(null) }
+    var status by rememberSaveable(user.id, initialStatus) { mutableStateOf(initialStatus) }
+    var selected by rememberSaveable(user.id, initialShiftId) { mutableStateOf(initialShiftId) }
+    var action by rememberSaveable(user.id, openOnEntry) {
+        mutableStateOf(if (openOnEntry && user.canOperateRetailShifts()) ShiftAction.Open else null)
+    }
+    var requestKey by rememberSaveable(user.id, openOnEntry) { mutableStateOf(if (action != null) UUID.randomUUID().toString() else null) }
+    var feedback by rememberSaveable(user.id) { mutableStateOf<String?>(null) }
     BackHandler(enabled = selected != null && action == null) { selected = null }
 
     LaunchedEffect(user.id, status, refreshVersion) {
@@ -115,6 +141,12 @@ internal fun RetailShiftsScreen(
     LaunchedEffect(mutation.completedKey) {
         if (mutation.completedKey != null && mutation.completedKey == requestKey) {
             selected = detail.record?.id
+            feedback = when (action) {
+                ShiftAction.Open -> "تم فتح الوردية."
+                ShiftAction.Close -> if (detail.record?.status == "pending_approval") "تم إغلاق الوردية وإرسال الفرق للاعتماد." else "تم إغلاق الوردية."
+                ShiftAction.Approve -> "تم اعتماد فرق الوردية."
+                null -> null
+            }
             action = null
             requestKey = null
             viewModel.clearMutation()
@@ -123,11 +155,13 @@ internal fun RetailShiftsScreen(
 
     fun start(next: ShiftAction) {
         viewModel.clearMutation()
+        feedback = null
         requestKey = UUID.randomUUID().toString()
         action = next
     }
 
     Column(modifier.fillMaxSize().testTag(retailShiftScreenTag).padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        feedback?.let { RetailLiveStatus(it) }
         val id = selected
         if (id == null) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -144,7 +178,7 @@ internal fun RetailShiftsScreen(
             ) { shift ->
                 ManagedCard(onClick = { selected = shift.id }) {
                     RetailCardTitle(shift.registerName, shiftStatuses.label(shift.status), shiftTone(shift.status))
-                    Text("${shift.actorName} · ${shift.businessDay}")
+                    Text(listOfNotNull(shift.branchName, shift.actorName, shift.businessDay).joinToString(" · "))
                     DetailLine("النقد المتوقع", shift.expectedMinor.egp())
                 }
             }
@@ -238,6 +272,7 @@ internal fun RetailShiftsScreen(
 private fun RetailShiftSummary(shift: RetailShiftDto) {
     ManagedCard {
         RetailCardTitle(shift.registerName, shiftStatuses.label(shift.status), shiftTone(shift.status))
+        shift.branchName?.let { DetailLine("الفرع", it) }
         Text("${shift.actorName} · يوم العمل ${shift.businessDay}")
         DetailLine("الفتح (UTC)", shift.openedAt.retailTime())
         DetailLine("عهدة الفتح", shift.openingMinor.egp())
@@ -339,15 +374,66 @@ internal fun RetailDevicesScreen(
     viewModel: RetailViewModel,
     refreshVersion: Int,
     modifier: Modifier = Modifier,
+    scanOnEntry: Boolean = false,
 ) {
     val state by viewModel.devices.collectAsStateWithLifecycle()
     val detail by viewModel.device.collectAsStateWithLifecycle()
     var query by rememberSaveable(user.id) { mutableStateOf("") }
     var status by rememberSaveable(user.id) { mutableStateOf<String?>(null) }
     var selected by rememberSaveable(user.id) { mutableStateOf<Long?>(null) }
+    var enteredScan by rememberSaveable(user.id) { mutableStateOf(false) }
+    var scanBusy by remember { mutableStateOf(false) }
+    var scanFeedback by rememberSaveable(user.id) { mutableStateOf<String?>(null) }
+    var scanSequence by rememberSaveable(user.id) { mutableStateOf(0) }
+    val context = LocalContext.current
+    val keyboard = LocalSoftwareKeyboardController.current
+    val scanOptions = remember {
+        GmsBarcodeScannerOptions.Builder()
+            .setBarcodeFormats(Barcode.FORMAT_CODE_128, Barcode.FORMAT_CODE_39, Barcode.FORMAT_CODE_93,
+                Barcode.FORMAT_QR_CODE, Barcode.FORMAT_DATA_MATRIX, Barcode.FORMAT_ITF)
+            .enableAutoZoom()
+            .build()
+    }
+
+    fun scan() {
+        if (scanBusy) return
+        scanBusy = true
+        scanFeedback = "جارٍ فتح ماسح الجهاز…"
+        fun failed() {
+            scanBusy = false
+            scanFeedback = "تعذر تشغيل الماسح. يمكنك إدخال الرقم في خانة البحث."
+        }
+        runCatching {
+            GmsBarcodeScanning.getClient(context, scanOptions).startScan()
+                .addOnSuccessListener { barcode ->
+                    scanBusy = false
+                    val identifier = retailScannedIdentifier(barcode.rawValue)
+                    if (identifier == null) {
+                        scanFeedback = "لم يتضمن الرمز رقم جهاز صالحًا. جرّب ملصقًا آخر أو أدخل الرقم يدويًا."
+                    } else {
+                        status = null
+                        query = identifier
+                        scanSequence += 1
+                        scanFeedback = "تمت قراءة رمز الجهاز والبحث في كل الحالات."
+                    }
+                }
+                .addOnCanceledListener {
+                    scanBusy = false
+                    scanFeedback = "تم إلغاء المسح. يمكنك إدخال الرقم يدويًا."
+                }
+                .addOnFailureListener { failed() }
+        }.onFailure { failed() }
+    }
+
+    LaunchedEffect(scanOnEntry) {
+        if (scanOnEntry && !enteredScan && selected == null) {
+            enteredScan = true
+            scan()
+        }
+    }
     BackHandler(enabled = selected != null) { selected = null }
     val search = query.trim().ifEmpty { null }
-    LaunchedEffect(user.id, query, status, refreshVersion) {
+    LaunchedEffect(user.id, query, status, refreshVersion, scanSequence) {
         viewModel.useSession(user.id)
         delay(250)
         viewModel.loadDevices(search, status)
@@ -360,8 +446,23 @@ internal fun RetailDevicesScreen(
     Column(modifier.fillMaxSize().testTag(retailDeviceScreenTag).padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         val id = selected
         if (id == null) {
-            OutlinedTextField(query, { query = it.take(100) }, label = { Text("الرقم التسلسلي أو IMEI") },
-                singleLine = true, modifier = Modifier.fillMaxWidth())
+            OutlinedTextField(
+                query, { query = it.take(100); scanFeedback = null }, label = { Text("الرقم التسلسلي أو IMEI") },
+                singleLine = true, keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                keyboardActions = KeyboardActions(onSearch = { keyboard?.hide() }),
+                textStyle = MaterialTheme.typography.bodyLarge.copy(textDirection = TextDirection.ContentOrLtr),
+                modifier = Modifier.fillMaxWidth(),
+            )
+            FilledTonalButton(enabled = !scanBusy, onClick = { scan() }, modifier = Modifier.testTag(retailDeviceScanButtonTag)) {
+                Icon(Icons.Filled.QrCodeScanner, contentDescription = null)
+                Text("مسح رقم الجهاز", modifier = Modifier.padding(start = 8.dp))
+            }
+            scanFeedback?.let { RetailLiveStatus(it) }
+            if (state.isLoading) {
+                RetailLiveStatus("جارٍ البحث عن الأجهزة…")
+            } else if (search != null && state.error == null) {
+                RetailLiveStatus("عدد نتائج البحث: ${state.total}")
+            }
             RetailStatusFilter(deviceStatuses, status) { status = it }
             RetailRecordList(
                 state, "لا توجد أجهزة مطابقة.", { it.id },
@@ -385,9 +486,18 @@ internal fun RetailDevicesScreen(
 @Composable
 private fun RetailDeviceIdentity(device: RetailDeviceDto) {
     RetailCardTitle(device.productName, deviceStatuses.label(device.status), StatusTone.Neutral)
-    device.serialNumber?.let { DetailLine("الرقم التسلسلي", it) }
-    device.imei1?.let { DetailLine("IMEI 1", it) }
-    device.imei2?.let { DetailLine("IMEI 2", it) }
+    device.serialNumber?.let { RetailIdentityLine("الرقم التسلسلي", it) }
+    device.imei1?.let { RetailIdentityLine("IMEI 1", it) }
+    device.imei2?.let { RetailIdentityLine("IMEI 2", it) }
+}
+
+@Composable
+private fun RetailIdentityLine(label: String, value: String) {
+    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Text(label, color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
+        Text(value, style = MaterialTheme.typography.bodyMedium.copy(textDirection = TextDirection.ContentOrLtr),
+            fontWeight = FontWeight.Medium)
+    }
 }
 
 @Composable
@@ -407,7 +517,7 @@ private fun RetailDeviceDetails(device: RetailDeviceDto, modifier: Modifier = Mo
                 device.purchaseId?.let { DetailLine("المشتريات", "#$it") }
             }
         }
-        item { Text("المبيعات والضمان", style = MaterialTheme.typography.titleMedium) }
+        item { Text("المبيعات والضمان", style = MaterialTheme.typography.titleMedium, modifier = Modifier.semantics { heading() }) }
         if (device.sales.isEmpty()) item { Text("لا توجد فاتورة بيع لهذا الجهاز.") }
         items(device.sales, key = { "sale-${it.invoiceId}" }) { sale ->
             ManagedCard {
@@ -469,6 +579,12 @@ private fun RetailStatusFilter(options: List<Pair<String?, String>>, status: Str
             FilterChip(selected = status == value, onClick = { onChange(value) }, label = { Text(label) })
         }
     }
+}
+
+@Composable
+internal fun RetailLiveStatus(message: String, modifier: Modifier = Modifier) {
+    Text(message, modifier = modifier.semantics { liveRegion = LiveRegionMode.Polite },
+        style = MaterialTheme.typography.bodySmall)
 }
 
 @Composable

@@ -1,10 +1,11 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
-import { allowed, apiUrl, formatDate, integer, money, request } from './api'
+import { allowed, apiUrl, formatDate, integer, money, readMoney, request, RequestError } from './api'
 import type { User } from './api'
-import { ActionDialog, DataModule, Notice } from './ui'
-import { SharedDrawerDialog } from './RetailShifts'
+import { ActionDialog, DataModule, FormInput, idOf, Modal, Notice } from './ui'
+import { SharedDrawerDialog, ShiftContext, useOpenShift } from './RetailShifts'
+import { walletProviderLabel } from './wallet-providers'
 import type { ModuleConfig, Row } from './ui'
 
 type Position = {
@@ -49,7 +50,7 @@ export function WalletPositions({ revision }: { revision: number }) {
         {rows.map(row => <article className="panel panel-inner wallet-position" key={row.id}>
           <header><h3>{row.name}</h3><span className="muted">{row.provider || '—'} · {row.active ? 'نشطة' : 'موقوفة'}</span></header>
           <dl className="invoice-summary">
-            <div><dt>رصيد المزود</dt><dd>{money(row.balance_minor)}</dd></div>
+            <div><dt>رصيد المحفظة لدى المزود</dt><dd>{money(row.balance_minor)}</dd></div>
             <div><dt>حد العملية</dt><dd>{row.transaction_limit_minor === null ? 'غير محدد' : money(row.transaction_limit_minor)}</dd></div>
           </dl>
           <dl className="wallet-usage">
@@ -82,6 +83,166 @@ const filters = ['wallet_id', 'kind', 'status', 'from', 'to', 'q'] as const
 const kinds = {
   opening: 'رصيد افتتاحي', send: 'إرسال', receive: 'استقبال', expense: 'مصروف',
   settlement_in: 'تسوية داخلة', settlement_out: 'تسوية خارجة', reversal: 'عكس',
+}
+
+type TransferKind = 'send' | 'receive'
+const transferLabels = { send: 'إيداع للعميل', receive: 'سحب للعميل' } as const
+const maximumMinor = 900_000_000_000_000
+
+function rateCharge(amount: number, basisPoints: unknown) {
+  const basis = Number(basisPoints ?? 0)
+  return Number((BigInt(amount) * BigInt(basis) + 5000n) / 10000n)
+}
+
+function transferPricing(wallet: Row, kind: TransferKind, amount: number, commissionText: string, feeText: string, deferred: boolean) {
+  const commission = commissionText.trim() ? readMoney(commissionText)
+    : Math.max(Number(wallet.default_commission_min_minor ?? 0), rateCharge(amount, wallet.default_commission_bps))
+  const fee = feeText.trim() ? readMoney(feeText)
+    : Math.min(Number(wallet.default_fee_max_minor ?? maximumMinor),
+      Math.max(Number(wallet.default_fee_min_minor ?? 0), rateCharge(amount, wallet.default_fee_bps)))
+  if (amount <= 0 || amount > maximumMinor || commission > amount || fee > amount
+      || (kind === 'send' && (amount + fee > maximumMinor || amount + commission > maximumMinor))) {
+    throw new Error('أدخل مبلغًا موجبًا ورسومًا وعمولة لا تتجاوزان مبلغ المعاملة أو الحد المسموح.')
+  }
+  return {
+    commission, fee, net: commission - fee,
+    provider: kind === 'send' ? -(amount + fee) : amount - fee,
+    drawer: kind === 'receive' ? -(amount - commission) : deferred ? 0 : amount + commission,
+    debt: deferred ? amount + commission : undefined,
+  }
+}
+
+type WalletReview = ReturnType<typeof transferPricing> & {
+  amount: number
+  reference?: string
+  counterparty?: string
+  note?: string
+  customer?: number
+  dueDate?: string
+  shift?: { id: number; label: string }
+}
+
+export function WalletTransferDialog({ user, wallet, kind, close, done }: {
+  user: User; wallet: Row; kind: TransferKind; close: () => void; done: (id?: number) => void
+}) {
+  const [amount, setAmount] = useState('')
+  const [commission, setCommission] = useState('')
+  const [fee, setFee] = useState('')
+  const [reference, setReference] = useState('')
+  const [counterparty, setCounterparty] = useState('')
+  const [note, setNote] = useState('')
+  const [customer, setCustomer] = useState('')
+  const [dueDate, setDueDate] = useState('')
+  const [shared, setShared] = useState(false)
+  const [review, setReview] = useState<WalletReview>()
+  const [busy, setBusy] = useState(false)
+  const [uncertain, setUncertain] = useState(false)
+  const [error, setError] = useState('')
+  const amountField = useRef<HTMLInputElement>(null)
+  const reviewHeading = useRef<HTMLHeadingElement>(null)
+  const shift = useOpenShift(user)
+  const walletId = idOf(wallet)
+  const deferred = kind === 'send' && Boolean(customer)
+  const ledger = '/wallet-transactions?' + new URLSearchParams({
+    wallet_id: String(walletId),
+    ...(review?.reference ? { q: review.reference } : {}),
+  })
+
+  useEffect(() => {
+    if (review) reviewHeading.current?.focus()
+    else amountField.current?.focus()
+  }, [review])
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (busy) return
+    setError('')
+    if (!review) {
+      try {
+        const principal = readMoney(amount)
+        const priced = transferPricing(wallet, kind, principal, commission, fee, deferred)
+        const providerReference = reference.trim()
+        const customerId = deferred ? Number(customer) : undefined
+        if (/[\p{Cc}\p{Cf}]/u.test(providerReference)) throw new Error('أزل الرموز المخفية من مرجع المزود.')
+        if (customerId !== undefined && (!Number.isSafeInteger(customerId) || customerId <= 0)) {
+          throw new Error('اختر العميل المرتبط بالمبلغ الآجل.')
+        }
+        if (shared && !deferred && !shift.shift) throw new Error('افتح وردية لاستخدام درج البيع.')
+        const sharedShift = shared && !deferred && shift.shift ? {
+          id: shift.shift.id, label: [shift.shift.branch_name, shift.shift.register_name].filter(Boolean).join(' · '),
+        } : undefined
+        setReview({ ...priced, amount: principal, reference: providerReference || undefined,
+          counterparty: counterparty.trim() || undefined, note: note.trim() || undefined,
+          customer: customerId, dueDate: customerId ? dueDate || undefined : undefined, shift: sharedShift })
+      } catch (failure) {
+        setError(failure instanceof Error ? failure.message : 'راجع بيانات المعاملة.')
+      }
+      return
+    }
+    setBusy(true)
+    try {
+      const result = await request<{ id?: number }>('/wallets/' + walletId + '/transactions', {
+        method: 'POST', financial: true,
+        body: { kind, amount_minor: review.amount, commission_minor: review.commission, fee_minor: review.fee,
+          provider_reference: review.reference, counterparty: review.counterparty, note: review.note,
+          shared_shift_id: review.shift?.id,
+          deferred: review.customer ? { customer_id: review.customer, due_date: review.dueDate } : undefined },
+      })
+      done(result.data?.id)
+    } catch (failure) {
+      if (failure instanceof RequestError && (failure.status === 0 || failure.status === 408
+        || failure.status >= 500 || (failure.status >= 200 && failure.status < 300)
+        || failure.code === 'IDEMPOTENCY_CONFLICT')) setUncertain(true)
+      setError(failure instanceof Error ? failure.message : 'تعذر تسجيل المعاملة.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const drawerLabel = review?.shift ? 'درج البيع للوردية' : 'الدرج المخصص للمحافظ'
+  return <Modal title={transferLabels[kind]} close={() => { if (!busy) close() }}>
+    <form className="modal-form" onSubmit={submit}>
+      <p>{String(wallet.name)} · {walletProviderLabel(wallet.provider)}</p>
+      {review ? <>
+        <h3 ref={reviewHeading} tabIndex={-1}>راجع المعاملة قبل التسجيل</h3>
+        <dl className="invoice-summary">
+          <div><dt>مبلغ المعاملة</dt><dd>{money(review.amount)}</dd></div>
+          <div><dt>العمولة من العميل</dt><dd>{money(review.commission)}</dd></div>
+          <div><dt>رسوم المزود</dt><dd>{money(review.fee)}</dd></div>
+          <div><dt>صافي العمولة</dt><dd>{money(review.net)}</dd></div>
+          <div><dt>تغيّر رصيد المزود</dt><dd>{money(review.provider)}</dd></div>
+          <div><dt>تغيّر {drawerLabel}</dt><dd>{money(review.drawer)}</dd></div>
+          {review.shift && <div><dt>الوردية</dt><dd>{review.shift.label}</dd></div>}
+          {review.debt !== undefined && <div><dt>المبلغ الآجل</dt><dd>{money(review.debt)} · العميل #{integer(review.customer)}</dd></div>}
+          {review.dueDate && <div><dt>تاريخ الاستحقاق</dt><dd>{formatDate(review.dueDate)}</dd></div>}
+          <div><dt>مرجع المزود</dt><dd>{review.reference ? <bdi>{review.reference}</bdi> : 'غير مسجل'}</dd></div>
+          {review.counterparty && <div><dt>رقم الطرف الآخر</dt><dd><bdi>{review.counterparty}</bdi></dd></div>}
+        </dl>
+        <p className="muted">أكد المعاملة فقط بعد مطابقة المبلغ والمرجع مع تطبيق المزود.</p>
+      </> : <>
+        <label className="field">المبلغ بالجنيه<input ref={amountField} value={amount} required inputMode="decimal" onChange={event => setAmount(event.target.value)} /></label>
+        <label className="field">مرجع العملية لدى المزود (اختياري)<input dir="auto" value={reference} maxLength={100} onChange={event => setReference(event.target.value)} /></label>
+        <label className="field">رقم الطرف الآخر (اختياري)<input dir="auto" value={counterparty} maxLength={50} onChange={event => setCounterparty(event.target.value)} /></label>
+        <label className="field">عمولة العميل بالجنيه<input value={commission} inputMode="decimal" placeholder="حسب إعداد المحفظة" onChange={event => setCommission(event.target.value)} /></label>
+        <label className="field">رسوم المزود بالجنيه<input value={fee} inputMode="decimal" placeholder="حسب إعداد المحفظة" onChange={event => setFee(event.target.value)} /></label>
+        {kind === 'send' && <FormInput field={{ name: 'deferred_customer', label: 'العميل للسداد الآجل', kind: 'reference', reference: { path: '/customers' } }}
+          value={customer} set={setCustomer} />}
+        {deferred && <label className="field">تاريخ الاستحقاق<input type="date" value={dueDate} onChange={event => setDueDate(event.target.value)} /></label>}
+        <label className="field">ملاحظة (اختياري)<textarea value={note} maxLength={1000} onChange={event => setNote(event.target.value)} /></label>
+        {!deferred && shift.shift && <label className="check-field"><input type="checkbox" checked={shared}
+          onChange={event => setShared(event.target.checked)} /> استخدم درج البيع للوردية</label>}
+        {!deferred && shared && <ShiftContext value={shift} />}
+        {!deferred && !shared && <p className="muted">يُسجل النقد في الدرج المخصص للمحافظ.</p>}
+      </>}
+      {error && <Notice error>{error}</Notice>}
+      {uncertain && <p>أعد المحاولة بالبيانات المراجعة نفسها، أو <Link to={ledger}>ابحث في كشف المعاملات</Link> قبل تسجيل عملية جديدة.</p>}
+      <div className="form-actions">
+        <button className="primary" disabled={busy}>{busy ? 'جارٍ التسجيل…' : review ? uncertain ? 'إعادة المحاولة بالبيانات نفسها' : 'أكد تسجيل المعاملة' : 'راجع المعاملة'}</button>
+        {review && !uncertain && <button type="button" className="secondary" disabled={busy} onClick={() => { setReview(undefined); setError('') }}>تعديل البيانات</button>}
+        <button type="button" className="secondary" disabled={busy} onClick={close}>إغلاق</button>
+      </div>
+    </form>
+  </Modal>
 }
 
 export function WalletLedger({ user, config }: { user: User; config: ModuleConfig }) {
@@ -117,7 +278,11 @@ export function WalletLedger({ user, config }: { user: User; config: ModuleConfi
     setParams(next)
   }
 
-  const columns = config.columns.filter(column => cash || column.key !== 'cash_delta_minor')
+  const columns = config.columns.filter(column => cash || column.key !== 'cash_delta_minor').map(column => {
+    if (column.key === 'delta_minor') return { ...column, label: 'أثر رصيد المزود' }
+    if (column.key === 'cash_delta_minor') return { ...column, label: 'أثر النقد في الدرج' }
+    return column
+  })
   const dateColumn = columns.find(column => column.key === 'created_at')
   if (dateColumn) columns.splice(columns.indexOf(dateColumn), 1, { key: 'business_day', label: 'تاريخ العمل', render: row => formatDate(row.business_day) })
   columns.splice(3, 0,
@@ -153,5 +318,10 @@ export function WalletLedger({ user, config }: { user: User; config: ModuleConfi
   return <DataModule key={queryText} user={user}
     config={{ ...config, columns, endpoint: config.endpoint + querySuffix }}
     renderAction={props => props.action.sharedDrawer ? <SharedDrawerDialog {...props} user={user} /> : <ActionDialog {...props} />}
-    extra={<>{filterForm}{walletError && <Notice error>{walletError}</Notice>}</>} />
+    extra={<>
+      <div className="form-actions"><Link className="secondary" to="/wallet-workspace">خدمات المحافظ</Link>
+        {allowed(user, 'wallets.transact') && <Link className="secondary" to="/wallet-cashier">كاشير المحافظ</Link>}
+      </div>
+      {filterForm}{walletError && <Notice error>{walletError}</Notice>}
+    </>} />
 }

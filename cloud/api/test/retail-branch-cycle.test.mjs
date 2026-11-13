@@ -21,11 +21,12 @@ test('branch sale, fractional restock, transfer, physical count and shift closur
     if (name.startsWith('0045_')) await sql("INSERT INTO products(id,name,stock,price_minor) VALUES(888,'Existing HQ opening',7,1000);");
     await sql(readFileSync(new URL(name, migrations), 'utf8'));
   }
-  await sql(`INSERT INTO roles(id,name) VALUES(2,'Counter');
-    INSERT INTO role_permissions(role_id,permission) VALUES(2,'inventory.stocktake.approve'),(2,'products.view');
+  await sql(`INSERT INTO roles(id,name) VALUES(2,'Counter'),(3,'Sales only');
+    INSERT INTO role_permissions(role_id,permission) VALUES(2,'inventory.stocktake.approve'),(2,'products.view'),(3,'invoices.create');
     INSERT INTO users(id,name,email,password_hash,role_id) VALUES
-      (1,'Branch cashier','cashier@example.invalid','unused',1),(2,'Branch reviewer','reviewer@example.invalid','unused',2);`);
-  const tokens = [randomBytes(32).toString('base64url'), randomBytes(32).toString('base64url')];
+      (1,'Branch cashier','cashier@example.invalid','unused',1),(2,'Branch reviewer','reviewer@example.invalid','unused',2),
+      (3,'Sales only','sales@example.invalid','unused',3);`);
+  const tokens = Array.from({ length: 3 }, () => randomBytes(32).toString('base64url'));
   await db.batch(tokens.map((token, i) => db.prepare('INSERT INTO auth_sessions(token_hash,user_id,expires_at) VALUES (?,?,?)')
     .bind(createHash('sha256').update(token).digest('base64url'), i + 1, Math.floor(Date.now() / 1000) + 180)));
   async function call(path, body, { status = body ? 201 : 200, user = 1, key = randomUUID(), code } = {}) {
@@ -56,6 +57,13 @@ test('branch sale, fractional restock, transfer, physical count and shift closur
   assert.equal((await call('/retail/branches/1/stock?q=TEST-CABLE'))[0].id, cable.id);
   assert.equal((await call('/retail/branches/1/stock?product_id=' + cable.id + '&q=Fixture'))[0].id, cable.id);
   const [device] = await call('/retail/devices?q=TEST-BRANCH-SERIAL');
+  const scan = (branchId, code, options = {}) => call('/retail/devices/pos-scan?' + new URLSearchParams({ branch_id: branchId, code }),
+    undefined, { user: 3, ...options });
+  assert.deepEqual(await scan(1, 'test-branch-serial'), { id: device.id, product_id: adapter.id });
+  assert.equal(await scan(branch, 'TEST-BRANCH-SERIAL'), null);
+  assert.equal(await scan(1, 'TEST-BRANCH'), null);
+  await scan(1, 'TEST-BRANCH-SERIAL', { user: 2, status: 403, code: 'forbidden' });
+  await call('/retail/devices?q=TEST-BRANCH-SERIAL', undefined, { user: 3, status: 403, code: 'forbidden' });
   const shift = await call('/retail/shifts', { branch_id: branch, register_name: 'Branch fixture register', opening_minor: 2000 });
   assert.equal(shift.branch_id, branch);
   const sale = (branch_id, items, paid_minor) => ({ branch_id, items, paid_minor, expected_total_minor: paid_minor,
@@ -72,9 +80,15 @@ test('branch sale, fractional restock, transfer, physical count and shift closur
   await call(transfer, relocate(adapter.id, 1, [device.id]));
   assert.equal(await stock(adapter.id, 1), 0);
   assert.equal((await call('/retail/devices/' + device.id)).branch_id, branch);
+  assert.equal(await scan(1, 'TEST-BRANCH-SERIAL'), null);
+  assert.deepEqual(await scan(branch, 'TEST-BRANCH-SERIAL'), { id: device.id, product_id: adapter.id });
   assert.deepEqual([await stock(cable.id, 1), await stock(cable.id, branch)], [7125, 5375]);
   const sales = [fixture(cable.id, 2.125), { ...fixture(adapter.id, 1), device_ids: [device.id] }];
-  const invoice = await call('/retail/checkout', sale(branch, sales, 26398));
+  const checkoutKey = randomUUID();
+  const basket = sale(branch, sales, 26398);
+  const invoice = await call('/invoices', basket, { key: checkoutKey });
+  assert.deepEqual(await call('/invoices', basket, { key: checkoutKey }), invoice);
+  assert.equal(await scan(branch, 'TEST-BRANCH-SERIAL'), null);
   assert.equal(await stock(cable.id, branch), 3250);
   const returned = await call(`/invoices/${invoice.id}/returns`, { items: [{ ...fixture(cable.id, 0.625), disposition: 'resale' }],
     reason: 'Fixture unused cut', expected_returned_minor: 999, shift_id: shift.id, payments: [{ method: 'cash', amount_minor: 999 }] });

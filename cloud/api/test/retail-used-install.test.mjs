@@ -112,6 +112,9 @@ test('used purchase safeguards and assigned installation carry through to stock,
   assert.equal(job.status, 'assigned');
   assert.equal((await call(jobPath, undefined, { user: 2 })).id, job.id);
   await call(jobPath, undefined, { user: 3, status: 403 });
+  assert.deepEqual((await call(installations + '?due=today', undefined, { user: 2 })).map(row => row.id), [job.id]);
+  assert.deepEqual((await call(installations + '?due=overdue')).map(row => row.id), []);
+  await call(installations + '?due=today', undefined, { user: 3, status: 403 });
   const otherJob = { ...schedule, invoice_id: secondInvoice.id, device_id: second.device_id };
   await call(installations, otherJob, { status: 409, code: 'RETAIL_INSTALLATION_CONFLICT' });
   const another = await call(installations, { ...otherJob, scheduled_time: '11:00' });
@@ -130,6 +133,7 @@ test('used purchase safeguards and assigned installation carry through to stock,
   });
   const completed = await call(jobPath + '/complete', complete, { user: 2 });
   assert.deepEqual([completed.status, completed.proof_reference, completed.history.length], ['completed', complete.proof_reference, 2]);
+  assert.deepEqual((await call(installations + '?due=today')).map(row => row.id), []);
   const warranty = (await call(devicePath)).sales[0];
   assert.deepEqual([warranty.warranty_status, warranty.warranty_starts_on, warranty.warranty_proof_reference], ['active', date, complete.proof_reference]);
   assert.equal(await stock(product.id), 0);

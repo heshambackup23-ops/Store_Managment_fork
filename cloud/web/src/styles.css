@@ -12,6 +12,7 @@
     --text: #172c25;
     --muted: #53695e;
     --border: #d7e1d8;
+    --field-border: #789184;
     --accent: #235941;
     --accent-strong: #15402e;
     --on-accent: #fff;
@@ -35,6 +36,7 @@
     --text: #e9f5ed;
     --muted: #b4c9bb;
     --border: #354d40;
+    --field-border: #829c8c;
     --accent: #98d5ae;
     --accent-strong: #b4e2c4;
     --on-accent: #112c1d;
@@ -58,7 +60,7 @@
   :focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; }
   input, select, textarea {
     inline-size: 100%;
-    border: 1px solid var(--border);
+    border: 1px solid var(--field-border);
     border-radius: 9px;
     padding: .65rem .8rem;
     color: var(--text);
@@ -69,6 +71,7 @@
   input[type="email"], input[inputmode="numeric"], input[inputmode="decimal"], input[type="number"], input[type="date"] { direction: ltr; text-align: start; }
   textarea { min-block-size: 6rem; resize: vertical; }
   ::placeholder { color: var(--muted); opacity: .95; }
+  table, .metric, .invoice-summary, bdi { font-variant-numeric: tabular-nums; }
 }
 
 @layer components {
@@ -303,6 +306,9 @@
     .topbar-end { gap: .38rem; }
     .page-title { align-items: flex-start; flex-direction: column; gap: .7rem; }
     .data-toolbar { flex-wrap: wrap; }
+    .primary, .secondary, .danger, .icon-button, .link-button { min-block-size: 44px; }
+    .icon-button { min-inline-size: 44px; }
+    input:not([type="checkbox"]), select, textarea { min-block-size: 44px; font-size: 1rem; }
     .login-screen { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
     .login-brand { min-block-size: 12rem; padding: 1.5rem; }
     .login-brand h1 { font-size: 2.25rem; max-inline-size: none; }

@@ -46,6 +46,7 @@ export const retailDeviceErrors: ReadonlyArray<readonly [string, string]> = [
 
 const deviceStatus = 'COALESCE(a.effective_status, d.status)';
 const deviceColumns = `d.id, d.product_id, d.receipt_id, d.inventory_intake_id, d.serial_number, d.imei1, d.imei2, d.branch_id,
+  (SELECT b.name FROM retail_branches b WHERE b.id = d.branch_id) AS branch_name,
   d.created_at, ${deviceStatus} AS status, p.name AS product_name, p.tracking,
   u.id AS used_acquisition_id, inspection.grade AS used_grade, inspection.battery_percent AS used_battery_percent,
   inspection.accessories AS used_accessories, inspection.defects AS used_defects`;
@@ -82,6 +83,24 @@ export function deviceWarrantyView(row: Record<string, unknown>, today: string, 
 
 export function retailDevices(writeOperation: typeof write) {
   const routes = new Hono<ApiEnv>();
+
+  routes.get('/retail/devices/pos-scan', permit('invoices.create'), async c => {
+    const { branch_id, code } = z.object({
+      branch_id: identifier,
+      code: z.string().trim().min(1).max(100),
+    }).parse(c.req.query());
+    const { results } = await c.env.DB.prepare(`
+      SELECT d.id, d.product_id FROM retail_devices d
+      JOIN products p ON p.id = d.product_id AND p.active = 1
+      JOIN retail_branches b ON b.id = d.branch_id AND b.active = 1
+      LEFT JOIN retail_active_device_dispositions a ON a.device_id = d.id
+      WHERE d.branch_id = ? AND ${deviceStatus} = 'available'
+        AND (d.serial_number = ? OR d.imei1 = ? OR d.imei2 = ?)
+      LIMIT 2
+    `).bind(branch_id, code, code, code).all<{ id: number; product_id: number }>();
+    if (results.length > 1) return fail(409, 'RETAIL_POS_SCAN_AMBIGUOUS', 'الرقم يطابق أكثر من جهاز. اختر الصنف وحدد الجهاز يدويًا.');
+    return ok(c, results[0] ?? null);
+  });
 
   routes.get('/retail/devices', c => {
     const query = z.object({

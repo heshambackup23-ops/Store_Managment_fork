@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useLocation } from 'react-router-dom'
 import { formatDate, money, request } from './api'
 import type { User } from './api'
 import { deviceLabel } from './RetailDevices'
@@ -28,22 +28,37 @@ export function RetailReturns({ invoiceId, user, canReturn, revision, onSaved }:
   const [error, setError] = useState('')
   const [editing, setEditing] = useState(false)
   const [exchange, setExchange] = useState<number>()
+  const { hash } = useLocation()
+  const section = useRef<HTMLElement>(null)
+  const returnable = data?.items.some(item => item.refundable_quantity > 0)
   useEffect(() => {
     const controller = new AbortController()
-    request<ReturnSummary>(endpoint, { signal: controller.signal }).then(result => setData(result.data))
+    setError('')
+    request<ReturnSummary>(endpoint, { signal: controller.signal }).then(result => {
+      if (!controller.signal.aborted) setData(result.data)
+    })
       .catch(error => { if (!controller.signal.aborted) setError(error.message) })
     return () => controller.abort()
   }, [endpoint, revision])
-  if (error) return <Notice error>{error}</Notice>
-  if (!data) return null
-  return <div className="form-section no-print">
+  useEffect(() => {
+    if (hash === '#retail-return' && section.current) {
+      section.current.focus({ preventScroll: true })
+      section.current.scrollIntoView({ block: 'start' })
+    }
+  }, [hash, invoiceId])
+  return <section id="retail-return" ref={section} tabIndex={-1} aria-label="مرتجعات الفاتورة" className="form-section no-print">
+    <h2>مرتجعات الفاتورة</h2>
+    {error && <Notice error>{error}</Notice>}
+    {!error && !data && <p role="status" className="muted">جارٍ تحميل مرتجعات الفاتورة…</p>}
+    {data && <>
     {data.items.some(item => item.devices?.length) && <section className="panel panel-inner form-section" aria-label="الأجهزة المرتبطة بالفاتورة">
       <h3>الأجهزة المرتبطة بالفاتورة</h3>
       <ul className="dash-list">{data.items.flatMap(item => (item.devices ?? []).map(device => <li key={device.id}>
         {item.product_name} · <Link to={'/retail-devices/' + device.id}><bdi>{deviceLabel(device)}</bdi></Link>
       </li>))}</ul>
     </section>}
-    {canReturn && data.items.some(item => item.refundable_quantity > 0) && <button className="secondary" onClick={() => setEditing(true)}>سجّل مرتجع أصناف</button>}
+    {canReturn && returnable && <button className="secondary" onClick={() => setEditing(true)}>سجّل مرتجع أصناف</button>}
+    {canReturn && !returnable && <p className="muted">لا توجد كميات متبقية للرد من هذه الفاتورة.</p>}
     {data.returns.length > 0 && <section className="panel panel-inner form-section" aria-label="سجل المرتجعات الجزئية">
       <h3>سجل المرتجعات الجزئية</h3>
       <ul className="dash-list">{data.returns.map(row => <li key={row.id}>
@@ -54,7 +69,8 @@ export function RetailReturns({ invoiceId, user, canReturn, revision, onSaved }:
     </section>}
     {editing && <ReturnDialog endpoint={endpoint} data={data} user={user} close={() => setEditing(false)} done={() => { setEditing(false); onSaved() }} />}
     {exchange && <ExchangeDialog endpoint={`${endpoint}/${exchange}/exchange`} close={() => setExchange(undefined)} done={() => { setExchange(undefined); onSaved() }} />}
-  </div>
+    </>}
+  </section>
 }
 
 function ReturnDialog({ endpoint, data, user, close, done }: { endpoint: string; data: ReturnSummary; user: User; close: () => void; done: () => void }) {
@@ -63,6 +79,7 @@ function ReturnDialog({ endpoint, data, user, close, done }: { endpoint: string;
   const [tenders, setTenders] = useState([blankTender()])
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const [step, setStep] = useState<'items' | 'settlement'>('items')
   const shift = useOpenShift(user)
 
   function change(id: number, update: (before: Selection) => Selection) {
@@ -91,6 +108,12 @@ function ReturnDialog({ endpoint, data, user, close, done }: { endpoint: string;
   async function submit(event: FormEvent) {
     event.preventDefault()
     if (busy || !selectedItems.length) return
+    if (step === 'items') {
+      if (drafts.some(line => !line.valid)) { setError('راجع وحدة الكمية وحدّ المتاح للمرتجع لكل صنف.'); return }
+      setError('')
+      setStep('settlement')
+      return
+    }
     setBusy(true); setError('')
     try {
       if (drafts.some(line => !line.valid)) throw new Error('راجع وحدة الكمية وحدّ المتاح للمرتجع لكل صنف.')
@@ -106,7 +129,8 @@ function ReturnDialog({ endpoint, data, user, close, done }: { endpoint: string;
 
   return <Modal title="مرتجع أصناف" close={() => { if (!busy) close() }}>
     <form className="modal-form" onSubmit={submit}>
-      {data.items.filter(line => line.refundable_quantity > 0).map(line => <fieldset className="panel panel-inner form-section" key={line.product_id} disabled={busy}>
+      <p className="retail-context">{step === 'items' ? 'اختر البنود وحالة كل قطعة' : 'راجع المبلغ وطريقة التسوية'}</p>
+      {step === 'items' && data.items.filter(line => line.refundable_quantity > 0).map(line => <fieldset className="panel panel-inner form-section" key={line.product_id} disabled={busy}>
         <legend>{line.product_name} · المتاح للرد {formatQuantity(line.refundable_quantity, line.quantity_scale)}</legend>
         {line.devices?.length ? line.devices.filter(device => !device.status || device.status === 'sold').map(device => <label className="field" key={device.id}>
           <bdi>{deviceLabel(device)}</bdi><select value={selected[line.product_id]?.devices[device.id] || ''} onChange={event => {
@@ -120,12 +144,21 @@ function ReturnDialog({ endpoint, data, user, close, done }: { endpoint: string;
             onChange={event => { const quantity = Number(event.target.value); change(line.product_id, before => ({ ...before, [disposition]: quantity })) }} />
         </label>)}</div>}
       </fieldset>)}
-      <label className="field">سبب المرتجع<textarea value={reason} required maxLength={500} disabled={busy} onChange={event => setReason(event.target.value)} /></label>
       <dl className="invoice-summary"><div><dt>قيمة المرتجع</dt><dd>{money(total)}</dd></div><div><dt>تخفيض الآجل</dt><dd>{money(Math.min(total, data.outstanding_minor))}</dd></div><div><dt>رد للعميل</dt><dd>{money(payout)}</dd></div></dl>
-      {payout > 0 && <ShiftContext value={shift} />}
-      {payout > 0 && shift.shift && <TenderFields rows={tenders} set={setTenders} disabled={busy} />}
+      {step === 'settlement' && <>
+        <ul className="retail-timeline">{selectedItems.map(item => {
+          const line = data.items.find(row => row.product_id === item.product_id)
+          return <li key={`${item.product_id}-${item.disposition}`}>{line?.product_name} · {formatQuantity(
+            stockQuantity(item.quantity, line?.quantity_scale), line?.quantity_scale)} · {dispositions[item.disposition]}</li>
+        })}</ul>
+        <label className="field">سبب المرتجع<textarea value={reason} required maxLength={500} disabled={busy} onChange={event => setReason(event.target.value)} /></label>
+        {payout > 0 && <ShiftContext value={shift} />}
+        {payout > 0 && shift.shift && <TenderFields rows={tenders} set={setTenders} disabled={busy} />}
+      </>}
       {error && <Notice error>{error}</Notice>}
-      <div className="form-actions"><button className="primary" disabled={busy || !selectedItems.length || shift.loading}>احفظ المرتجع</button>
+      <div className="form-actions"><button className="primary" disabled={busy || !selectedItems.length || (step === 'settlement' && shift.loading)}>
+        {busy ? 'جارٍ التسجيل…' : step === 'items' ? 'راجع التسوية' : 'احفظ المرتجع'}</button>
+        {step === 'settlement' && <button type="button" className="secondary" disabled={busy} onClick={() => { setError(''); setStep('items') }}>عدّل البنود</button>}
         <button type="button" className="secondary" disabled={busy} onClick={close}>إلغاء</button></div>
     </form>
   </Modal>

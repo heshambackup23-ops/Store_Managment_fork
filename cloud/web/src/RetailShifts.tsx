@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
-import { Link } from 'react-router-dom'
-import { allowed, formatDate, money, readMoney, request } from './api'
+import { Link, useSearchParams } from 'react-router-dom'
+import { allowed, decimal, formatDate, money, readMoney, request } from './api'
 import type { User } from './api'
 import { ActionDialog, Notice, PageTitle } from './ui'
 import type { ActionDialogProps, Row } from './ui'
@@ -71,7 +71,7 @@ export function TenderFields({ rows, set, disabled = false }: { rows: TenderDraf
   </fieldset>
 }
 
-export function useOpenShift(user: User) {
+export function useOpenShift(user: User, refreshKey?: string | number) {
   const canOperate = allowed(user, 'retail.shifts.operate')
   const [shift, setShift] = useState<Shift>()
   const [required, setRequired] = useState(false)
@@ -79,6 +79,8 @@ export function useOpenShift(user: User) {
   const [error, setError] = useState('')
   useEffect(() => {
     const abort = new AbortController()
+    setError('')
+    setLoading(true)
     Promise.all([
       request<{ require_shift: boolean }>('/retail/settings', { signal: abort.signal }),
       canOperate ? request<Shift[]>('/retail/shifts?status=open&per_page=100', { signal: abort.signal }) : undefined,
@@ -86,10 +88,10 @@ export function useOpenShift(user: User) {
       if (abort.signal.aborted) return
       setRequired(settings.data.require_shift)
       setShift(shifts?.data.find(row => row.actor_id === user.id && row.status === 'open'))
-    }).catch(error => { if (!abort.signal.aborted) setError(error.message) })
+    }).catch(error => { if (!abort.signal.aborted) { setError(error.message); setShift(undefined) } })
       .finally(() => { if (!abort.signal.aborted) setLoading(false) })
     return () => abort.abort()
-  }, [canOperate, user.id])
+  }, [canOperate, user.id, refreshKey])
   return { shift, required, loading, error, canOperate }
 }
 
@@ -142,6 +144,8 @@ export function SharedDrawerDialog({ user, ...props }: ActionDialogProps & { use
 }
 
 export function RetailShifts({ user }: { user: User }) {
+  const [search, setSearch] = useSearchParams()
+  const pending = search.get('status') === 'pending_approval'
   const canOperate = allowed(user, 'retail.shifts.operate')
   const canApprove = allowed(user, 'retail.shifts.approve')
   const canCloseInEmergency = allowed(user, 'retail.shifts.emergency_close')
@@ -153,6 +157,9 @@ export function RetailShifts({ user }: { user: User }) {
   const [opening, setOpening] = useState('')
   const [selected, setSelected] = useState<number>()
   const [observed, setObserved] = useState('')
+  const [countByDenomination, setCountByDenomination] = useState(false)
+  const [counts, setCounts] = useState<Record<number, string>>({})
+  const [showExpected, setShowExpected] = useState(false)
   const [reason, setReason] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
@@ -166,11 +173,15 @@ export function RetailShifts({ user }: { user: User }) {
   const [cashAmount, setCashAmount] = useState('')
   const [cashReason, setCashReason] = useState('')
   const [cashReference, setCashReference] = useState('')
+  const own = useOpenShift(user, revision)
+  const denominations = [200, 100, 50, 20, 10, 5, 1]
+  const counted = denominations.reduce((sum, denomination) => sum + denomination * 100 * Number(counts[denomination] || 0), 0)
+  const validCount = !countByDenomination || Object.values(counts).every(value => !value || /^\d{1,6}$/.test(value))
 
   useEffect(() => {
     const abort = new AbortController()
     Promise.all([
-      request<Shift[]>('/retail/shifts?page=' + page + '&per_page=20', { signal: abort.signal }),
+      request<Shift[]>('/retail/shifts?page=' + page + '&per_page=20' + (pending ? '&status=pending_approval' : ''), { signal: abort.signal }),
       request<{ require_shift: boolean }>('/retail/settings', { signal: abort.signal }),
     ]).then(([list, settings]) => {
       if (abort.signal.aborted) return
@@ -179,7 +190,20 @@ export function RetailShifts({ user }: { user: User }) {
       setRequired(settings.data.require_shift)
     }).catch(error => { if (!abort.signal.aborted) setError(error.message) })
     return () => abort.abort()
-  }, [revision, page])
+  }, [revision, page, pending])
+
+  useEffect(() => {
+    if (own.shift?.id && !pending) setSelected(previous => previous ?? own.shift?.id)
+  }, [own.shift?.id, pending])
+
+  function chooseShift(id?: number) {
+    setSelected(id)
+    setObserved('')
+    setReason('')
+    setCounts({})
+    setCountByDenomination(false)
+    setShowExpected(false)
+  }
 
   useEffect(() => {
     if (!selected) return
@@ -206,6 +230,7 @@ export function RetailShifts({ user }: { user: User }) {
       setMessage(success)
       setObserved('')
       setReason('')
+      setCounts({})
       if (path === '/retail/shifts') { setRegister(''); setOpening(''); setPage(1) }
       if (path.endsWith('/cash-movements')) { setCashAmount(''); setCashReason(''); setCashReference('') }
     } catch (error) { setError(error instanceof Error ? error.message : 'تعذّر تنفيذ العملية.') }
@@ -215,40 +240,57 @@ export function RetailShifts({ user }: { user: User }) {
   const close = details?.status === 'open' && details.actor_id === user.id && canOperate
   const emergencyClose = details?.status === 'open' && details.actor_id !== user.id && canCloseInEmergency
   const approve = details?.status === 'pending_approval' && details.actor_id !== user.id && details.closed_by !== user.id && canApprove
+  const closing = Boolean(close || emergencyClose)
   let difference: number | undefined
-  if (details && (close || emergencyClose) && observed) {
-    try { difference = readMoney(observed) - details.expected_minor } catch { /* Validate on submit. */ }
+  let countedValue = observed
+  if (details && closing && validCount) {
+    try {
+      if (countByDenomination && (observed || Object.values(counts).some(Boolean))) {
+        countedValue = decimal(counted + (observed ? readMoney(observed) : 0))
+      }
+      if (countedValue) difference = readMoney(countedValue) - details.expected_minor
+    } catch { /* Keep the count editable until it is valid. */ }
   }
 
   return <>
-    <PageTitle title="ورديات الكاشير" description="عهدة الدرج، طرق الدفع، والإقفال باعتماد فرق النقدية." action={<Link className="secondary" to="/pos">نقطة البيع</Link>} />
+    <PageTitle title="ورديات الكاشير" action={allowed(user, 'invoices.create') && <Link className="secondary" to="/pos">نقطة البيع</Link>} />
     {error && <Notice error>{error}</Notice>}
     {message && <Notice>{message}</Notice>}
-    {canSettings && required !== undefined && <form className="panel form-card section-space" onSubmit={event => action(event, '/retail/settings', () => ({ require_shift: !required }), 'تم تحديث سياسة الورديات.', 'PATCH')}>
-      <p>{required ? 'الوردية مطلوبة للعمليات التي يدعمها دفتر الورديات.' : 'الوردية اختيارية حاليًا.'}</p>
-      <button className="secondary" disabled={busy}>{required ? 'اجعل الوردية اختيارية' : 'اطلب وردية للعمليات'}</button>
-    </form>}
-    {canOperate && !shifts.some(shift => shift.actor_id === user.id && shift.status === 'open') && <form className="panel form-card section-space" onSubmit={event => action(event, '/retail/shifts', () => ({ register_name: register.trim(), opening_minor: readMoney(opening), branch_id: branch }), 'تم فتح الوردية.')}>
-      <BranchSelect label="فرع الوردية" value={branch} set={setBranch} disabled={busy} />
+    <div className="actions section-space" aria-label="عرض الورديات">
+      {own.shift && <button type="button" className="secondary" onClick={() => { setSearch({}); setPage(1); chooseShift(own.shift?.id) }}>ورديتي</button>}
+      {canApprove && <button type="button" className="secondary" aria-pressed={pending} onClick={() => {
+        setSearch(pending ? {} : { status: 'pending_approval' }); setPage(1); chooseShift()
+      }}>{pending ? 'عرض كل الورديات' : 'فروق تنتظر الاعتماد'}</button>}
+    </div>
+    {canOperate && !pending && !own.loading && !own.error && !own.shift && <form className="panel form-card section-space" onSubmit={event => action(event, '/retail/shifts', () => ({ register_name: register.trim(), opening_minor: readMoney(opening), branch_id: branch }), 'تم فتح الوردية.')}>
       <h2>فتح وردية</h2>
+      <BranchSelect label="فرع الوردية" value={branch} set={setBranch} disabled={busy} />
       <label className="field">اسم الدرج<input required value={register} maxLength={100} disabled={busy} onChange={event => setRegister(event.target.value)} /></label>
       <label className="field">العهدة الافتتاحية بالجنيه<input required value={opening} inputMode="decimal" disabled={busy} onChange={event => setOpening(event.target.value)} /></label>
       <button className="primary" disabled={busy}>افتح الوردية</button>
     </form>}
     {details && details.id === selected && <section className="panel panel-inner form-section section-space" aria-label="تفاصيل الوردية">
-      <h2>{details.register_name} · {details.branch_name && details.branch_name + ' · '}{shiftStatusLabel(details)}</h2>
+      <div className="shift-balance-heading"><h2>{details.actor_id === user.id && details.status === 'open' ? 'ورديتي' : details.register_name}</h2>
+        <span className={'status-pill' + (details.status === 'pending_approval' ? ' warning' : '')}>{shiftStatusLabel(details)}</span></div>
       <dl className="invoice-summary">
-        <div><dt>الكاشير</dt><dd>{details.actor_name}</dd></div><div><dt>العهدة</dt><dd>{money(details.opening_minor)}</dd></div>
-        <div><dt>النقدية المتوقعة</dt><dd>{money(details.expected_minor)}</dd></div><div><dt>النقدية المعدودة</dt><dd>{money(details.observed_minor)}</dd></div>
-        <div><dt>الفرق</dt><dd>{money(details.difference_minor)}</dd></div><div><dt>يوم العمل</dt><dd>{formatDate(details.business_day)}</dd></div>
+        <div><dt>الكاشير</dt><dd>{details.actor_name}</dd></div><div><dt>الفرع</dt><dd>{details.branch_name ?? '—'}</dd></div>
+        <div><dt>الدرج</dt><dd>{details.register_name}</dd></div><div><dt>يوم العمل</dt><dd>{formatDate(details.business_day)}</dd></div>
+        {(!closing || showExpected) && <>
+          <div><dt>العهدة</dt><dd>{money(details.opening_minor)}</dd></div>
+          <div><dt>النقدية المتوقعة</dt><dd>{money(details.expected_minor)}</dd></div>
+        </>}
+        {!closing && <><div><dt>النقدية المعدودة</dt><dd>{money(details.observed_minor)}</dd></div>
+          <div><dt>الفرق</dt><dd>{money(details.difference_minor)}</dd></div></>}
       </dl>
       {details.emergency_close === 1 && <p>أقفل الوردية استثنائيًا · {details.closed_by_name ?? details.closed_by}</p>}
       {details.close_reason && <p>{details.emergency_close ? 'سبب الإقفال الاستثنائي' : 'سبب الفرق'} · {details.close_reason}</p>}
       {details.approval_reason && <p>اعتماد المشرف · {details.approval_reason}</p>}
-      {details.totals?.length ? <div className="table-scroll"><table><thead><tr><th scope="col">الوسيلة</th><th scope="col">الوارد</th><th scope="col">الصادر</th></tr></thead>
-        <tbody>{details.totals.map(row => <tr key={row.method}><th scope="row">{tenderLabels[row.method]}</th><td>{money(row.received_minor)}</td><td>{money(row.paid_out_minor)}</td></tr>)}</tbody></table></div> : null}
-      {details.cash_movements_minor !== undefined && <section className="form-section" aria-label="حركات الدرج والخزنة">
-        <h3>حركات الدرج والخزنة</h3>
+      {details.totals?.length ? <details className="shift-details" open={!closing || undefined}><summary>ملخص وسائل الدفع</summary>
+        <div className="table-scroll" role="region" tabIndex={0} aria-label="ملخص وسائل الدفع"><table><thead><tr><th scope="col">الوسيلة</th><th scope="col">الوارد</th><th scope="col">الصادر</th><th scope="col">الصافي</th></tr></thead>
+          <tbody>{details.totals.map(row => <tr key={row.method}><th scope="row">{tenderLabels[row.method]}</th><td>{money(row.received_minor)}</td><td>{money(row.paid_out_minor)}</td><td>{money(row.received_minor - row.paid_out_minor)}</td></tr>)}</tbody></table></div>
+        {canApprove && allowed(user, 'reports.view') && <Link to={'/retail-finance?view=settlement&shift_id=' + details.id}>مطابقة القنوات غير النقدية</Link>}
+      </details> : null}
+      {details.cash_movements_minor !== undefined && <details className="shift-details"><summary>حركات الدرج والخزنة</summary>
         <p>صافي الحركات اليدوية ضمن المتوقع · <strong>{money(details.cash_movements_minor)}</strong></p>
         {details.service_cash_minor !== undefined && <p>صافي نقدية المحافظ والصيانة المسجلة على نفس الدرج · <strong>{money(details.service_cash_minor)}</strong></p>}
         {cashEntries.length > 0 && <ul className="dash-list">{cashEntries.map(row => <li key={row.id}>
@@ -265,16 +307,27 @@ export function RetailShifts({ user }: { user: User }) {
           <label className="field">مرجع السند<input value={cashReference} maxLength={100} disabled={busy} onChange={event => setCashReference(event.target.value)} /></label>
           <button className="secondary" disabled={busy}>سجّل حركة الدرج</button>
         </form>}
-      </section>}
-      {(close || emergencyClose) && <form className="form-section" onSubmit={event => action(event,
+      </details>}
+      {closing && <form className="panel panel-inner form-section shift-review" onSubmit={event => action(event,
         `/retail/shifts/${details.id}/${emergencyClose ? 'emergency-close' : 'close'}`,
-        () => ({ observed_minor: readMoney(observed), expected_minor: details.expected_minor, reason: reason.trim() || undefined }),
+        () => ({ observed_minor: readMoney(countedValue), expected_minor: details.expected_minor, reason: reason.trim() || undefined }),
         emergencyClose ? 'تم إقفال الدرج استثنائيًا وإحالته للمراجعة.' : 'تم تسجيل إقفال الوردية.')}>
+        <h3>إقفال الوردية</h3>
         {emergencyClose && <p>عُد النقدية قبل الإقفال. سيتاح الدرج للوردية التالية ويُحال الإقفال إلى مشرف مستقل للمراجعة.</p>}
-        <label className="field">النقدية المعدودة بالجنيه<input required inputMode="decimal" value={observed} disabled={busy} onChange={event => setObserved(event.target.value)} /></label>
-        {difference !== undefined && <p>الفرق عند الإقفال · {money(difference)}</p>}
-        <label className="field">{emergencyClose ? 'سبب الإقفال الاستثنائي' : 'سبب الفرق'}<textarea required={emergencyClose || Boolean(difference)} value={reason} maxLength={500} disabled={busy} onChange={event => setReason(event.target.value)} /></label>
-        <button className="primary" disabled={busy}>{emergencyClose ? 'أقفل الوردية استثنائيًا' : 'أقفل الوردية'}</button>
+        <button type="button" className="secondary" aria-pressed={countByDenomination} disabled={busy}
+          onClick={() => setCountByDenomination(value => !value)}>{countByDenomination ? 'أدخل الإجمالي' : 'عدّ حسب الفئات'}</button>
+        {countByDenomination ? <>
+          <div className="shift-count-grid">{denominations.map(value => <label key={value} className="field">عدد فئة {value} جنيه
+            <input value={counts[value] ?? ''} inputMode="numeric" pattern="[0-9]{1,6}" maxLength={6} disabled={busy}
+              onChange={event => setCounts(previous => ({ ...previous, [value]: event.target.value.replace(/[٠-٩۰-۹]/g, digit => String(digit.charCodeAt(0) & 15)) }))} />
+          </label>)}</div>
+          <label className="field">باقي الفئات والفكة بالجنيه<input inputMode="decimal" value={observed} disabled={busy} onChange={event => setObserved(event.target.value)} /></label>
+        </> : <label className="field">النقدية المعدودة بالجنيه<input required inputMode="decimal" value={observed} disabled={busy} onChange={event => setObserved(event.target.value)} /></label>}
+        {difference !== undefined && <div aria-live="polite">النقدية المعدودة <strong>{money(difference + details.expected_minor)}</strong>
+          {' · '}{difference ? 'فرق الإقفال ' + money(difference) + ' ويحتاج اعتماد مشرف' : 'مطابقة للنقدية المتوقعة'}</div>}
+        <button type="button" className="link-button" aria-expanded={showExpected} onClick={() => setShowExpected(value => !value)}>{showExpected ? 'إخفاء المتوقع' : 'عرض المتوقع'}</button>
+        {(emergencyClose || Boolean(difference) || reason) && <label className="field">{emergencyClose ? 'سبب الإقفال الاستثنائي' : 'سبب الفرق'}<textarea required={emergencyClose || Boolean(difference)} value={reason} maxLength={500} disabled={busy} onChange={event => setReason(event.target.value)} /></label>}
+        <button className="primary" disabled={busy || difference === undefined}>{emergencyClose ? 'أقفل الوردية استثنائيًا' : 'أقفل الوردية'}</button>
       </form>}
       {approve && <form className="form-section" onSubmit={event => action(event, `/retail/shifts/${details.id}/approve`, () => ({ reason: reason.trim() }),
         details.emergency_close ? 'تم اعتماد الإقفال الاستثنائي.' : 'تم اعتماد فرق الوردية.')}>
@@ -283,16 +336,22 @@ export function RetailShifts({ user }: { user: User }) {
       </form>}
     </section>}
     <section className="panel panel-inner form-section">
-      <h2>سجل الورديات</h2>
+      <h2>{pending ? 'فروق تنتظر الاعتماد' : 'سجل الورديات'}</h2>
       {!shifts.length ? <p className="muted">لا توجد ورديات في هذه الصفحة.</p> : <div className="table-scroll"><table>
         <thead><tr>{['الدرج', 'الكاشير', 'يوم العمل', 'الحالة', 'التفاصيل'].map(label => <th key={label} scope="col">{label}</th>)}</tr></thead>
         <tbody>{shifts.map(shift => <tr key={shift.id}><th scope="row">{shift.register_name}</th><td>{shift.actor_name}</td><td>{formatDate(shift.business_day)}</td><td>{shiftStatusLabel(shift)}</td>
-          <td><button className="link-button" type="button" onClick={() => { setSelected(shift.id); setObserved(''); setReason('') }}>عرض وردية {shift.id}</button></td></tr>)}</tbody>
+          <td><button className="link-button" type="button" onClick={() => chooseShift(shift.id)}>عرض وردية {shift.id}</button></td></tr>)}</tbody>
       </table></div>}
       {total > 20 && <nav className="pagination" aria-label="صفحات الورديات">
         <button className="secondary" disabled={page === 1} onClick={() => setPage(page - 1)}>السابق</button>
         <button className="secondary" disabled={page * 20 >= total} onClick={() => setPage(page + 1)}>التالي</button>
       </nav>}
     </section>
+    {canSettings && required !== undefined && <details className="panel form-card shift-details section-space"><summary>سياسة الورديات</summary>
+      <form className="form-section" onSubmit={event => action(event, '/retail/settings', () => ({ require_shift: !required }), 'تم تحديث سياسة الورديات.', 'PATCH')}>
+        <p>{required ? 'الوردية مطلوبة للعمليات التي يدعمها دفتر الورديات.' : 'الوردية اختيارية حاليًا.'}</p>
+        <button className="secondary" disabled={busy}>{required ? 'اجعل الوردية اختيارية' : 'اطلب وردية للعمليات'}</button>
+      </form>
+    </details>}
   </>
 }

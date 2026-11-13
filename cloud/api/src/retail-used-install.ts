@@ -189,11 +189,13 @@ export function retailUsedInstall(writeOperation: typeof write) {
   routes.get('/retail/installations', permit(viewInstallations), c => {
     const scope = installationScope(c);
     const status = installationStatus.optional().parse(c.req.query('status'));
+    const due = z.enum(['today', 'overdue']).optional().parse(c.req.query('due'));
     const q = searchText.optional().parse(c.req.query('q'));
+    const dueFilter = due ? ` AND j.status IN ('scheduled','assigned') AND j.scheduled_on ${due === 'today' ? '=' : '<'} ?` : '';
     return selectPage(c, 'j.*', 'retail_installation_positions j', 'WHERE 1 = 1' + scope.where +
-      (status ? ' AND j.status = ?' : '') +
+      (status ? ' AND j.status = ?' : '') + dueFilter +
       (q ? " AND (CAST(j.invoice_id AS TEXT) = ? OR j.imei1 LIKE ? ESCAPE '\\' OR j.serial_number LIKE ? ESCAPE '\\' OR j.customer_name LIKE ? ESCAPE '\\')" : ''),
-      [...scope.values, ...(status ? [status] : []), ...(q ? [q, ...Array(3).fill(searchPrefix(q))] : [])],
+      [...scope.values, ...(status ? [status] : []), ...(due ? [cairoRetailDay()] : []), ...(q ? [q, ...Array(3).fill(searchPrefix(q))] : [])],
       "CASE WHEN j.status IN ('scheduled','assigned') THEN 0 ELSE 1 END, j.scheduled_on, j.scheduled_time, j.id DESC");
   });
   routes.get('/retail/installations/:id', permit(viewInstallations), c => installationDetail(c, identifier.parse(c.req.param('id'))));

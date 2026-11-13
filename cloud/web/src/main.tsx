@@ -8,7 +8,7 @@ import { businessModules, CommerceModule, DamageReport, InvoiceDetail, Pos, Sale
 import { coreModules, Dashboard, Notifications, Products, Profile, Roles, Settings, Staff } from './core'
 import { CustomerLedger, DamageDetail, PurchaseReceipts, SupplierDetail, WalletCashier } from './detail'
 import { WalletReconciliation } from './WalletReconciliation'
-import { RetailShifts } from './RetailShifts'
+import { RetailShifts, useOpenShift } from './RetailShifts'
 import { RetailSafe } from './RetailSafe'
 import { RetailHardware } from './RetailHardware'
 import { DeviceDetail, DeviceList } from './RetailDevices'
@@ -21,60 +21,12 @@ import { RetailInstallations } from './RetailInstallations'
 import { RetailLedger } from './RetailLedger'
 import { DataModule, idOf, Notice, PageTitle } from './ui'
 import { WalletLedger } from './WalletOperations'
+import { currentSection, navigationFor } from './navigation'
+import { ReturnLookup, WalletWorkspace } from './Workspaces'
 import './styles.css'
+import './workspace.css'
 
 type Theme = 'light' | 'dark'
-type NavigationItem = { path: string; label: string; permission?: string }
-const navGroups: { title: string; items: NavigationItem[] }[] = [
-  { title: 'نظرة عامة', items: [
-    { path: '/dashboard', label: 'لوحة التحكم' },
-    { path: '/notifications', label: 'الإشعارات' },
-  ] },
-  { title: 'المبيعات والمخزون', items: [
-    { path: '/pos', label: 'نقطة البيع', permission: 'invoices.create' },
-    { path: '/retail-hardware', label: 'اختبار القارئ والطابعة', permission: 'invoices.create' },
-    { path: '/retail-shifts', label: 'ورديات الكاشير', permission: 'retail.shifts.operate' },
-    { path: '/retail-discounts', label: 'اعتمادات الخصم', permission: 'retail.discounts.approve' },
-    { path: '/retail-safe', label: 'خزنة المتجر', permission: 'retail.safe.manage' },
-    { path: '/invoices', label: 'الفواتير', permission: 'invoices.view' },
-    { path: '/products', label: 'المنتجات', permission: 'products.view' },
-    { path: '/categories', label: 'التصنيفات', permission: 'categories.view' },
-    { path: '/inventory', label: 'حركات المخزون', permission: 'inventory.view' },
-    { path: '/retail-branches', label: 'مخزون الفروع', permission: 'inventory.view' },
-    { path: '/retail-stocktakes', label: 'جرد المخزون', permission: 'inventory.stocktake.count' },
-    { path: '/retail-devices', label: 'الأجهزة المتتبعة', permission: 'inventory.view' },
-    { path: '/retail-used-phones', label: 'الموبايلات المستعملة', permission: 'inventory.view' },
-    { path: '/damaged', label: 'الهالك', permission: 'damaged.view' },
-    { path: '/reports', label: 'تقارير المبيعات', permission: 'reports.view' },
-    { path: '/retail-finance', label: 'تقارير مالية للمتجر', permission: 'reports.view' },
-    { path: '/retail-ledger', label: 'دفتر الأستاذ وإقفال الشهر', permission: 'retail.ledger.view' },
-  ] },
-  { title: 'الحسابات والخدمات', items: [
-    { path: '/customers', label: 'العملاء', permission: 'customers.view' },
-    { path: '/installments', label: 'الأقساط', permission: 'installments.view' },
-    { path: '/debts', label: 'الديون الشخصية', permission: 'debts.view' },
-    { path: '/suppliers', label: 'الموردون', permission: 'suppliers.view' },
-    { path: '/purchases', label: 'المشتريات', permission: 'suppliers.view' },
-    { path: '/supplier-report', label: 'أرصدة الموردين', permission: 'suppliers.view' },
-    { path: '/wallets', label: 'المحافظ', permission: 'wallets.view' },
-    { path: '/wallet-cashier', label: 'كاشير المحافظ', permission: 'wallets.view' },
-    { path: '/wallet-transactions', label: 'حركات المحافظ', permission: 'wallets.view' },
-    { path: '/wallet-debts', label: 'ديون المحافظ', permission: 'wallets.view' },
-    { path: '/wallet-cash', label: 'حركات نقدية المحافظ', permission: 'wallets.cash' },
-    { path: '/wallet-report', label: 'تقرير المحافظ', permission: 'wallets.cash' },
-    { path: '/wallet-reconciliation', label: 'مطابقة الدرج والمحافظ', permission: 'wallets.cash' },
-    { path: '/maintenance', label: 'الصيانة', permission: 'maintenance.view' },
-    { path: '/retail-installations', label: 'مواعيد التركيب', permission: 'retail.installations.view' },
-  ] },
-  { title: 'إدارة النظام', items: [
-    { path: '/staff', label: 'الموظفون', permission: 'staff.view' },
-    { path: '/roles', label: 'الأدوار والصلاحيات', permission: 'roles.view' },
-    { path: '/settings', label: 'الإعدادات', permission: 'settings.view' },
-    { path: '/backup', label: 'تصدير البيانات', permission: 'backup.export' },
-    { path: '/profile', label: 'الملف الشخصي' },
-  ] },
-]
-
 function startTheme(): Theme {
   try {
     const stored = localStorage.getItem('henra-theme')
@@ -95,6 +47,7 @@ function Login({ onLogin, theme, toggle, startupError }: {
 }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(startupError)
+  const [showPassword, setShowPassword] = useState(false)
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -127,9 +80,13 @@ function Login({ onLogin, theme, toggle, startupError }: {
           <label className="field">اسم المستخدم أو البريد الإلكتروني
             <input name="identifier" type="text" dir="ltr" autoComplete="username" autoCapitalize="none" spellCheck={false} required />
           </label>
-          <label className="field">كلمة المرور أو مفتاح الدخول
-            <input name="password" type="password" autoComplete="current-password" required />
-          </label>
+          <div className="password-field">
+            <label className="field">كلمة المرور أو مفتاح الدخول
+              <input name="password" type={showPassword ? 'text' : 'password'} dir="ltr" autoComplete="current-password" required />
+            </label>
+            <button className="secondary" type="button" onClick={() => setShowPassword(value => !value)}
+              aria-label={showPassword ? 'إخفاء كلمة المرور' : 'إظهار كلمة المرور'}>{showPassword ? 'إخفاء' : 'إظهار'}</button>
+          </div>
           {error && <Notice error>{error}</Notice>}
           <button className="primary" disabled={busy}>{busy ? 'جارٍ تسجيل الدخول…' : 'دخول'}</button>
         </form>
@@ -178,32 +135,45 @@ function Shell({ user, update, clear, theme, toggle }: {
   user: User; update: (user: User) => void; clear: () => void; theme: Theme; toggle: () => void
 }) {
   const [drawer, setDrawer] = useState(false)
+  const [mobile, setMobile] = useState(() => matchMedia('(max-width: 820px)').matches)
+  const [expanded, setExpanded] = useState<string>()
+  const [compact, setCompact] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const location = useLocation()
   const sidebar = useRef<HTMLElement>(null)
   const menu = useRef<HTMLButtonElement>(null)
-  const groups = navGroups.map(group => ({ ...group, items: group.items.filter(item => allowed(user, item.permission) ||
-    ['/retail-shifts', '/retail-safe'].includes(item.path) && allowed(user, 'retail.shifts.approve') ||
-    item.path === '/retail-shifts' && allowed(user, 'retail.shifts.emergency_close') ||
-    item.path === '/retail-discounts' && allowed(user, 'invoices.discount') ||
-    item.path === '/retail-stocktakes' && allowed(user, 'inventory.stocktake.approve') ||
-    item.path === '/retail-branches' && ['retail.branches.manage', 'retail.branches.transfer'].some(permission => allowed(user, permission))) })).filter(group => group.items.length > 0)
+  const groups = navigationFor(user)
+  const active = currentSection(location.pathname, groups)
+  const openSection = expanded ?? active?.id ?? 'today'
+  const shift = useOpenShift(user, location.key)
   const home = '/dashboard'
   const protect = (permission: string, element: ReactNode) => allowed(user, permission) ? element : <Notice error>ليست لديك صلاحية عرض هذه الصفحة.</Notice>
 
-  useEffect(() => { setDrawer(false) }, [location.pathname])
+  useEffect(() => { setDrawer(false); setExpanded(undefined) }, [location.pathname])
   useEffect(() => {
-    if (!drawer) return
+    const query = matchMedia('(max-width: 820px)')
+    const change = () => { setMobile(query.matches); if (!query.matches) setDrawer(false) }
+    query.addEventListener('change', change)
+    return () => query.removeEventListener('change', change)
+  }, [])
+  useEffect(() => {
+    if (!drawer || !mobile) return
     sidebar.current?.querySelector('a')?.focus()
     const escape = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return
       setDrawer(false)
-      menu.current?.focus()
+      requestAnimationFrame(() => menu.current?.focus())
     }
     window.addEventListener('keydown', escape)
     return () => window.removeEventListener('keydown', escape)
-  }, [drawer])
+  }, [drawer, mobile])
+
+  function finishNavigation(path: string) {
+    setDrawer(false)
+    if (path === location.pathname) document.getElementById('main-content')?.focus()
+    else if (mobile) requestAnimationFrame(() => document.getElementById('main-content')?.focus({ preventScroll: true }))
+  }
 
   async function logout() {
     if (busy) return
@@ -217,27 +187,39 @@ function Shell({ user, update, clear, theme, toggle }: {
   }
 
   return (
-    <div className="shell">
-      <a className="primary skip-link" href="#main-content">انتقل إلى المحتوى</a>
+    <div className={'shell' + (compact ? ' shell-compact' : '')}>
+      <a className="primary skip-link" href="#main-content" inert={mobile && drawer}>انتقل إلى المحتوى</a>
       {drawer && <button className="overlay" tabIndex={-1} type="button" aria-label="إغلاق القائمة"
-        onClick={() => { setDrawer(false); menu.current?.focus() }} />}
-      <aside className={'sidebar' + (drawer ? ' open' : '')} id="sidebar" ref={sidebar}>
-        <Link className="brand" to={home} onClick={() => setDrawer(false)}>
+        onClick={() => { setDrawer(false); requestAnimationFrame(() => menu.current?.focus()) }} />}
+      <aside className={'sidebar' + (drawer ? ' open' : '')} id="sidebar" ref={sidebar}
+        role={mobile && drawer ? 'dialog' : undefined} aria-modal={mobile && drawer ? true : undefined} aria-label="قائمة المتجر"
+        inert={mobile && !drawer}>
+        <Link className="brand" to={home} onClick={() => finishNavigation(home)}>
           <span className="brand-mark" aria-hidden="true">ه</span><span><strong>هلال</strong><small>إدارة المتجر</small></span>
         </Link>
+        <button className="sidebar-close" type="button" onClick={() => { setDrawer(false); requestAnimationFrame(() => menu.current?.focus()) }}>إغلاق القائمة</button>
         <nav aria-label="القائمة الرئيسية" className="navigation">
-          {groups.map(group => <section className="nav-group" key={group.title}>
-            <h2>{group.title}</h2>
-            {group.items.map(item => <NavLink key={item.path} className="nav-link" to={item.path} onClick={() => setDrawer(false)}>{item.label}</NavLink>)}
+          {groups.map(group => <section className="nav-group" key={group.id}>
+            <h2><button className={'nav-section' + (active?.id === group.id ? ' current' : '')} type="button"
+              aria-controls={'nav-' + group.id} aria-expanded={openSection === group.id}
+              onClick={() => { setCompact(false); setExpanded(openSection === group.id ? '' : group.id) }}>
+              <span>{group.title}</span><span aria-hidden="true">{openSection === group.id ? '−' : '+'}</span>
+            </button></h2>
+            <div id={'nav-' + group.id} hidden={openSection !== group.id}>
+              {group.items.map(item => <NavLink key={item.path} className="nav-link" to={item.path}
+                onClick={() => finishNavigation(item.path)}>{item.label}</NavLink>)}
+            </div>
           </section>)}
         </nav>
       </aside>
-      <div className="workspace">
+      <div className="workspace" inert={mobile && drawer}>
         <header className="topbar">
           <div className="topbar-start">
             <button ref={menu} className="icon-button mobile-toggle" type="button" aria-label="قائمة المتجر" aria-controls="sidebar"
               aria-expanded={drawer} onClick={() => setDrawer(!drawer)}>☰</button>
-            <span>إدارة المتجر</span>
+            <button className="secondary desktop-nav-toggle" type="button" aria-controls="sidebar" aria-expanded={!compact}
+              onClick={() => setCompact(value => !value)}>{compact ? 'عرض القائمة' : 'طي القائمة'}</button>
+            <span className="current-section">{active?.title || 'إدارة المتجر'}</span>
           </div>
           <div className="topbar-end">
             <Link className="identity" to="/profile" aria-label={'الملف الشخصي · ' + user.name}>
@@ -248,6 +230,14 @@ function Shell({ user, update, clear, theme, toggle }: {
             <button className="secondary" disabled={busy} onClick={() => void logout()}>خروج</button>
           </div>
         </header>
+        {shift.canOperate && <div className="work-context" aria-label="الفرع والوردية">
+          {shift.shift ? <>
+            <span>الفرع <strong>{shift.shift.branch_name ?? '—'}</strong></span>
+            <span>الدرج <strong>{shift.shift.register_name}</strong></span>
+            <Link className="shift-indicator" to="/retail-shifts">وردية مفتوحة</Link>
+          </> : shift.loading ? <span role="status">جارٍ التحقق من الوردية…</span>
+            : <Link className="shift-indicator" to="/retail-shifts">{shift.error ? 'تحقق من الوردية' : 'افتح وردية'}</Link>}
+        </div>}
         <main className="main" id="main-content" tabIndex={-1}>
           {error && <Notice error>{error}</Notice>}
           <Routes>
@@ -262,6 +252,7 @@ function Shell({ user, update, clear, theme, toggle }: {
               <Route key={name} path={'/' + name} element={<CommerceModule name={name} user={user} />} />)}
             <Route path="/wallet-transactions" element={protect('wallets.view', <WalletLedger user={user} config={businessModules['wallet-transactions']} />)} />
             <Route path="/pos" element={<Pos key="sale" user={user} />} />
+            <Route path="/returns" element={protect('invoices.view', protect('invoices.refund', <ReturnLookup user={user} />))} />
             <Route path="/retail-hardware" element={protect('invoices.create', <RetailHardware />)} />
             <Route path="/retail-shifts" element={['retail.shifts.operate', 'retail.shifts.approve', 'retail.shifts.emergency_close'].some(permission => allowed(user, permission)) ? <RetailShifts user={user} /> : <Notice error>ليست لديك صلاحية عرض الورديات.</Notice>} />
             <Route path="/retail-discounts" element={allowed(user, 'invoices.discount') || allowed(user, 'retail.discounts.approve') ? <RetailDiscounts user={user} /> : <Notice error>ليست لديك صلاحية عرض الاعتمادات.</Notice>} />
@@ -278,6 +269,7 @@ function Shell({ user, update, clear, theme, toggle }: {
             <Route path="/retail-finance" element={protect('reports.view', <RetailFinance user={user} />)} />
             <Route path="/retail-ledger" element={protect('retail.ledger.view', <RetailLedger user={user} />)} />
             <Route path="/wallet-report" element={protect('wallets.cash', <WalletReport user={user} />)} />
+            <Route path="/wallet-workspace" element={['wallets.view', 'wallets.cash'].some(permission => allowed(user, permission)) ? <WalletWorkspace user={user} /> : <Notice error>ليست لديك صلاحية عرض المحافظ.</Notice>} />
             <Route path="/wallet-reconciliation" element={protect('wallets.cash', <WalletReconciliation />)} />
             <Route path="/wallet-cashier" element={protect('wallets.view', <WalletCashier user={user} />)} />
             <Route path="/customers/:id/ledger" element={protect('customers.view', <CustomerLedger key={location.pathname} />)} />

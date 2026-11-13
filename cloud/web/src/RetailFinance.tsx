@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import type { FormEvent } from 'react'
 import { allowed, apiUrl, decimal, integer, money, readMoney, request } from './api'
 import type { User } from './api'
@@ -45,12 +45,13 @@ export function RetailFinance({ user }: { user: User }) {
   const canExport = allowed(user, 'retail.accountant.export')
   const selectedView = params.get('view')
   const view: View = selectedView === 'settlement' && canViewSettlement ? 'settlement' : selectedView === 'margin' && canViewMargin ? 'margin' : selectedView === 'valuation' && canViewMargin ? 'valuation' : selectedView === 'audit' && canAudit ? 'audit' : 'aging'
-  const [from, setFrom] = useState('')
-  const [to, setTo] = useState('')
-  const [side, setSide] = useState('receivable')
-  const [method, setMethod] = useState('')
-  const [status, setStatus] = useState('')
-  const [auditQuery, setAuditQuery] = useState('')
+  const from = params.get('from') ?? ''
+  const to = params.get('to') ?? ''
+  const side = params.get('side') === 'payable' ? 'payable' : 'receivable'
+  const method = params.get('method') ?? ''
+  const status = params.get('status') ?? ''
+  const shiftId = params.get('shift_id') ?? ''
+  const auditQuery = params.get('q') ?? ''
   const [page, setPage] = useState(1)
   const [total, setTotal] = useState(0)
   const [report, setReport] = useState<Report>()
@@ -59,6 +60,15 @@ export function RetailFinance({ user }: { user: User }) {
   const [batch, setBatch] = useState<Row[]>([])
   const [settlementAction, setSettlementAction] = useState<'batch' | 'reverse'>()
   const [revision, refresh] = useState(0)
+
+  function filter(key: string, value: string) {
+    const next = new URLSearchParams(params)
+    if (value) next.set(key, value)
+    else next.delete(key)
+    setParams(next, { replace: key === 'q' })
+    setPage(1)
+    setBatch([])
+  }
 
   useEffect(() => {
     if (view === 'valuation') return
@@ -72,6 +82,7 @@ export function RetailFinance({ user }: { user: User }) {
       if (to) query.set('to', to)
       if (view === 'settlement' && method) query.set('method', method)
       if (view === 'settlement' && status) query.set('status', status)
+      if (view === 'settlement' && /^\d+$/.test(shiftId)) query.set('shift_id', shiftId)
       if (view === 'audit' && auditQuery.trim()) query.set('q', auditQuery.trim())
     }
     request<Report | Row[]>(path + '?' + query, { signal: controller.signal }).then(result => {
@@ -81,7 +92,7 @@ export function RetailFinance({ user }: { user: User }) {
       }
     }).catch(error => { if (!controller.signal.aborted) setError(error.message) })
     return () => controller.abort()
-  }, [view, page, side, from, to, method, status, revision, auditQuery])
+  }, [view, page, side, from, to, method, status, shiftId, revision, auditQuery])
 
   function render(value: unknown, kind: Column[2]) {
     if (kind === 'money') return money(value)
@@ -94,6 +105,12 @@ export function RetailFinance({ user }: { user: User }) {
   }
   const columns = view === 'aging' ? agingColumns : view === 'settlement' ? settlementColumns : view === 'audit' ? auditColumns : marginColumns
   const totals = report?.totals
+  function document(row: Row) {
+    if (view === 'settlement' && row.invoice_id && allowed(user, 'invoices.view')) return '/invoices/' + row.invoice_id
+    if (view === 'aging' && row.source === 'invoice' && allowed(user, 'invoices.view')) return '/invoices/' + row.id
+    if (view === 'aging' && row.source === 'purchase' && allowed(user, 'suppliers.view')) return '/purchases/' + row.id + '/receipts'
+    return undefined
+  }
   function toggleBatch(row: Row) {
     const same = (item: Row) => item.operation_id === row.operation_id && item.source === row.source && item.position === row.position
     setBatch(items => items.some(same) ? items.filter(item => !same(item)) : [...items, row])
@@ -107,17 +124,18 @@ export function RetailFinance({ user }: { user: User }) {
   return <>
     <PageTitle title="تقارير مالية للمتجر" action={canExport && <a className="secondary" href={apiUrl('/retail/accountant.csv?' + exportQuery)}>حركات المتجر للمحاسب CSV</a>} />
     <div className="form-actions section-space" aria-label="التقرير المعروض">{(Object.keys(labels) as View[]).filter(name => name === 'aging' || name === 'settlement' && canViewSettlement || (name === 'margin' || name === 'valuation') && canViewMargin || name === 'audit' && canAudit).map(name =>
-      <button className={name === view ? 'primary' : 'secondary'} aria-pressed={name === view} key={name} onClick={() => { setPage(1); setParams({ view: name }) }}>{labels[name]}</button>)}</div>
+      <button className={name === view ? 'primary' : 'secondary'} aria-pressed={name === view} key={name} onClick={() => filter('view', name)}>{labels[name]}</button>)}</div>
     {view === 'valuation' ? <RetailInventoryValuation canFilter={allowed(user, 'categories.view')} /> : <section className="panel panel-inner form-section section-space"><h2>{labels[view]}</h2>
-      {view === 'aging' ? <label className="field">نوع الرصيد<select value={side} onChange={event => { setSide(event.target.value); setPage(1) }}>
+      {view === 'aging' ? <label className="field">نوع الرصيد<select value={side} onChange={event => filter('side', event.target.value)}>
         <option value="receivable">لنا · مستحقات العملاء</option><option value="payable">علينا · مستحقات الموردين</option></select></label> : <div className="form-grid">
-        <label className="field">من تاريخ<input type="date" value={from} onChange={event => { setFrom(event.target.value); setPage(1) }} /></label>
-        <label className="field">إلى تاريخ<input type="date" value={to} onChange={event => { setTo(event.target.value); setPage(1) }} /></label>
-        {view === 'settlement' && <label className="field">القناة<select value={method} onChange={event => { setMethod(event.target.value); setPage(1) }}>
+        <label className="field">من تاريخ<input type="date" value={from} onChange={event => filter('from', event.target.value)} /></label>
+        <label className="field">إلى تاريخ<input type="date" value={to} onChange={event => filter('to', event.target.value)} /></label>
+        {view === 'settlement' && <label className="field">القناة<select value={method} onChange={event => filter('method', event.target.value)}>
           <option value="">كل القنوات</option><option value="card">بطاقة</option><option value="wallet">محفظة</option><option value="bank_transfer">تحويل بنكي</option></select></label>}
-        {view === 'settlement' && <label className="field">حالة المطابقة<select value={status} onChange={event => { setStatus(event.target.value); setPage(1) }}>
+        {view === 'settlement' && <label className="field">حالة المطابقة<select value={status} onChange={event => filter('status', event.target.value)}>
           <option value="">كل الحالات</option><option value="pending">بانتظار المطابقة</option><option value="matched">مطابق</option></select></label>}
-        {view === 'audit' && <label className="field">الموظف أو الإجراء أو رقم السجل<input type="search" value={auditQuery} onChange={event => { setAuditQuery(event.target.value); setPage(1) }} /></label>}
+        {view === 'settlement' && shiftId && <button className="secondary" onClick={() => filter('shift_id', '')}>مسح فلتر الوردية {integer(Number(shiftId))}</button>}
+        {view === 'audit' && <label className="field">الموظف أو الإجراء أو رقم السجل<input type="search" value={auditQuery} onChange={event => filter('q', event.target.value)} /></label>}
       </div>}
       {view === 'settlement' && <p>قارن الحركات المسجّلة ومراجعها بكشف البنك أو المزود.</p>}
       {view === 'settlement' && batch.length > 0 && <div className="form-actions">
@@ -131,9 +149,10 @@ export function RetailFinance({ user }: { user: User }) {
       {totals && (Array.isArray(totals) ? <div className="metric-grid">{totals.map(row => <div className="panel metric" key={String(row.method)}><p>{render(row.method, 'method')}</p><strong>{money(row.net_minor)}</strong><p>وارد {money(row.received_minor)} · صادر {money(row.paid_out_minor)}</p></div>)}</div>
         : <div className="metric-grid">{Object.entries(totals).map(([key, value]) => <div className="panel metric" key={key}><p>{ages[key] ?? key}</p><strong>{money(value)}</strong></div>)}</div>)}
       {error ? <Notice error>{error}</Notice> : !report ? <Notice>جارٍ إعداد التقرير…</Notice> : !report.items.length ? <p>لا توجد سجلات في التقرير.</p> :
-        <div className="table-scroll"><table><thead><tr>{columns.map(([key, label]) => <th scope="col" key={key}>{label}</th>)}{view === 'settlement' && <th scope="col">مطابقة الكشف</th>}</tr></thead>
+        <div className="table-scroll" tabIndex={0} role="region" aria-label={labels[view]}><table><thead><tr>{columns.map(([key, label]) => <th scope="col" key={key}>{label}</th>)}{view === 'settlement' && <th scope="col">مطابقة الكشف</th>}</tr></thead>
           <tbody>{report.items.map((row, index) => <tr key={String(row.id ?? row.category_id ?? row.operation_id ?? index) + ':' + index}>
-            {columns.map(([key, , kind]) => <td key={key}>{render(row[key], kind)}</td>)}
+            {columns.map(([key, , kind]) => <td key={key}>{((view === 'aging' && key === 'id') || (view === 'settlement' && key === 'delta_minor')) && document(row)
+              ? <Link to={document(row)!}>{render(row[key], kind)}</Link> : render(row[key], kind)}</td>)}
             {view === 'settlement' && <td>{row.settlement_status === 'matched' ? <>
               <span>{`مطابق · ${String(row.statement_reference)} · ${String(row.statement_date)}`}</span>{' '}
               <button type="button" className="link-button" onClick={() => { setMatch(row); setSettlementAction('reverse') }}>اعكس المطابقة</button>

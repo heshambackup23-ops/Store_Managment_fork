@@ -12,13 +12,15 @@ const manage = 'retail.installations.manage'
 const perform = 'retail.installations.perform'
 const statusLabels: Record<string, string> = { scheduled: 'بانتظار الإسناد', assigned: 'مسند لفني', completed: 'تم التركيب',
   canceled: 'ملغى', returned: 'الجهاز مرتجع' }
-const actionLabels: Record<string, string> = { schedule: 'تعديل الموعد والإسناد', complete: 'إثبات التركيب', cancel: 'إلغاء الموعد' }
+const actionLabels: Record<string, string> = { schedule: 'تعديل الموعد والإسناد', deliver: 'إثبات التسليم', complete: 'إثبات التركيب', cancel: 'إلغاء الموعد' }
+const appointmentViews = { all: 'كل المواعيد', today: 'اليوم', overdue: 'متأخرة', unassigned: 'بانتظار الإسناد' }
 const isOpen = (row: Row) => row.status === 'scheduled' || row.status === 'assigned'
 const actionPath = (row: Row | undefined, action: string) => installations + '/' + idOf(row) + '/' + action
 
 function cairoDate() {
   const formatter = new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Cairo', year: 'numeric', month: '2-digit', day: '2-digit' })
-  return formatter.format(new Date())
+  const parts = formatter.formatToParts(new Date())
+  return ['year', 'month', 'day'].map(key => parts.find(part => part.type === key)?.value).join('-')
 }
 
 const schedule: Field[] = [
@@ -120,6 +122,9 @@ function InstallationDetail({ id, close, user }: { id: number; close: () => void
       {error && <Notice error>{error}</Notice>}
       {!detail && !error && <Notice>جارٍ التحميل…</Notice>}
       {detail && <>
+        <p className="retail-stat-list"><span className="retail-status">{statusLabels[String(detail.status)]}</span>
+          {isOpen(detail) && <strong>{!detail.assignee_id ? 'الخطوة التالية إسناد الموعد لفني'
+            : !detail.delivered_on ? 'الخطوة التالية إثبات التسليم' : 'الخطوة التالية إثبات التركيب'}</strong>}</p>
         <dl className="invoice-summary">
           <div><dt>الجهاز</dt><dd>{allowed(user, 'inventory.view') ? <Link to={'/retail-devices/' + detail.device_id}>{dataText(detail.product_name)}</Link> : dataText(detail.product_name)}</dd></div>
           <div><dt>عنوان التركيب</dt><dd>{dataText(detail.service_address)}</dd></div>
@@ -143,6 +148,10 @@ function InstallationDetail({ id, close, user }: { id: number; close: () => void
 
 export function RetailInstallations({ user }: { user: User }) {
   const [parameters, setParameters] = useSearchParams()
+  const canManage = allowed(user, manage)
+  const requestedView = parameters.get('view') ?? ''
+  const appointmentView = (requestedView in appointmentViews && (requestedView !== 'unassigned' || canManage))
+    ? requestedView as keyof typeof appointmentViews : 'all'
   const detail = Number(parameters.get('job'))
   const setDetail = (id?: number) => {
     const next = new URLSearchParams(parameters)
@@ -150,12 +159,20 @@ export function RetailInstallations({ user }: { user: User }) {
     else next.delete('job')
     setParameters(next)
   }
-  const canManage = allowed(user, manage)
+  function show(view: keyof typeof appointmentViews) {
+    const next = new URLSearchParams(parameters)
+    if (view === 'all') next.delete('view')
+    else next.set('view', view)
+    setParameters(next)
+  }
+  const path = appointmentView === 'unassigned' ? installations + '?status=scheduled' :
+    appointmentView === 'all' ? installations : installations + '?due=' + appointmentView
   const config: ModuleConfig = {
     title: 'مواعيد التركيب',
     description: 'احجز موعدًا لقطعة مبيعة، وأسندها لفني وسجّل إثبات التسليم والتركيب.',
-    endpoint: installations,
+    endpoint: path,
     permission: view,
+    empty: appointmentView === 'all' ? 'لا توجد مواعيد تركيب.' : 'لا توجد مواعيد في هذا العرض.',
     columns: [
       { key: 'invoice_id', label: 'الفاتورة', render: row => allowed(user, 'invoices.view')
         ? <Link to={'/invoices/' + row.invoice_id}>{dataText(row.invoice_id)}</Link> : dataText(row.invoice_id) },
@@ -163,7 +180,8 @@ export function RetailInstallations({ user }: { user: User }) {
       { key: 'customer_name', label: 'العميل' },
       { key: 'scheduled_on', label: 'الموعد', render: row => <>{formatDate(row.scheduled_on)} · <bdi>{dataText(row.scheduled_time)}</bdi></> },
       { key: 'assignee_name', label: 'الفني' },
-      { key: 'status', label: 'الحالة', render: row => statusLabels[String(row.status)] ?? '—' },
+      { key: 'status', label: 'الحالة', render: row => <span className="retail-status"
+        data-tone={isOpen(row) && String(row.scheduled_on) < cairoDate() ? 'attention' : undefined}>{statusLabels[String(row.status)] ?? '—'}</span> },
       { key: 'proof_reference', label: 'إثبات التركيب', render: row => <bdi>{dataText(row.proof_reference)}</bdi> },
     ],
     create: { label: 'احجز موعد تركيب', endpoint: () => installations, permission: manage },
@@ -179,7 +197,12 @@ export function RetailInstallations({ user }: { user: User }) {
     ],
   }
   return <>
-    <DataModule config={config} user={user} rowActions={row =>
+    <DataModule key={appointmentView} config={config} user={user}
+      extra={<div className="retail-switcher" role="group" aria-label="عرض مواعيد التركيب">
+        {Object.entries(appointmentViews).filter(([key]) => key !== 'unassigned' || canManage).map(([key, label]) =>
+          <button type="button" key={key} aria-pressed={key === appointmentView} className={key === appointmentView ? 'primary' : 'secondary'}
+            onClick={() => show(key as keyof typeof appointmentViews)}>{label}</button>)}
+      </div>} rowActions={row =>
       <button className="link-button" onClick={() => setDetail(Number(row.id))}>التفاصيل</button>}
       renderAction={props => props.action === config.create ? <ScheduleDialog {...props} /> : <ActionDialog {...props} />} />
     {Number.isSafeInteger(detail) && detail > 0 && <InstallationDetail id={detail} user={user} close={() => setDetail()} />}

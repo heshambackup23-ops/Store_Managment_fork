@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
+import { createPortal } from 'react-dom'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { allowed, apiUrl, decimal, formatDate, integer, money, readMoney, request } from './api'
+import { allowed, apiUrl, decimal, formatDate, integer, money, readMoney, request, RequestError } from './api'
 import type { User } from './api'
 import { activeColumn, activeField, countColumn, createAction, dateColumn, editAction, moneyColumn, numberColumn, RecordImageDialog, required } from './core'
 import { ActionDialog, DataModule, dataText, FormInput, idOf, Modal, Notice, PageTitle } from './ui'
@@ -15,6 +16,7 @@ import { BranchSelect } from './RetailBranches'
 import type { Tracking } from './RetailDevices'
 import { RetailReturns } from './RetailReturns'
 import { displayQuantity, formatQuantity, lineMinor, measurementLabel, quantityScale, quantityStep, stockQuantity, validQuantity } from './measurement'
+import './pos.css'
 
 const remaining = (row: Row, total: string) => Number(row[total]) - Number(row.paid_minor)
 const remainingColumn = (total: string): Column => ({ key: 'remaining', label: 'المتبقي', render: row => money(remaining(row, total)) })
@@ -143,26 +145,15 @@ const maintenanceFields: Field[] = [
   }, { name: 'notes', label: 'ملاحظات', kind: 'textarea' },
 ]
 
-export const walletTransaction: Action = {
-  label: 'تسجيل معاملة', permission: 'wallets.transact', financial: true,
+const walletAdjustmentEntry: Action = {
+  label: 'سجّل مصروفًا أو تسوية', permission: 'wallets.transact', financial: true,
   endpoint: row => '/wallets/' + idOf(row) + '/transactions',
   visible: row => Boolean(row.active),
   fields: [
-    { ...required('kind', 'نوع المعاملة', 'select'), options: options(['receive', 'send', 'expense', 'settlement_in', 'settlement_out']) },
+    { ...required('kind', 'نوع القيد', 'select'), options: options(['expense', 'settlement_in', 'settlement_out']) },
     required('amount_minor', 'المبلغ بالجنيه', 'money'),
-    { name: 'counterparty', label: 'رقم الطرف الآخر', visible: values => ['send', 'receive'].includes(values.kind) },
-    { name: 'provider_reference', label: 'مرجع العملية لدى المزود (اختياري)', visible: values => ['send', 'receive'].includes(values.kind) },
-    ...amounts({ commission_minor: 'العمولة بالجنيه (فارغ لاستخدام الإعداد)', fee_minor: 'رسوم المزود بالجنيه (فارغ لاستخدام الإعداد)' })
-      .map(field => ({ ...field, visible: (values: Record<string, string>) => ['send', 'receive'].includes(values.kind) })), notes,
-    { ...reference('deferred_customer', 'العميل للسداد الآجل', '/customers'), nullable: false, visible: values => values.kind === 'send' },
-    { name: 'deferred_date', label: 'تاريخ استحقاق المبلغ الآجل', kind: 'date', visible: values => values.kind === 'send' && Boolean(values.deferred_customer) },
+    { ...notes, required: true },
   ],
-  transform(body) {
-    const { deferred_customer, deferred_date, ...transaction } = body
-    if (deferred_customer && transaction.kind !== 'send') throw new Error('يمكن تسجيل مبلغ آجل لعملية الإرسال فقط.')
-    if (!deferred_customer) return transaction
-    return { ...transaction, deferred: { customer_id: deferred_customer, due_date: deferred_date } }
-  },
 }
 
 const repairProgress = [
@@ -328,12 +319,12 @@ export const businessModules: Record<string, ModuleConfig> = {
   wallets: {
     title: 'المحافظ', description: 'أرصدة المحافظ وحدودها والمعاملات المسجلة.', endpoint: '/wallets', permission: 'wallets.view', searchable: false,
     columns: [numberColumn, { key: 'name', label: 'المحفظة' }, { key: 'provider', label: 'المزود', render: row => walletProviderLabel(row.provider) },
-      moneyColumn('balance_minor', 'الرصيد'), moneyColumn('transaction_limit_minor', 'حد المعاملة'), activeColumn],
+      moneyColumn('balance_minor', 'رصيد المحفظة لدى المزود'), moneyColumn('transaction_limit_minor', 'حد المعاملة'), activeColumn],
     create: {
       ...createAction('إضافة محفظة', '/wallets', 'wallets.manage', [...walletFields, { name: 'opening_minor', label: 'الرصيد الافتتاحي بالجنيه', kind: 'money' }], true),
       transform: walletProfile,
     },
-    actions: [walletTransaction, walletAdjustment, { ...editAction('/wallets', 'wallets.manage', [...walletFields, activeField]), transform: walletProfile }],
+    actions: [walletAdjustmentEntry, walletAdjustment, { ...editAction('/wallets', 'wallets.manage', [...walletFields, activeField]), transform: walletProfile }],
   },
   'wallet-transactions': {
     title: 'حركات المحافظ', description: 'سجل التحويلات والمصروفات والتسويات والحركات العكسية.', endpoint: '/wallet-transactions', permission: 'wallets.view', searchable: false,
@@ -497,6 +488,8 @@ export function CommerceModule({ name, user }: { name: string; user: User }) {
       </form> : undefined}
       rowActions={isInvoice
         ? row => <Link className="link-button" to={'/invoices/' + idOf(row)}>عرض وطباعة</Link>
+        : name === 'wallets' && allowed(user, 'wallets.transact') ? row => Boolean(row.active)
+          ? <Link className="link-button" to={'/wallet-cashier?wallet_id=' + idOf(row)}>إيداع أو سحب للعميل</Link> : null
         : name === 'suppliers' ? row => <Link className="link-button" to={'/suppliers/' + idOf(row)}>حساب المورد</Link>
         : hasImages ? row => <>
           {name === 'damaged'
@@ -527,7 +520,63 @@ async function searchPosProducts(branch: number, term = '', signal?: AbortSignal
 }
 
 type CartItem = { id: number; name: string; stock: number; price: number; quantity: number; quantityDraft?: string;
-  scale: number; tracking?: Tracking; deviceIds?: number[]; discount?: string }
+  scale: number; tracking?: Tracking; deviceIds?: number[]; discount?: string; packSize?: number }
+
+type ReceiptFormat = '58' | '80' | 'a4'
+type SaleReceipt = {
+  store: string; branch: string; date: string; total: number; paid: number; change: number;
+  lines: { name: string; quantity: number; scale: number; total: number; discount: number; price: number }[];
+  methods: { method: keyof typeof tenderLabels; amount_minor: number }[];
+}
+type SaleInput = {
+  customer_id?: number; branch_id: number;
+  items: { product_id: number; quantity: number; device_ids?: number[]; unit_discount_minor?: number }[];
+  paid_minor: number; shift_id?: number; payments?: ReturnType<typeof tendersForAmount>;
+  expected_total_minor: number; discount_request_id?: number; invoice_date?: string; due_date?: string; notes?: string; reason?: string;
+}
+type PendingSale = { key: string; body: SaleInput; receipt: SaleReceipt }
+
+function readPendingSale(storageKey: string): PendingSale | undefined {
+  try {
+    const saved = JSON.parse(sessionStorage.getItem(storageKey) ?? 'null') as PendingSale | null
+    if (saved && typeof saved.key === 'string' && Array.isArray(saved.body?.items) && saved.body.items.length
+      && saved.receipt?.lines?.length === saved.body.items.length) return saved
+  } catch { /* Session storage can be unavailable. */ }
+}
+
+function receiptPending(error: unknown, retry: boolean) {
+  return !(error instanceof RequestError) || !error.code || error.status < 400 || error.status >= 500
+    || [401, 408, 425, 429].includes(error.status)
+    || (retry && [403, 404].includes(error.status))
+    || (error.status === 409 && ['idempotency_conflict', 'operation_in_progress'].includes(error.code.toLowerCase()))
+}
+
+function SaleReceiptPreview({ id, receipt, close }: { id: number; receipt: SaleReceipt; close: () => void }) {
+  const [format, setFormat] = useState<ReceiptFormat>('80')
+  return createPortal(<Modal title="معاينة إيصال البيع" close={close}>
+    <div className="pos-receipt-controls no-print">
+      <label className="field">مقاس الورق<select value={format} onChange={event => setFormat(event.target.value as ReceiptFormat)}>
+        <option value="58">حراري 58 مم</option><option value="80">حراري 80 مم</option><option value="a4">A4</option>
+      </select></label>
+      <button type="button" className="primary" onClick={() => window.print()}>طباعة الإيصال</button>
+    </div>
+    <article className={'printable pos-receipt pos-receipt-' + format} dir="rtl">
+      <header><h3>{receipt.store}</h3><p>إيصال بيع رقم <bdi>{integer(id)}</bdi></p><p>{receipt.branch} · {formatDate(receipt.date)}</p></header>
+      <table>
+        <thead><tr><th scope="col">الصنف</th><th scope="col">الكمية</th><th scope="col">المبلغ</th></tr></thead>
+        <tbody>{receipt.lines.map((line, index) => <tr key={index}><td>{line.name}{line.discount > 0 && <small>خصم {money(line.discount)}</small>}</td>
+          <td>{formatQuantity(line.quantity, line.scale)}</td><td><bdi>{money(line.total)}</bdi></td></tr>)}</tbody>
+      </table>
+      <dl>
+        <div><dt>الإجمالي</dt><dd>{money(receipt.total)}</dd></div>
+        {receipt.methods.map((method, index) => <div key={index}><dt>{tenderLabels[method.method]}</dt><dd>{money(method.amount_minor)}</dd></div>)}
+        <div><dt>المدفوع</dt><dd>{money(receipt.paid)}</dd></div>
+        {receipt.total > receipt.paid && <div><dt>المتبقي</dt><dd>{money(receipt.total - receipt.paid)}</dd></div>}
+        {receipt.change > 0 && <div><dt>الباقي للعميل</dt><dd>{money(receipt.change)}</dd></div>}
+      </dl>
+    </article>
+  </Modal>, document.body)
+}
 
 function unitDiscount(item: CartItem) {
   if (!item.discount?.trim()) return 0
@@ -538,6 +587,12 @@ function unitDiscount(item: CartItem) {
 
 export function Pos({ user }: { user: User }) {
   const { invoiceId } = useParams()
+  return <PosSession key={user.id + ':' + (invoiceId ?? 'sale')} user={user} invoiceId={invoiceId} />
+}
+
+function PosSession({ user, invoiceId }: { user: User; invoiceId?: string }) {
+  const storageKey = 'helal-pos-pending-v1:' + user.id + ':' + (invoiceId ?? 'sale')
+  const [pendingSale, setPendingSale] = useState(() => readPendingSale(storageKey))
   const [original, setOriginal] = useState<Invoice>()
   const [reissueLoaded, setReissueLoaded] = useState(false)
   const [reissueReason, setReissueReason] = useState('')
@@ -546,25 +601,38 @@ export function Pos({ user }: { user: User }) {
   const [invoiceNotes, setInvoiceNotes] = useState('')
   const [products, setProducts] = useState<Row[]>([])
   const [query, setQuery] = useState('')
-  const [cart, setCart] = useState<CartItem[]>([])
-  const [selectedBranch, setSelectedBranch] = useState(1)
+  const [cart, setCartState] = useState<CartItem[]>([])
+  const cartRef = useRef<CartItem[]>([])
+  const [selectedBranch, setSelectedBranch] = useState(() => Number(pendingSale?.body.branch_id || 1))
   const [customer, setCustomer] = useState('')
   const [paid, setPaid] = useState('')
+  const [cashReceived, setCashReceived] = useState('')
   const [tenders, setTenders] = useState([blankTender()])
   const [checkoutMode, setCheckoutMode] = useState('full')
   const [searching, setSearching] = useState(false)
   const [submitting, setSubmitting] = useState(false)
+  const [checkingStock, setCheckingStock] = useState(false)
+  const [stockConflict, setStockConflict] = useState(false)
   const [error, setError] = useState('')
-  const [lastInvoice, setLastInvoice] = useState<number>()
+  const [sale, setSale] = useState<{ id: number; receipt: SaleReceipt }>()
+  const [showReceipt, setShowReceipt] = useState(false)
+  const [storeName, setStoreName] = useState('هلال لإدارة المتجر')
+  const [searchStatus, setSearchStatus] = useState('')
+  const [scanErrors, setScanErrors] = useState<string[]>([])
   const [discountRequest, setDiscountRequest] = useState('')
   const [discountReason, setDiscountReason] = useState('')
   const [discountNotice, setDiscountNotice] = useState('')
-  const navigate = useNavigate()
+  const searchInput = useRef<HTMLInputElement>(null)
+  const searchQueue = useRef<string[]>([])
+  const searchRun = useRef<AbortController>(undefined)
+  const catalogRun = useRef<AbortController>(undefined)
+  const saleInFlight = useRef(false)
+  const cartSection = useRef<HTMLDivElement>(null)
   const shiftContext = useOpenShift(user)
-  const branch = Number(original?.branch_id || shiftContext.shift?.branch_id || selectedBranch)
+  const branch = Number(pendingSale?.body.branch_id || original?.branch_id || shiftContext.shift?.branch_id || selectedBranch)
   const canDiscount = allowed(user, 'invoices.discount')
   const invalidQuantity = cart.some(item => !validQuantity(Number(item.quantityDraft ?? displayQuantity(item.quantity, item.scale)), item.scale)
-    || item.quantity > item.stock)
+    || item.quantity > item.stock || (item.tracking !== 'quantity' && item.quantity > 200))
   let total = 0
   let invalidDiscount = false
   try { total = cart.reduce((sum, line) => sum + lineMinor(line.price - unitDiscount(line), line.quantity, line.scale), 0) }
@@ -572,14 +640,53 @@ export function Pos({ user }: { user: User }) {
   const hasDiscount = !invalidDiscount && cart.some(line => unitDiscount(line) > 0)
   const canViewCatalog = allowed(user, 'products.view')
   const canSell = allowed(user, 'invoices.create') && (!invoiceId || canViewCatalog && allowed(user, 'invoices.refund') && allowed(user, 'invoices.view'))
+  const canViewInvoice = allowed(user, 'invoices.view')
+  const disabled = submitting || Boolean(pendingSale)
+
+  function setCart(update: CartItem[] | ((items: CartItem[]) => CartItem[])) {
+    const items = typeof update === 'function' ? update(cartRef.current) : update
+    cartRef.current = items
+    setCartState(items)
+  }
+
+  function rememberSale(value?: PendingSale) {
+    setPendingSale(value)
+    try {
+      if (value) sessionStorage.setItem(storageKey, JSON.stringify(value))
+      else sessionStorage.removeItem(storageKey)
+    } catch { /* The exact operation remains available in memory. */ }
+  }
+
+  function focusSearch() {
+    requestAnimationFrame(() => searchInput.current?.focus({ preventScroll: true }))
+  }
 
   useEffect(() => {
     if (!canSell || shiftContext.loading) return
     const controller = new AbortController()
-    searchPosProducts(branch, '', controller.signal).then(setProducts)
+    catalogRun.current = controller
+    searchPosProducts(branch, '', controller.signal).then(rows => { if (!controller.signal.aborted) setProducts(rows) })
       .catch(error => { if (!controller.signal.aborted) setError(error.message) })
-    return () => controller.abort()
+    return () => {
+      controller.abort()
+      searchRun.current?.abort()
+      searchQueue.current.length = 0
+    }
   }, [canSell, branch, shiftContext.loading])
+
+  useEffect(() => {
+    if (!canSell || !allowed(user, 'settings.view')) return
+    const controller = new AbortController()
+    request<Row>('/settings', { signal: controller.signal }).then(({ data }) => {
+      if (!controller.signal.aborted && typeof data.store_name === 'string' && data.store_name) setStoreName(data.store_name)
+    }).catch(() => { /* Use the default receipt name when settings are unavailable. */ })
+    return () => controller.abort()
+  }, [canSell, user])
+
+  useEffect(() => {
+    if (canSell && !invoiceId && !shiftContext.loading && !readPendingSale(storageKey)
+      && document.activeElement === document.body && matchMedia('(pointer: fine)').matches) focusSearch()
+  }, [canSell, invoiceId, shiftContext.loading, storageKey])
 
   useEffect(() => {
     if (!canSell || !invoiceId) return
@@ -608,7 +715,7 @@ export function Pos({ user }: { user: User }) {
             return [{
               id: Number(product.id), name: String(product.name), price: Number(product.price_minor),
               stock: Number(product.stock) + quantity, quantity, scale: quantityScale(line.quantity_scale),
-              tracking: trackingOf(product.tracking),
+              tracking: trackingOf(product.tracking), packSize: Number(product.units_per_pack) || undefined,
             }]
           })
           setCart(editableLines)
@@ -629,46 +736,177 @@ export function Pos({ user }: { user: User }) {
     return Number(product.stock) + Number(originalLine?.quantity || 0)
   }
 
-  function add(product: Row, units?: number) {
-    setError('')
-    setLastInvoice(undefined)
+  function add(product: Row, units?: number, deviceId?: number) {
     const id = Number(product.id)
     const stock = availableStock(product)
     const price = Number(product.price_minor)
     const scale = quantityScale(product.quantity_scale)
-    if (!Number.isSafeInteger(id) || !Number.isSafeInteger(stock) || !Number.isSafeInteger(price) || stock < 1) {
-      setError('المنتج غير متاح في المخزون.')
-      return
-    }
-    const line = cart.find(item => item.id === id)
-    const increase = units ?? Math.min(scale, stock - (line?.quantity ?? 0))
-    if (increase < 1 || (line?.quantity ?? 0) + increase > stock) {
-      setError('الكمية المطلوبة تتجاوز المخزون المتاح.')
-      return
-    }
-    setCart(items => line ? items.map(item => item.id === id ? { ...item, quantity: item.quantity + increase, quantityDraft: undefined, price, stock } : item)
-      : [...items, { id, stock, price, name: String(product.name), quantity: increase, scale, tracking: trackingOf(product.tracking), deviceIds: [] }])
+    const tracking = trackingOf(product.tracking)
+    const packSize = Number(product.units_per_pack) || undefined
+    const line = cartRef.current.find(item => item.id === id)
+    const deviceIds = line?.deviceIds ?? []
+    if (!Number.isSafeInteger(id) || !Number.isSafeInteger(stock) || !Number.isSafeInteger(price) || stock < 1) return 'المنتج غير متاح في المخزون.'
+    if (!line && cartRef.current.length >= 40) return 'تضم الفاتورة 40 صنفًا. احذف صنفًا أو افتح فاتورة أخرى.'
+    if (deviceId && deviceIds.includes(deviceId)) return 'هذا الجهاز محدد بالفعل في الفاتورة.'
+    const quantity = deviceId ? Math.max(line?.quantity ?? 0, deviceIds.length + 1)
+      : (line?.quantity ?? 0) + (units ?? Math.min(scale, stock - (line?.quantity ?? 0)))
+    if (quantity > stock || (!deviceId && quantity <= (line?.quantity ?? 0))) return 'الكمية المطلوبة تتجاوز المخزون المتاح.'
+    if (!validQuantity(displayQuantity(quantity, scale), scale) || (tracking !== 'quantity' && quantity > 200)) return 'الكمية تتجاوز الحد المسموح للصنف في الفاتورة.'
+    const next = { ...line, id, stock, price, name: String(product.name), quantity, quantityDraft: undefined, scale, tracking, packSize,
+      deviceIds: deviceId ? [...deviceIds, deviceId] : deviceIds }
+    setCart(items => line ? items.map(item => item.id === id ? next : item) : [...items, next])
+    setSale(undefined)
+    setSearchStatus('أضيف إلى الفاتورة · ' + next.name + ' · ' + formatQuantity(quantity, scale))
   }
 
-  async function search(event: FormEvent) {
+  function addFromCatalog(product: Row, units?: number) {
+    const issue = add(product, units)
+    setScanErrors(issue ? [String(product.name) + ' · ' + issue] : [])
+    focusSearch()
+  }
+
+  async function search(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    if (searching || submitting || shiftContext.loading) return
+    if (saleInFlight.current || disabled || shiftContext.loading || Boolean(invoiceId && !reissueLoaded)) return
+    const input = searchInput.current
+    if (!input) return
+    const term = input.value.trim()
+    if (searchQueue.current.length >= 30) {
+      setScanErrors(errors => [...errors.slice(-9), 'قائمة المسح ممتلئة. انتظر ثم أعد مسح الرقم الظاهر.'])
+      return
+    }
+    searchQueue.current.push(term)
+    input.value = ''
+    setQuery('')
+    input.focus({ preventScroll: true })
+    if (searchRun.current) return
+    const controller = new AbortController()
+    searchRun.current = controller
+    catalogRun.current?.abort()
     setSearching(true)
+    setScanErrors([])
+    setSearchStatus('جارٍ البحث…')
+    try {
+      while (searchQueue.current.length && !controller.signal.aborted) {
+        const code = searchQueue.current.shift()!
+        try {
+          const found = await searchPosProducts(branch, code, controller.signal)
+          if (controller.signal.aborted) return
+          setProducts(found)
+          const exact = code && found.find(row => row.barcode === code || row.pack_barcode === code)
+          let issue: string | undefined
+          if (exact) issue = add(exact, exact.pack_barcode === code ? Number(exact.units_per_pack) : undefined)
+          else if (code) {
+            const params = new URLSearchParams({ branch_id: String(branch), code })
+            const { data: device } = await request<{ id: number; product_id: number } | null>('/retail/devices/pos-scan?' + params, { signal: controller.signal })
+            if (controller.signal.aborted) return
+            if (device) {
+              const [product] = await searchPosProducts(branch, '', controller.signal, device.product_id)
+              if (controller.signal.aborted) return
+              issue = product ? add(product, undefined, device.id) : 'الصنف المرتبط بهذا الجهاز غير متاح.'
+            } else if (found.length) setSearchStatus('نتائج البحث عن «' + code + '» · ' + integer(found.length))
+            else issue = 'لا يوجد صنف أو جهاز متاح بهذا الرمز في الفرع.'
+          } else setSearchStatus('كتالوج الفرع')
+          if (issue) setScanErrors(errors => [...errors.slice(-9), code + ' · ' + issue])
+        } catch (error) {
+          if (controller.signal.aborted) return
+          setScanErrors(errors => [...errors.slice(-9), (code ? code + ' · ' : '') + (error instanceof Error ? error.message : 'تعذر البحث.')])
+        }
+      }
+    } finally {
+      if (searchRun.current === controller) {
+        searchRun.current = undefined
+        setSearching(false)
+      }
+    }
+  }
+
+  function restoreSale(sale: PendingSale) {
+    const { body, receipt } = sale
+    if (!cartRef.current.length) setCart(body.items.map((item, index) => {
+      const line = receipt.lines[index]
+      return { id: item.product_id, name: line.name, quantity: line.quantity, scale: line.scale, price: line.price,
+        stock: line.quantity, deviceIds: item.device_ids, tracking: item.device_ids?.length ? 'serial' : 'quantity',
+        discount: item.unit_discount_minor ? decimal(item.unit_discount_minor) : undefined }
+    }))
+    setSelectedBranch(body.branch_id)
+    setCheckoutMode(body.paid_minor < body.expected_total_minor ? 'partial' : 'full')
+    setPaid(decimal(body.paid_minor))
+    setCustomer(body.customer_id ? String(body.customer_id) : '')
+    setDocumentDate(body.invoice_date ?? '')
+    setDueDate(body.due_date ?? '')
+    setInvoiceNotes(body.notes ?? '')
+    setReissueReason(body.reason ?? '')
+    setDiscountRequest(body.discount_request_id ? String(body.discount_request_id) : '')
+    setTenders(body.payments?.length ? body.payments.map(row => ({ method: row.method, amount: decimal(row.amount_minor), reference: row.reference ?? '' })) : [blankTender()])
+  }
+
+  async function submitSale(sale: PendingSale, retry = false) {
+    if (saleInFlight.current) return
+    saleInFlight.current = true
+    setSubmitting(true)
+    setError('')
+    rememberSale(sale)
+    try {
+      const endpoint = invoiceId ? '/invoices/' + encodeURIComponent(invoiceId) + '/reissue' : '/invoices'
+      const { data } = await request<{ id: number }>(endpoint, {
+        method: 'POST', financial: true, idempotencyKey: sale.key, body: sale.body,
+      })
+      if (!Number.isSafeInteger(data?.id) || data.id < 1) throw new Error('تعذر قراءة رقم الفاتورة من الخادم.')
+      rememberSale()
+      setCart([])
+      setCustomer('')
+      setPaid('')
+      setCashReceived('')
+      setTenders([blankTender()])
+      setDocumentDate('')
+      setDueDate('')
+      setInvoiceNotes('')
+      setDiscountRequest(''); setDiscountReason(''); setDiscountNotice('')
+      setCheckoutMode('full')
+      setScanErrors([])
+      setSearchStatus('')
+      setReissueLoaded(false)
+      setSale({ id: data.id, receipt: sale.receipt })
+      const sold = new Map(sale.body.items.map((item, index) => [item.product_id, sale.receipt.lines[index].quantity]))
+      setProducts(previous => previous.map(product => {
+        const quantity = sold.get(Number(product.id))
+        return quantity ? { ...product, stock: Math.max(0, Number(product.stock) - quantity) } : product
+      }))
+      focusSearch()
+    } catch (error) {
+      setError(error instanceof Error ? error.message : 'تعذر تأكيد الفاتورة.')
+      if (!receiptPending(error, retry)) {
+        const restored = !cartRef.current.length
+        restoreSale(sale)
+        rememberSale()
+        setStockConflict(restored || (error instanceof RequestError && error.status === 409))
+      }
+    } finally {
+      saleInFlight.current = false
+      setSubmitting(false)
+    }
+  }
+
+  async function refreshCartStock() {
+    setCheckingStock(true)
     setError('')
     try {
-      const term = query.trim()
-      const found = await searchPosProducts(branch, term)
-      setProducts(found)
-      const exact = term && found.find(row => row.barcode === term || row.pack_barcode === term)
-      if (exact) { add(exact, exact.pack_barcode === term ? Number(exact.units_per_pack) : undefined); setQuery('') }
-    } catch (error) { setError(error instanceof Error ? error.message : 'تعذر البحث عن المنتجات.') }
-    finally { setSearching(false) }
+      const updated = await Promise.all(cart.map(async item => {
+        const [product] = await searchPosProducts(branch, '', undefined, item.id)
+        return product ? { ...item, stock: availableStock(product), price: Number(product.price_minor),
+          tracking: trackingOf(product.tracking), packSize: Number(product.units_per_pack) || undefined } : { ...item, stock: 0 }
+      }))
+      setCart(updated)
+      setStockConflict(false)
+      setError('حُدّث السعر والمخزون. راجع المبلغ والكميات والأجهزة قبل التأكيد.')
+    } catch (error) { setError(error instanceof Error ? error.message : 'تعذّر تحديث المخزون.') }
+    finally { setCheckingStock(false) }
   }
 
-  async function checkout(event: FormEvent) {
+  function checkout(event: FormEvent) {
     event.preventDefault()
-    if (!cart.length || submitting || shiftContext.loading || (invoiceId && !reissueLoaded)) return
-    setSubmitting(true)
+    if (!cart.length || saleInFlight.current || searchRun.current || disabled || stockConflict || shiftContext.loading || (invoiceId && !reissueLoaded)) return
     setError('')
     try {
       const amount = checkoutMode === 'full' ? total : readMoney(paid)
@@ -679,54 +917,42 @@ export function Pos({ user }: { user: User }) {
       if (amount > total) throw new Error('المبلغ المدفوع يتجاوز إجمالي الفاتورة.')
       if (amount < total && (!Number.isSafeInteger(customerId) || Number(customerId) < 1)) throw new Error('اختر عميلًا لتسجيل المبلغ المتبقي.')
       if (shiftContext.required && !shiftContext.shift) throw new Error('افتح وردية قبل تسجيل البيع.')
+      if (shiftContext.error) throw new Error('تعذّر التحقق من حالة الوردية. حدّث الصفحة قبل تسجيل البيع.')
       if (cart.some(item => item.tracking && item.tracking !== 'quantity' && item.deviceIds?.length !== item.quantity)) {
         throw new Error('حدد رقم كل قطعة متتبعة قبل تأكيد البيع.')
       }
-      const endpoint = invoiceId ? '/invoices/' + encodeURIComponent(invoiceId) + '/reissue' : '/invoices'
-      await request<{ id: number }>(endpoint, {
-        method: 'POST', financial: true,
-        body: {
-          customer_id: customerId,
-          branch_id: branch,
-          items: cart.map(item => ({ product_id: item.id, quantity: displayQuantity(item.quantity, item.scale), device_ids: item.deviceIds?.length ? item.deviceIds : undefined,
-            unit_discount_minor: canDiscount ? unitDiscount(item) || undefined : undefined })),
-          paid_minor: amount,
-          ...(shiftContext.shift ? { shift_id: shiftContext.shift.id, payments: tendersForAmount(tenders, amount) } : {}),
-          expected_total_minor: total,
-          discount_request_id: hasDiscount && discountRequest.trim() ? Number(discountRequest) : undefined,
-          invoice_date: documentDate || undefined,
-          due_date: amount < total ? dueDate || undefined : undefined,
-          notes: invoiceNotes.trim() || undefined,
-          ...(invoiceId ? { reason: reissueReason.trim() } : {}),
-        },
-      }).then(result => {
-        const sold = new Map(cart.map(item => [item.id, item.quantity]))
-        setProducts(previous => previous.map(product => {
-          const quantity = sold.get(Number(product.id))
-          return quantity ? { ...product, stock: Math.max(0, Number(product.stock) - quantity) } : product
-        }))
-        setCart([])
-        setCustomer('')
-        setPaid('')
-        setTenders([blankTender()])
-        setDocumentDate('')
-        setDueDate('')
-        setInvoiceNotes('')
-        setDiscountRequest(''); setDiscountReason(''); setDiscountNotice('')
-        setCheckoutMode('full')
-        setLastInvoice(result.data.id)
-        if (allowed(user, 'invoices.view')) navigate('/invoices/' + result.data.id)
-      })
-      if (!allowed(user, 'invoices.view')) {
-        searchPosProducts(branch).then(setProducts)
-          .catch(() => { /* The confirmed sale remains valid if refreshing the catalog fails. */ })
+      const payments = shiftContext.shift ? tendersForAmount(tenders, amount) : undefined
+      const cashDue = payments?.filter(row => row.method === 'cash').reduce((sum, row) => sum + row.amount_minor, 0) ?? amount
+      const received = cashDue > 0 && cashReceived.trim() ? readMoney(cashReceived) : cashDue
+      if (received < cashDue) throw new Error('النقد المستلم أقل من حصة النقد في هذه الفاتورة.')
+      const body: SaleInput = {
+        customer_id: customerId,
+        branch_id: branch,
+        items: cart.map(item => ({ product_id: item.id, quantity: displayQuantity(item.quantity, item.scale), device_ids: item.deviceIds?.length ? item.deviceIds : undefined,
+          unit_discount_minor: canDiscount ? unitDiscount(item) || undefined : undefined })),
+        paid_minor: amount,
+        ...(shiftContext.shift ? { shift_id: shiftContext.shift.id, payments } : {}),
+        expected_total_minor: total,
+        discount_request_id: hasDiscount && discountRequest.trim() ? Number(discountRequest) : undefined,
+        invoice_date: documentDate || undefined,
+        due_date: amount < total ? dueDate || undefined : undefined,
+        notes: invoiceNotes.trim() || undefined,
+        ...(invoiceId ? { reason: reissueReason.trim() } : {}),
       }
+      const receipt: SaleReceipt = {
+        store: storeName, branch: shiftContext.shift?.branch_name || 'الفرع ' + integer(branch), date: documentDate || cairoDate(),
+        total, paid: amount, change: received - cashDue,
+        lines: cart.map(item => ({ name: item.name, quantity: item.quantity, scale: item.scale, price: item.price,
+          total: lineMinor(item.price - unitDiscount(item), item.quantity, item.scale),
+          discount: lineMinor(item.price, item.quantity, item.scale) - lineMinor(item.price - unitDiscount(item), item.quantity, item.scale) })),
+        methods: payments?.map(({ method, amount_minor }) => ({ method, amount_minor })) ?? [],
+      }
+      void submitSale({ key: crypto.randomUUID(), body, receipt })
     } catch (error) { setError(error instanceof Error ? error.message : 'تعذر تأكيد الفاتورة.') }
-    finally { setSubmitting(false) }
   }
 
   async function requestDiscount() {
-    if (submitting || !hasDiscount || !discountReason.trim()) return
+    if (disabled || !hasDiscount || !discountReason.trim()) return
     setSubmitting(true); setError(''); setDiscountNotice('')
     try {
       const result = await request<{ id: number }>('/retail/discounts', { method: 'POST', financial: true, body: {
@@ -739,105 +965,197 @@ export function Pos({ user }: { user: User }) {
     finally { setSubmitting(false) }
   }
 
-  let due = total
-  let paidNow = 0
-  try { due = checkoutMode === 'full' ? 0 : Math.max(0, total - readMoney(paid)) } catch { /* Wait for a valid amount. */ }
-  try { paidNow = checkoutMode === 'full' ? total : readMoney(paid) } catch { /* Wait for a valid amount. */ }
+  let paidNow = checkoutMode === 'full' ? total : 0
+  let invalidPaid = false
+  try { if (checkoutMode === 'partial' && paid.trim()) paidNow = readMoney(paid) }
+  catch { invalidPaid = true }
+  const due = Math.max(0, total - paidNow)
+  const mixed = tenders.length > 1
+  const tenderMethod = mixed ? 'mixed' : tenders[0].method
+  const tenderAmounts = tenders.map(row => {
+    try { return readMoney(row.amount) } catch { return undefined }
+  })
+  const allocated = tenderAmounts.reduce<number>((sum, value) => sum + (value ?? 0), 0)
+  const cashDue = mixed ? tenders.reduce((sum, row, index) => sum + (row.method === 'cash' ? tenderAmounts[index] ?? 0 : 0), 0)
+    : (!shiftContext.shift || tenderMethod === 'cash' ? paidNow : 0)
+  let received = cashDue
+  let invalidReceived = false
+  try { if (cashDue > 0 && cashReceived.trim()) received = readMoney(cashReceived) }
+  catch { invalidReceived = true }
+  const lastUnallocated = tenderAmounts.findIndex(value => value === undefined)
+  const deviceMissing = cart.some(item => item.tracking !== 'quantity' && item.tracking && item.deviceIds?.length !== item.quantity)
+  const lockInputs = disabled || checkingStock || Boolean(invoiceId && !reissueLoaded)
+  const checkoutBlocked = !cart.length || lockInputs || searching || invalidQuantity || invalidDiscount || invalidPaid || invalidReceived
+    || received < cashDue || paidNow > total || Boolean(mixed && paidNow > 0 && shiftContext.shift && (allocated !== paidNow || tenderAmounts.some(value => !value)))
+    || shiftContext.loading || Boolean(shiftContext.error || (shiftContext.required && !shiftContext.shift)) || stockConflict
+
+  function nextSale() {
+    setSale(undefined)
+    setQuery('')
+    focusSearch()
+  }
+
+  function showCart() {
+    cartSection.current?.scrollIntoView({ block: 'start' })
+    cartSection.current?.focus({ preventScroll: true })
+  }
 
   return (
-    <>
+    <div className="helal-pos">
       <PageTitle title={invoiceId ? 'تعديل الفاتورة ' + invoiceId : 'نقطة البيع'} description={invoiceId
         ? 'راجع البنود والأسعار الحالية. ينعكس القيد الأصلي عند نجاح إصدار البديل.'
-        : 'ابحث عن منتج أو امسح الباركود لتسجيل البيع.'} />
-      {!canSell ? <Notice error>ليست لديك صلاحية إنشاء فاتورة.</Notice> : (
-        <>
+        : undefined} />
+      {!canSell ? <Notice error>ليست لديك صلاحية إنشاء فاتورة.</Notice> : pendingSale ? (
+        <section className="panel panel-inner form-section pos-recovery" aria-labelledby="pos-recovery-title">
+          <h2 id="pos-recovery-title">{submitting ? 'جارٍ تأكيد الفاتورة…' : 'نتيجة الفاتورة قيد التحقق'}</h2>
           {error && <Notice error>{error}</Notice>}
-          {lastInvoice && <Notice>تم تسجيل الفاتورة رقم {integer(lastInvoice)}.</Notice>}
-          <BranchSelect label="فرع البيع" value={branch} disabled={Boolean(invoiceId || shiftContext.shift || shiftContext.loading || submitting || searching)}
-            set={id => { setSelectedBranch(id); setProducts([]); setCart([]); setDiscountRequest(''); setLastInvoice(undefined) }} />
+          <p>{pendingSale.receipt.branch} · {integer(pendingSale.receipt.lines.length)} صنف · <strong>{money(pendingSale.receipt.total)}</strong></p>
+          {!submitting && <p>تحقّق من نفس العملية قبل تسجيل بيع آخر. تستخدم إعادة المحاولة البيانات ومفتاح الحفظ الأصليين.</p>}
+          <div className="form-actions">
+            <button type="button" className="primary" disabled={submitting} onClick={() => void submitSale(pendingSale, true)}>تحقّق وأعد المحاولة</button>
+            {canViewInvoice && !submitting && <Link className="secondary" to="/invoices">سجل الفواتير</Link>}
+          </div>
+        </section>
+      ) : (
+        <>
+          {sale && <section className="panel panel-inner pos-confirmation" aria-label="تأكيد البيع">
+            <div role="status"><h2>تم تسجيل البيع</h2><p>الفاتورة <bdi>{integer(sale.id)}</bdi> · {money(sale.receipt.total)}
+              {sale.receipt.change > 0 && <> · الباقي {money(sale.receipt.change)}</>}</p></div>
+            <div className="form-actions">
+              <button type="button" className="secondary" onClick={() => setShowReceipt(true)}>معاينة وطباعة الإيصال</button>
+              {canViewInvoice && <Link className="secondary" to={'/invoices/' + sale.id}>عرض الفاتورة</Link>}
+              {invoiceId ? <Link className="primary" to="/pos">بيع جديد</Link> : <button type="button" className="primary" onClick={nextSale}>بيع جديد</button>}
+            </div>
+          </section>}
+          {sale && showReceipt && <SaleReceiptPreview id={sale.id} receipt={sale.receipt} close={() => setShowReceipt(false)} />}
+          <div className="pos-context panel panel-inner">
+            <BranchSelect label="فرع البيع" value={branch} disabled={Boolean(invoiceId || shiftContext.shift || shiftContext.loading || lockInputs || searching || cart.length)}
+              set={id => { setSelectedBranch(id); setProducts([]); setQuery(''); setScanErrors([]); setSearchStatus(''); focusSearch() }} />
+            <ShiftContext value={shiftContext} />
+          </div>
           <div className="pos-grid">
-            <section className="panel panel-inner">
-              <form className="search-form" onSubmit={search}>
-                <input value={query} type="search" aria-label="المنتج أو الباركود" placeholder="المنتج أو الباركود أو الموديل المتوافق"
-                  disabled={submitting} onChange={event => setQuery(event.target.value)} />
-                <button className="secondary" disabled={searching || submitting}>{searching ? 'جارٍ البحث…' : 'بحث'}</button>
+            <section className="panel panel-inner pos-catalog" aria-labelledby="pos-catalog-title">
+              <h2 id="pos-catalog-title">الأصناف والأجهزة</h2>
+              <form className="search-form pos-search" onSubmit={search}>
+                <input ref={searchInput} value={query} type="search" dir="auto" aria-label="اسم المنتج أو الباركود أو IMEI أو الرقم التسلسلي" placeholder="امسح الباركود أو IMEI، أو ابحث بالاسم"
+                  maxLength={100} autoComplete="off" spellCheck={false} enterKeyHint="search" disabled={lockInputs || shiftContext.loading}
+                  onChange={event => setQuery(event.target.value)} />
+                <button className="secondary" disabled={lockInputs || shiftContext.loading}>بحث</button>
               </form>
-              <div className="product-results" aria-live="polite">
-                {products.length === 0 && !searching && <p className="muted">لا توجد منتجات مطابقة.</p>}
+              <p className="pos-search-status muted" role="status">{searchStatus || 'اضغط Enter بعد إدخال الاسم أو الرقم.'}</p>
+              {scanErrors.length > 0 && <div className="pos-scan-errors"><Notice error><ul>{scanErrors.map((issue, index) => <li key={index}>{issue}</li>)}</ul></Notice></div>}
+              <div className="product-results" aria-busy={searching}>
+                {products.length === 0 && !searching && <p className="muted">لا توجد أصناف معروضة.</p>}
                 {products.map(product => <article className="product-result" key={idOf(product)}>
                   <div>
                     <strong>{dataText(product.name)}</strong>
-                    <small>{money(product.price_minor)} / {measurementLabel(product.quantity_scale)} · المتاح {formatQuantity(availableStock(product), product.quantity_scale)} {product.barcode ? '· ' + String(product.barcode) : ''}</small>
+                    <small>{money(product.price_minor)} / {measurementLabel(product.quantity_scale)} · المتاح {formatQuantity(availableStock(product), product.quantity_scale)}</small>
+                    {Boolean(product.barcode) && <small><bdi>{String(product.barcode)}</bdi></small>}
                     {Boolean(product.compatible_models) && <small>يتوافق مع {dataText(product.compatible_models)}</small>}
                   </div>
-                  <button className="secondary" disabled={submitting || availableStock(product) < 1 || Boolean(invoiceId && !reissueLoaded)} onClick={() => add(product)}>إضافة</button>
+                  <div className="pos-add-actions">
+                    <button className="secondary" disabled={lockInputs || availableStock(product) < 1} onClick={() => addFromCatalog(product)} aria-label={'أضف ' + String(product.name)}>إضافة</button>
+                    {Number(product.units_per_pack) > 1 && <button className="secondary" disabled={lockInputs || availableStock(product) < Number(product.units_per_pack)}
+                      onClick={() => addFromCatalog(product, Number(product.units_per_pack))} aria-label={'أضف عبوة من ' + String(product.name)}>عبوة · {integer(product.units_per_pack)}</button>}
+                  </div>
                 </article>)}
               </div>
             </section>
             <form className="panel panel-inner pos-cart" onSubmit={checkout}>
-              <h2>الفاتورة الحالية</h2>
-              {cart.length ? <div className="table-scroll"><table>
-                <thead><tr><th scope="col">المنتج</th><th scope="col">الكمية</th>{canDiscount && <th scope="col">خصم الوحدة</th>}<th scope="col">الإجمالي</th><th scope="col">إزالة</th></tr></thead>
-                <tbody>{cart.map(item => <tr key={item.id}>
-                  <td>{item.name}</td>
-                  <td><input aria-label={'كمية ' + item.name + ' (' + measurementLabel(item.scale) + ')'} type="number"
+              <div className="pos-cart-title" ref={cartSection} tabIndex={-1}><h2>الفاتورة الحالية</h2>{cart.length > 0 && <span>{integer(cart.length)} صنف</span>}</div>
+              {error && <Notice error>{error}</Notice>}
+              {stockConflict && <button className="secondary" type="button" disabled={checkingStock} onClick={() => void refreshCartStock()}>{checkingStock ? 'جارٍ التحديث…' : 'حدّث السعر والمخزون'}</button>}
+              {cart.length ? <ul className="pos-lines">{cart.map(item => <li className="pos-line" key={item.id}>
+                <div className="pos-line-heading">
+                  <div><strong>{item.name}</strong><small>{money(item.price)} / {measurementLabel(item.scale)} · المتاح {formatQuantity(item.stock, item.scale)}{item.packSize && item.packSize > 1 && <> · العبوة {integer(item.packSize)} قطع</>}</small></div>
+                  <button type="button" className="icon-button" aria-label={'إزالة ' + item.name} disabled={lockInputs}
+                    onClick={() => { setCart(items => items.filter(line => line.id !== item.id)); focusSearch() }}>×</button>
+                </div>
+                <div className="pos-line-fields">
+                  <label className="field">الكمية ({measurementLabel(item.scale)})<input aria-label={'كمية ' + item.name + ' (' + measurementLabel(item.scale) + ')'} type="number"
                     min={quantityStep(item.scale)} step={quantityStep(item.scale)} max={displayQuantity(Math.min(item.stock, 1_000_000), item.scale)} required
-                    disabled={submitting} value={item.quantityDraft ?? (displayQuantity(item.quantity, item.scale) || '')} onChange={event => {
+                    disabled={lockInputs} value={item.quantityDraft ?? (displayQuantity(item.quantity, item.scale) || '')} onChange={event => {
                       const quantityDraft = event.target.value
                       const value = Number(quantityDraft)
                       const quantity = validQuantity(value, item.scale) ? stockQuantity(value, item.scale) : 0
-                      setCart(items => items.map(line => line.id === item.id ? { ...line, quantity, quantityDraft,
-                        deviceIds: line.deviceIds?.slice(0, quantity) } : line))
-                    }} /></td>
-                  {canDiscount && <td><input aria-label={'خصم الوحدة من ' + item.name} inputMode="decimal" value={item.discount ?? ''} disabled={submitting}
-                    onChange={event => { const discount = event.target.value; setCart(items => items.map(line => line.id === item.id ? { ...line, discount } : line)) }} /></td>}
-                  <td>{invalidDiscount ? '—' : money(lineMinor(item.price - unitDiscount(item), item.quantity, item.scale))}</td>
-                  <td><button type="button" className="icon-button" aria-label={'إزالة ' + item.name} disabled={submitting}
-                    onClick={() => setCart(items => items.filter(line => line.id !== item.id))}>×</button></td>
-                </tr>)}</tbody>
-              </table></div> : <p className="muted">أضف منتجًا لبدء الفاتورة.</p>}
+                      setCart(items => items.map(line => line.id === item.id ? { ...line, quantity, quantityDraft, deviceIds: line.deviceIds?.slice(0, quantity) } : line))
+                    }} /></label>
+                  {canDiscount && <label className="field">خصم الوحدة<input aria-label={'خصم الوحدة من ' + item.name} inputMode="decimal" value={item.discount ?? ''} disabled={lockInputs}
+                    onChange={event => { const discount = event.target.value; setCart(items => items.map(line => line.id === item.id ? { ...line, discount } : line)) }} /></label>}
+                  <strong className="pos-line-total">{invalidDiscount ? '—' : money(lineMinor(item.price - unitDiscount(item), item.quantity, item.scale))}</strong>
+                </div>
+              </li>)}</ul> : <p className="muted">امسح باركودًا أو أضف صنفًا لبدء البيع.</p>}
               {cart.filter(item => item.tracking && item.tracking !== 'quantity' && item.quantity > 0).map(item => <DevicePicker key={item.id} branchId={branch}
-                productId={item.id} productName={item.name} quantity={item.quantity} selected={item.deviceIds ?? []} disabled={submitting}
+                productId={item.id} productName={item.name} quantity={item.quantity} selected={item.deviceIds ?? []} disabled={lockInputs}
                 change={deviceIds => setCart(items => items.map(line => line.id === item.id ? { ...line, deviceIds } : line))} />)}
-              {allowed(user, 'customers.view')
-                ? <FormInput field={posCustomerField} value={customer} set={setCustomer} disabled={submitting} />
-                : <label className="field">رقم العميل<input inputMode="numeric" pattern="[0-9]+" disabled={submitting}
-                    value={customer} onChange={event => setCustomer(event.target.value)} /></label>}
-              <label className="field">طريقة السداد
-                <select disabled={submitting} value={checkoutMode} onChange={event => setCheckoutMode(event.target.value)}>
-                  <option value="full">سداد كامل</option><option value="partial">سداد جزئي أو آجل</option>
-                </select>
-              </label>
-              {checkoutMode === 'partial' && <label className="field">المبلغ المدفوع بالجنيه
-                <input value={paid} inputMode="decimal" required disabled={submitting} onChange={event => setPaid(event.target.value)} />
-              </label>}
-              <ShiftContext value={shiftContext} />
-              {shiftContext.shift && paidNow > 0 && <TenderFields rows={tenders} set={setTenders} disabled={submitting} />}
-              <label className="field">تاريخ الفاتورة
-                <input type="date" value={documentDate} disabled={submitting} onChange={event => setDocumentDate(event.target.value)} />
-              </label>
-              {due > 0 && <label className="field">تاريخ استحقاق المتبقي<input type="date" value={dueDate} disabled={submitting} onChange={event => setDueDate(event.target.value)} /></label>}
-              <label className="field">ملاحظات الفاتورة
-                <textarea value={invoiceNotes} maxLength={1000} disabled={submitting} onChange={event => setInvoiceNotes(event.target.value)} />
-              </label>
+              {cart.length > 0 && <section className="pos-payment" aria-labelledby="pos-payment-title">
+                <div className="pos-payment-heading"><h3 id="pos-payment-title">الدفع</h3>
+                  <label className="pos-check"><input type="checkbox" checked={checkoutMode === 'partial'} disabled={lockInputs}
+                    onChange={event => setCheckoutMode(event.target.checked ? 'partial' : 'full')} />جزئي أو آجل</label></div>
+                {checkoutMode === 'partial' && <label className="field">المبلغ المدفوع الآن بالجنيه
+                  <input value={paid} inputMode="decimal" placeholder="0.00" aria-invalid={invalidPaid || paidNow > total} disabled={lockInputs} onChange={event => setPaid(event.target.value)} />
+                </label>}
+                {shiftContext.shift && paidNow > 0 && <>
+                  <fieldset className="pos-tenders" disabled={lockInputs}>
+                    <legend>وسيلة الدفع</legend>
+                    {Object.entries({ ...tenderLabels, mixed: 'مختلط' }).map(([method, label]) => <button key={method} type="button" className="secondary"
+                      aria-pressed={tenderMethod === method} onClick={() => {
+                        if (tenderMethod === method) return
+                        setCashReceived('')
+                        setTenders(method === 'mixed' ? [blankTender(), { ...blankTender(), method: 'card' }]
+                          : [{ ...blankTender(), method: method as keyof typeof tenderLabels }])
+                      }}>{label}</button>)}
+                  </fieldset>
+                  {mixed ? <>
+                    <TenderFields rows={tenders} set={setTenders} disabled={lockInputs} />
+                    <div className="pos-allocation"><span>{allocated > paidNow ? 'زيادة التوزيع' : 'المتبقي للتوزيع'} <strong>{money(Math.abs(paidNow - allocated))}</strong></span>
+                      {lastUnallocated >= 0 && allocated < paidNow && <button type="button" className="secondary" disabled={lockInputs}
+                        onClick={() => setTenders(tenders.map((row, index) => index === lastUnallocated ? { ...row, amount: decimal(paidNow - allocated) } : row))}>أضف المتبقي</button>}</div>
+                  </> : tenderMethod !== 'cash' && <label className="field">مرجع الدفع (اختياري)
+                    <input value={tenders[0].reference} maxLength={100} disabled={lockInputs} onChange={event => setTenders([{ ...tenders[0], reference: event.target.value }])} />
+                  </label>}
+                </>}
+                {cashDue > 0 && <label className="field">النقد المستلم بالجنيه (اختياري)
+                  <input value={cashReceived} inputMode="decimal" placeholder={decimal(cashDue)} aria-invalid={invalidReceived || received < cashDue}
+                    disabled={lockInputs} onChange={event => setCashReceived(event.target.value)} />
+                </label>}
+                {invalidPaid || paidNow > total ? <Notice error>أدخل مبلغًا صحيحًا لا يتجاوز الإجمالي.</Notice> : null}
+                {invalidReceived || received < cashDue ? <Notice error>أدخل نقدًا مستلمًا يساوي حصة النقد أو يزيد عليها.</Notice> : null}
+              </section>}
+              {cart.length > 0 && <details className="form-section pos-optional" open={checkoutMode === 'partial' || Boolean(invoiceId) || undefined}>
+                <summary>العميل وتفاصيل الفاتورة</summary>
+                {allowed(user, 'customers.view')
+                  ? <FormInput field={posCustomerField} value={customer} set={setCustomer} disabled={lockInputs} />
+                  : <label className="field">رقم العميل<input inputMode="numeric" disabled={lockInputs} value={customer} onChange={event => setCustomer(event.target.value)} /></label>}
+                <label className="field">تاريخ الفاتورة<input type="date" value={documentDate} disabled={lockInputs} onChange={event => setDocumentDate(event.target.value)} /></label>
+                {due > 0 && <label className="field">تاريخ استحقاق المتبقي<input type="date" value={dueDate} disabled={lockInputs} onChange={event => setDueDate(event.target.value)} /></label>}
+                <label className="field">ملاحظات الفاتورة<textarea value={invoiceNotes} maxLength={1000} disabled={lockInputs} onChange={event => setInvoiceNotes(event.target.value)} /></label>
+              </details>}
               {invoiceId && <label className="field">سبب التعديل<textarea required disabled={submitting}
                 value={reissueReason} onChange={event => setReissueReason(event.target.value)} /></label>}
-              <div className="pos-total"><span>إجمالي الفاتورة</span><strong>{money(total)}</strong></div>
               {invalidQuantity && <Notice error>راجع الكميات ووحدة كل صنف والمخزون المتاح.</Notice>}
               {invalidDiscount && <Notice error>أدخل خصمًا بالجنيه لا يتجاوز سعر الوحدة.</Notice>}
+              {deviceMissing && <Notice>حدد جهازًا لكل قطعة متتبعة قبل تأكيد البيع.</Notice>}
               {hasDiscount && <details className="form-section"><summary>اعتماد خصم يتجاوز الحد</summary>
-                <label className="field">رقم طلب الخصم المعتمد<input type="number" min="1" step="1" value={discountRequest} disabled={submitting} onChange={event => setDiscountRequest(event.target.value)} /></label>
-                <label className="field">سبب طلب الاعتماد<textarea maxLength={1000} value={discountReason} disabled={submitting} onChange={event => setDiscountReason(event.target.value)} /></label>
-                <button type="button" className="secondary" disabled={submitting || invalidQuantity || !discountReason.trim()} onClick={() => void requestDiscount()}>اطلب اعتماد المشرف</button>
+                <label className="field">رقم طلب الخصم المعتمد<input inputMode="numeric" value={discountRequest} disabled={lockInputs} onChange={event => setDiscountRequest(event.target.value)} /></label>
+                <label className="field">سبب طلب الاعتماد<textarea maxLength={1000} value={discountReason} disabled={lockInputs} onChange={event => setDiscountReason(event.target.value)} /></label>
+                <button type="button" className="secondary" disabled={lockInputs || invalidQuantity || !discountReason.trim()} onClick={() => void requestDiscount()}>اطلب اعتماد المشرف</button>
                 {discountNotice && <Notice>{discountNotice}</Notice>}
               </details>}
-              <div className="pos-total"><span>المتبقي</span><strong>{money(due)}</strong></div>
-              <button className="primary" disabled={!cart.length || submitting || invalidQuantity || invalidDiscount || shiftContext.loading || Boolean(shiftContext.required && !shiftContext.shift) || Boolean(invoiceId && !original)}>{submitting ? 'جارٍ تأكيد العملية…' : invoiceId ? 'إصدار الفاتورة البديلة' : 'تأكيد البيع'}</button>
+              <div className="pos-checkout-bar">
+                <div className="pos-total"><span>إجمالي الفاتورة</span><strong>{invalidDiscount ? '—' : money(total)}</strong></div>
+                {cart.length > 0 && (due > 0 || received > cashDue) && <div className="pos-totals-extra">
+                  {due > 0 && <span>المتبقي <b>{money(due)}</b></span>}
+                  {received > cashDue && <span>الباقي للعميل <b>{money(received - cashDue)}</b></span>}
+                </div>}
+                <button className="primary" disabled={checkoutBlocked}>{invoiceId ? 'إصدار الفاتورة البديلة' : 'تأكيد البيع'}</button>
+              </div>
             </form>
           </div>
+          {cart.length > 0 && <div className="pos-mobile-cart"><button type="button" className="primary" onClick={showCart}>السلة · {integer(cart.length)} · {money(total)}</button></div>}
         </>
       )}
-    </>
+    </div>
   )
 }
 

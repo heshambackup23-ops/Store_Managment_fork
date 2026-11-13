@@ -12,7 +12,7 @@ type Target = Position & { latest: Count | null }
 type Overview = { business_day: string; targets: Target[] }
 
 const targetKey = (position: Position) => position.target === 'drawer' ? 'drawer' : `wallet:${position.wallet_id}`
-const targetLabel = (position: Position) => position.target === 'drawer' ? 'الدرج النقدي' : position.wallet_name || 'محفظة'
+const targetLabel = (position: Position) => position.target === 'drawer' ? 'الدرج المخصص للمحافظ' : 'رصيد المزود · ' + (position.wallet_name || 'محفظة')
 const clock = new Intl.DateTimeFormat('ar-EG', { dateStyle: 'short', timeStyle: 'short', timeZone: 'Africa/Cairo' })
 const countTime = (count: Count) => clock.format(new Date(count.created_at))
 const differenceLabel = (difference: number) => difference === 0 ? 'مطابق' : difference < 0 ? 'عجز' : 'زيادة'
@@ -97,8 +97,10 @@ export function WalletReconciliation() {
 
   const lastPage = Math.max(1, Math.ceil(total / 20))
   return <>
-    <PageTitle title="مطابقة الدرج والمحافظ" description="عدّ النقد في الدرج أو اقرأ الرصيد من تطبيق المزود، ثم قارنه برصيد هلال. تسجيل المطابقة لا يغيّر الأرصدة."
-      action={<Link className="secondary" to="/wallet-report">تقرير المحافظ</Link>} />
+    <PageTitle title="مطابقة الدرج والمحافظ" description="عدّ النقد في درج المحافظ أو اقرأ الرصيد من تطبيق المزود. تسجيل المطابقة يحفظ نتيجة الجرد للمراجعة."
+      action={<div className="form-actions"><Link className="secondary" to="/wallet-workspace">خدمات المحافظ</Link>
+        <Link className="secondary" to="/wallet-report">تقرير المحافظ</Link></div>} />
+    <p className="muted">يطابق الكاشير النقد المسجّل في درج البيع المشترك عند إقفال الوردية.</p>
     {saved && <Notice>تم تسجيل مطابقة {targetLabel(saved)}: {differenceLabel(saved.difference_minor)}{saved.difference_minor !== 0 ? ` (${money(saved.difference_minor)})` : ''}.</Notice>}
     {loadError && <Notice error>{loadError}</Notice>}
     {loading && <Notice>جارٍ تحديث الأرصدة…</Notice>}
@@ -113,13 +115,13 @@ export function WalletReconciliation() {
       </label>
       {target && <>
         <div className="metric-grid">
-          <div className="panel metric"><p>الرصيد الدفتري الحالي</p><strong>{money(target.expected_minor)}</strong><p>{formatDate(overview?.business_day)}</p></div>
+          <div className="panel metric"><p>{target.target === 'drawer' ? 'نقد درج المحافظ حسب الدفتر' : 'رصيد المزود حسب الدفتر'}</p><strong>{money(target.expected_minor)}</strong><p>{formatDate(overview?.business_day)}</p></div>
           <div className="panel metric"><p>آخر نتيجة مسجّلة</p><strong>{target.latest ? differenceLabel(target.latest.difference_minor) : 'لا يوجد جرد سابق'}</strong>
             {target.latest && <p>{money(target.latest.difference_minor)} · {countTime(target.latest)}</p>}
           </div>
           <div className="panel metric"><p>الفرق في الجرد الحالي</p><strong>{difference === undefined ? '—' : `${differenceLabel(difference)} · ${money(difference)}`}</strong></div>
         </div>
-        <label className="field">الرصيد الفعلي بالجنيه
+        <label className="field">{target.target === 'drawer' ? 'النقد المعدود في درج المحافظ بالجنيه' : 'الرصيد الظاهر في تطبيق المزود بالجنيه'}
           <input type="text" inputMode="decimal" autoComplete="off" required value={observed} disabled={busy}
             onChange={event => setObserved(event.target.value)} />
         </label>

@@ -74,7 +74,15 @@ export function Notice({ children, error = false }: { children: ReactNode; error
 export function Modal({ title, close, children }: { title: string; close: () => void; children: ReactNode }) {
   const dialog = useRef<HTMLDialogElement>(null)
   const heading = useId()
-  useEffect(() => { dialog.current?.showModal() }, [])
+  useEffect(() => {
+    const element = dialog.current
+    const trigger = document.activeElement
+    element?.showModal()
+    return () => {
+      element?.close()
+      if (trigger instanceof HTMLElement && trigger.isConnected) trigger.focus({ preventScroll: true })
+    }
+  }, [])
   return (
     <dialog ref={dialog} aria-labelledby={heading} onCancel={event => { event.preventDefault(); close() }}>
       <div className="modal-header">
