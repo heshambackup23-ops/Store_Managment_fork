@@ -58,13 +58,15 @@ class StagingAcceptanceTest {
         compose.onNodeWithText("دخول").performScrollTo().performClick()
         waitForText("مسؤول محاكي هلال")
 
-        compose.onAllNodes(hasText("المنتجات") and hasClickAction())[0].performClick()
+        compose.onNodeWithTag("store-tab-Products").performSemanticsAction(SemanticsActions.OnClick)
         waitForText("دفتر ملاحظات")
-        compose.onNodeWithContentDescription("إضافة منتج").performClick()
+        compose.onNodeWithContentDescription("إضافة منتج").performSemanticsAction(SemanticsActions.OnClick)
         compose.onNodeWithText("اسم المنتج").performScrollTo().performTextReplacement("منتج من محاكي هلال")
         compose.onNodeWithText("السعر").performScrollTo().performTextReplacement("13.25")
-        compose.onNodeWithText("حفظ المنتج").performClick()
-        waitForText("منتج من محاكي هلال")
+        compose.onNode(hasText("حفظ المنتج") and hasClickAction()).performSemanticsAction(SemanticsActions.OnClick)
+        waitFor("saved product dialog to close") {
+            compose.onAllNodesWithText("حفظ المنتج").fetchSemanticsNodes().isEmpty()
+        }
 
         openRetailMenu("retail-menu-shifts", retailShiftScreenTag)
         waitForText("لا توجد ورديات مطابقة.")
@@ -109,10 +111,8 @@ class StagingAcceptanceTest {
     private fun waitFor(description: String, predicate: () -> Boolean) {
         try {
             compose.waitUntil(timeoutMillis = 30_000, condition = predicate)
-        } catch (failure: AssertionError) {
-            val tree = runCatching { compose.onRoot().printToString(maxDepth = 15) }.getOrElse { it.toString() }
-            throw AssertionError("Expected $description.\n$tree", failure)
-        } catch (failure: Exception) {
+        } catch (failure: Throwable) {
+            if (failure is VirtualMachineError || failure is ThreadDeath || failure is LinkageError) throw failure
             val tree = runCatching { compose.onRoot().printToString(maxDepth = 15) }.getOrElse { it.toString() }
             throw AssertionError("Expected $description.\n$tree", failure)
         }
