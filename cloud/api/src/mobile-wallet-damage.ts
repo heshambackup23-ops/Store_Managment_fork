@@ -177,7 +177,7 @@ function limitRows(wallet: Wallet, usage: Map<string, WalletUsage>) {
   return limits.filter(row => row.limit != null).map(({ label, limit, used }) => {
     const percent = limit ? Math.floor(100 * used / limit) : 0
     return { label, used: asDecimal(used), limit: asDecimal(limit), remaining: asDecimal(Math.max(0, (limit ?? 0) - used)),
-      percent, level: percent >= 100 ? 'danger' : percent >= 80 ? 'warning' : 'normal' }
+      percent, level: percent >= 100 ? 'danger' : percent >= (wallet.warn_at_percent ?? 80) ? 'warning' : 'normal' }
   })
 }
 mobileWalletDamage.get('/wallets', async (c, next) => {
@@ -215,7 +215,7 @@ mobileWalletDamage.post('/wallets', async (c, next) => {
   if (!isAndroid(c)) return next()
   requirePermission(c, 'wallets.manage')
   const data = await body(c, z.object({ name, provider: z.string().trim().min(1).max(150),
-    identifier: z.string().trim().max(50).nullish(), opening_balance: decimalMinor() }).strict())
+    identifier: z.string().trim().max(64).nullish(), opening_balance: decimalMinor() }).strict())
   const result = await canonicalWrite(c, '/wallets', { name: data.name, provider: data.provider,
     phone: data.identifier ?? '', opening_minor: data.opening_balance })
   return ok(c, result, 201)

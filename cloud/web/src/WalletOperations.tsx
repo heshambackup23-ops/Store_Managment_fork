@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
-import { allowed, decimal, formatDate, integer, money, request } from './api'
+import { allowed, apiUrl, formatDate, integer, money, request } from './api'
 import type { User } from './api'
 import { DataModule, Notice } from './ui'
 import type { ModuleConfig, Row } from './ui'
@@ -83,31 +83,10 @@ const kinds = {
   settlement_in: 'تسوية داخلة', settlement_out: 'تسوية خارجة', reversal: 'عكس',
 }
 
-function csvCell(value: unknown) {
-  const text = String(value ?? '')
-  const safe = typeof value === 'string' && /^[\s\uFEFF]*[=+@-]|^[\t\r\n]/u.test(text) ? "'" + text : text
-  return '"' + safe.replaceAll('"', '""') + '"'
-}
-
-function saveLedger(rows: Row[], showCash: boolean) {
-  const moneyKeys = ['amount_minor', 'delta_minor', ...(showCash ? ['cash_delta_minor'] : []), 'commission_minor', 'fee_minor']
-  const fields = ['id', 'wallet_name', 'business_day', 'kind', 'reversal_of', 'reversed_by', ...moneyKeys, 'counterparty', 'note']
-  const headings = fields.map(key => moneyKeys.includes(key) ? key.replace(/_minor$/, '_egp') : key)
-  const lines = rows.map(row => fields.map(key => moneyKeys.includes(key) ? decimal(row[key]) : csvCell(row[key])).join(','))
-  const url = URL.createObjectURL(new Blob(['\uFEFF', headings.join(','), '\r\n', lines.join('\r\n')], { type: 'text/csv;charset=utf-8' }))
-  const link = document.createElement('a')
-  link.href = url
-  link.download = 'hilal-wallet-ledger.csv'
-  link.click()
-  setTimeout(() => URL.revokeObjectURL(url), 1000)
-}
-
 export function WalletLedger({ user, config }: { user: User; config: ModuleConfig }) {
   const [params, setParams] = useSearchParams()
   const [wallets, setWallets] = useState<Row[]>([])
   const [walletError, setWalletError] = useState('')
-  const [error, setError] = useState('')
-  const [exporting, setExporting] = useState(false)
   const cash = allowed(user, 'wallets.cash')
   const query = new URLSearchParams()
   for (const key of filters) {
@@ -115,6 +94,7 @@ export function WalletLedger({ user, config }: { user: User; config: ModuleConfi
     if (value) query.set(key, value)
   }
   const queryText = query.toString()
+  const querySuffix = queryText ? '?' + queryText : ''
   const walletId = query.get('wallet_id') ?? ''
 
   useEffect(() => {
@@ -133,32 +113,21 @@ export function WalletLedger({ user, config }: { user: User; config: ModuleConfi
       const value = String(input.get(key) ?? '').trim()
       if (value) next.set(key, value)
     }
-    setError('')
     setParams(next)
-  }
-
-  async function exportLedger() {
-    setExporting(true)
-    setError('')
-    try {
-      const exportQuery = new URLSearchParams(queryText)
-      exportQuery.set('export', '1')
-      const result = await request<Row[]>('/wallet-transactions?' + exportQuery)
-      if (!result.data.length) throw new Error('لا توجد معاملات مطابقة للتصدير.')
-      saveLedger(result.data, cash)
-    } catch (error) {
-      setError(error instanceof Error ? error.message : 'تعذر تصدير كشف المحافظ.')
-    } finally {
-      setExporting(false)
-    }
   }
 
   const columns = config.columns.filter(column => cash || column.key !== 'cash_delta_minor')
   const dateColumn = columns.find(column => column.key === 'created_at')
   if (dateColumn) columns.splice(columns.indexOf(dateColumn), 1, { key: 'business_day', label: 'تاريخ العمل', render: row => formatDate(row.business_day) })
   columns.splice(3, 0,
-    { key: 'reversal_state', label: 'حالة القيد', render: row => row.reversed_by ? 'معكوس بـ #' + row.reversed_by : row.reversal_of ? 'عكس القيد #' + row.reversal_of : 'مسجل' },
+    { key: 'reversal_state', label: 'حالة القيد', render: row => {
+      const related = row.reversed_by ?? row.reversal_of
+      if (typeof related !== 'number') return 'مسجل'
+      const relatedQuery = new URLSearchParams({ wallet_id: String(row.wallet_id), q: '#' + related })
+      return <Link to={'/wallet-transactions?' + relatedQuery}>{row.reversed_by ? 'معكوس بالقيد' : 'عكس القيد'} <bdi>#{related}</bdi></Link>
+    } },
     { key: 'fee_minor', label: 'رسوم المزود', render: row => money(row.fee_minor) },
+    { key: 'provider_reference', label: 'مرجع المزود', render: row => row.provider_reference ? <bdi>{String(row.provider_reference)}</bdi> : '—' },
   )
   const filterForm = <form className="panel form-card section-space" key={queryText} onSubmit={filter}>
     <label className="field">المحفظة<select name="wallet_id" defaultValue={walletId}>
@@ -174,15 +143,14 @@ export function WalletLedger({ user, config }: { user: User; config: ModuleConfi
     </select></label>
     <label className="field">من<input type="date" name="from" defaultValue={query.get('from') ?? ''} /></label>
     <label className="field">إلى<input type="date" name="to" defaultValue={query.get('to') ?? ''} /></label>
-    <label className="field">رقم القيد أو بداية الطرف الآخر<input name="q" maxLength={80} defaultValue={query.get('q') ?? ''} /></label>
+    <label className="field">رقم القيد أو بداية مرجع المزود أو الطرف الآخر<input name="q" maxLength={100} defaultValue={query.get('q') ?? ''} /></label>
     <div className="form-actions">
       <button className="primary">تصفية المعاملات</button>
-      <button type="button" className="secondary" onClick={() => { setError(''); setParams({}) }}>مسح التصفية</button>
-      {cash && <button type="button" className="secondary" disabled={exporting} onClick={() => void exportLedger()}>
-        {exporting ? 'جارٍ التصدير…' : 'تصدير النتائج CSV'}</button>}
+      <button type="button" className="secondary" onClick={() => setParams({})}>مسح التصفية</button>
+      {cash && <a className="secondary" href={apiUrl('/wallet-transactions.csv' + querySuffix)} title="حتى ١٬٠٠٠ سجل">تصدير النتائج CSV</a>}
     </div>
   </form>
   return <DataModule key={queryText} user={user}
-    config={{ ...config, columns, endpoint: config.endpoint + (queryText ? '?' + queryText : '') }}
-    extra={<>{filterForm}{walletError && <Notice error>{walletError}</Notice>}{error && <Notice error>{error}</Notice>}</>} />
+    config={{ ...config, columns, endpoint: config.endpoint + querySuffix }}
+    extra={<>{filterForm}{walletError && <Notice error>{walletError}</Notice>}</>} />
 }

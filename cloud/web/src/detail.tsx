@@ -6,6 +6,7 @@ import { ActionDialog, DataModule, dataText, idOf, Notice, PageTitle } from './u
 import type { Action, Column, ModuleConfig, Row } from './ui'
 import { countColumn, dateColumn, moneyColumn, required } from './core'
 import { businessModules, supplierPayment, walletTransaction } from './commerce'
+import { walletProviderLabel } from './wallet-providers'
 
 export function WalletCashier({ user }: { user: User }) {
   const [wallets, setWallets] = useState<Row[]>([])
@@ -34,7 +35,7 @@ export function WalletCashier({ user }: { user: User }) {
   }, [revision, balanceVersion])
 
   function launch(kind: 'send' | 'receive') {
-    const label = kind === 'send' ? 'إرسال مبلغ' : 'استقبال مبلغ'
+    const label = kind === 'send' ? 'تسجيل إيداع للعميل' : 'تسجيل سحب للعميل'
     const fields = (walletTransaction.fields || []).filter(field => field.name !== 'kind'
       && (kind === 'send' || !field.name.startsWith('deferred_')))
       .map(field => ({
@@ -55,7 +56,7 @@ export function WalletCashier({ user }: { user: User }) {
   }
 
   return <>
-    <PageTitle title="كاشير المحافظ" description="سجّل إرسالًا أو استقبالًا وراجع معاملات المحفظة." />
+    <PageTitle title="كاشير المحافظ" description="سجّل العملية في هلال بعد تأكيدها لدى المزود." />
     {error && <Notice error>{error}</Notice>}
     {success && <Notice>تم تسجيل المعاملة وتحديث رصيد المحفظة.</Notice>}
     <section className="panel form-card section-space" aria-label="تنفيذ معاملة محفظة">
@@ -66,11 +67,13 @@ export function WalletCashier({ user }: { user: User }) {
             {wallets.map(wallet => <option key={idOf(wallet)} value={String(wallet.id)}>{String(wallet.name)}</option>)}
           </select>
         </label>
-        {chosen && <p>الرصيد المتاح <strong>{money(chosen.balance_minor)}</strong></p>}
+        {chosen && <p>{walletProviderLabel(chosen.provider)} · الرصيد المتاح <strong>{money(chosen.balance_minor)}</strong></p>}
+        <p className="muted">الإيداع: المحل يرسل من المحفظة ويستلم النقد أو يسجّله آجلًا. السحب: المحل يستقبل على المحفظة ويسلّم النقد للعميل.</p>
         <div className="form-actions">
-          {canTransact && <><button className="primary" disabled={!chosen} onClick={() => launch('send')}>إرسال مبلغ</button>
-            <button className="secondary" disabled={!chosen} onClick={() => launch('receive')}>استقبال مبلغ</button></>}
+          {canTransact && <><button className="primary" disabled={!chosen} onClick={() => launch('send')}>إيداع للعميل</button>
+            <button className="secondary" disabled={!chosen} onClick={() => launch('receive')}>سحب للعميل</button></>}
           <Link className="secondary" to="/wallet-debts">التحصيل الآجل</Link>
+          {allowed(user, 'wallets.cash') && <Link className="secondary" to="/wallet-reconciliation">مطابقة الدرج والمحافظ</Link>}
         </div>
       </>}
     </section>

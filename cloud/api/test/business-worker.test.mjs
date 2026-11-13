@@ -3,6 +3,7 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { readdirSync, readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { parse } from 'csv-parse/sync';
 import { build } from 'esbuild';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { unstable_splitSqlQuery } from 'wrangler';
@@ -31,21 +32,26 @@ async function worker(t) {
   await db.batch([
     db.prepare("INSERT INTO roles(id, name) VALUES (2, 'reader')"),
     db.prepare("INSERT INTO role_permissions(role_id, permission) VALUES (2, 'inventory.view')"),
+    db.prepare("INSERT INTO roles(id, name) VALUES (4, 'wallet reader')"),
+    db.prepare("INSERT INTO role_permissions(role_id, permission) VALUES (4, 'wallets.view')"),
     db.prepare(`INSERT INTO users(id, name, email, password_hash, role_id) VALUES
       (1, 'Demo admin', 'admin@example.invalid', 'unused', 1),
-      (2, 'Demo reader', 'reader@example.invalid', 'unused', 2)`),
+      (2, 'Demo reader', 'reader@example.invalid', 'unused', 2),
+      (4, 'Demo wallet reader', 'wallet-reader@example.invalid', 'unused', 4)`),
     db.prepare("INSERT INTO products(id, name, price_minor, cost_minor, barcode) VALUES (1, 'منتج تجريبي', 2500, 1250, 'DEMO-100')"),
     db.prepare("INSERT INTO customers(id, name) VALUES (1, 'عميل تجريبي')"),
   ]);
-  const tokens = [randomBytes(32).toString('base64url'), randomBytes(32).toString('base64url')];
-  await db.batch(tokens.map((token, index) =>
+  const tokens = new Map([0, 1, 3].map(identity => [identity, randomBytes(32).toString('base64url')]));
+  await db.batch([...tokens].map(([identity, token]) =>
     db.prepare('INSERT INTO auth_sessions(token_hash, user_id, expires_at) VALUES (?, ?, ?)')
-      .bind(createHash('sha256').update(token).digest('base64url'), index + 1, Math.floor(Date.now() / 1000) + 300)
+      .bind(createHash('sha256').update(token).digest('base64url'), identity + 1, Math.floor(Date.now() / 1000) + 300)
   ));
 
-  return async (path, { method = 'GET', body, image, key = randomUUID(), identity = 0, android = false } = {}) => {
+  return async (path, { method = 'GET', body, image, key = randomUUID(), identity = 0, android = false, cookie = false } = {}) => {
     const headers = {};
-    if (tokens[identity]) headers.Authorization = 'Bearer ' + tokens[identity];
+    const token = tokens.get(identity);
+    if (token && cookie) headers.Cookie = 'henra_store_session=' + token;
+    if (token && !cookie) headers.Authorization = 'Bearer ' + token;
     if (android) headers['X-Store-Client'] = 'android';
     if (image) headers['Content-Type'] = 'image/png';
     if (body) {
@@ -56,9 +62,10 @@ async function worker(t) {
       method, headers, body: image ?? (body ? JSON.stringify(body) : undefined),
     });
     const contentType = response.headers.get('Content-Type');
-    return { status: response.status, contentType,
+    return { status: response.status, contentType, headers: response.headers,
       json: contentType?.includes('application/json') ? await response.json() : null,
-      image: contentType?.startsWith('image/') ? new Uint8Array(await response.arrayBuffer()) : null };
+      image: contentType?.startsWith('image/') ? new Uint8Array(await response.arrayBuffer()) : null,
+      csv: contentType?.startsWith('text/csv') ? new Uint8Array(await response.arrayBuffer()) : null };
   };
 }
 
@@ -310,14 +317,27 @@ test('Worker and local D1 enforce financial rules through the mounted API', asyn
     assertStatus(await post('/wallet-transactions/' + withdrawal.id + '/reverse', { reason: 'demo' }), 409);
   });
 
-  await t.test('wallet defaults round minor units and adjustments bypass the cashier limit', async () => {
+  await t.test('wallet settings persist across clients and adjustments bypass the cashier limit', async () => {
+    const profile = {
+      name: 'Wallet pricing fixture', provider: 'vodafone_cash', phone: 'QA-' + '0'.repeat(61),
+      transaction_limit_minor: 90, daily_send_limit_minor: 150,
+    };
     const wallet = assertStatus(await post('/wallets', {
-      name: 'Wallet pricing fixture', opening_minor: 1000, transaction_limit_minor: 90,
+      ...profile, opening_minor: 1000, holder_name: 'صاحب حساب تجريبي', notes: 'حساب اختبار', warn_at_percent: 50,
       default_commission_bps: 1250, default_commission_min_minor: 7,
       default_fee_bps: 1000, default_fee_min_minor: 3, default_fee_max_minor: 4,
     }), 201);
     const path = '/wallets/' + wallet.id;
     const ledger = '/wallet-transactions?wallet_id=' + wallet.id;
+    const patch = body => request(path, { method: 'PATCH', body: { ...profile, active: true, ...body } });
+    const retained = assertStatus(await patch({}), 200);
+    assert.equal(retained.phone, profile.phone);
+    assert.equal(retained.holder_name, 'صاحب حساب تجريبي');
+    assert.equal(retained.notes, 'حساب اختبار');
+    assert.equal(retained.warn_at_percent, 50);
+    const cleared = assertStatus(await patch({ holder_name: '', notes: '' }), 200);
+    assert.equal(cleared.holder_name, '');
+    assert.equal(cleared.notes, '');
     assertStatus(await post(path + '/transactions', {
       kind: 'send', amount_minor: 84, deferred: { customer_id: 1 },
     }), 201);
@@ -326,6 +346,11 @@ test('Worker and local D1 enforce financial rules through the mounted API', asyn
     assert.equal(transfer.fee_minor, 4);
     assert.equal(transfer.delta_minor, -88);
     assert.equal(assertStatus(await request('/wallet-debts/' + transfer.wallet_debt_id), 200).principal_minor, 95);
+    const androidWallets = assertStatus(await request('/wallets', { android: true }), 200).wallets;
+    const androidWallet = androidWallets.find(row => row.id === wallet.id);
+    assert.equal(androidWallet.provider, 'vodafone_cash');
+    assert.equal(androidWallet.warn_at_percent, 50);
+    assert.equal(androidWallet.limits.find(row => row.label === 'الإرسال اليومي').level, 'warning');
     assertStatus(await post(path + '/transactions', {
       kind: 'receive', amount_minor: 84, commission_minor: 0, fee_minor: 0,
     }), 201);
@@ -467,4 +492,81 @@ test('Worker and local D1 enforce financial rules through the mounted API', asyn
     assert.equal(log[0].entity_id, deferred.id);
     assert.equal(log[0].actor_name, 'Demo admin');
   });
+
+  await t.test('wallet CSV downloads through cookie auth with the ledger filters and exact EGP values', async () => {
+    const name = 'محفظة اختبار CSV';
+    const wallet = assertStatus(await post('/wallets', { name, opening_minor: 900_000_000_000_000 }), 201);
+    const path = '/wallets/' + wallet.id + '/transactions';
+    const original = assertStatus(await post(path, { kind: 'send', amount_minor: 125 }), 201);
+    assertStatus(await post('/wallet-transactions/' + original.id + '/reverse', { reason: 'test reversal' }), 201);
+    const reference = '0001234567890123456';
+    const note = '=HYPERLINK("test","نص")\nقيد اختباري';
+    const transfer = assertStatus(await post(path, {
+      kind: 'send', amount_minor: 899_999_999_999_993, commission_minor: 3, fee_minor: 6,
+      counterparty: '+000123', note, provider_reference: reference,
+    }), 201);
+    const walletQuery = 'wallet_id=' + wallet.id;
+    const list = '/wallet-transactions?';
+    const csv = '/wallet-transactions.csv?';
+    const [row] = assertStatus(await request(list + walletQuery + '&q=' + reference.slice(0, 9)), 200);
+    assert.equal(row.id, transfer.id);
+    assert.equal(row.provider_reference, reference);
+
+    const filter = new URLSearchParams({ wallet_id: wallet.id, kind: 'send', status: 'effective',
+      from: row.business_day, to: row.business_day, q: reference.slice(0, 9) });
+    const result = await request(csv + filter, { cookie: true });
+    assert.equal(result.status, 200, JSON.stringify(result.json));
+    assert.equal(result.contentType, 'text/csv; charset=utf-8');
+    assert.equal(result.headers.get('Content-Disposition'), 'attachment; filename="hilal-wallet-ledger.csv"');
+    assert.match(result.headers.get('Cache-Control'), /no-store/);
+    assert.deepEqual([...result.csv.subarray(0, 3)], [239, 187, 191]);
+    assert.deepEqual(parse(result.csv, { bom: true, columns: true }), [{
+      id: String(transfer.id), wallet_name: name, business_day: row.business_day, kind: 'send',
+      reversal_of: '', reversed_by: '', amount_egp: '8999999999999.93', delta_egp: '-8999999999999.99',
+      cash_delta_egp: '8999999999999.96', commission_egp: '0.03', fee_egp: '0.06',
+      counterparty: "'+000123", note: "'" + note, provider_reference: "'" + reference,
+    }]);
+    assert.deepEqual(assertStatus(await request(list + filter + '&export=1'), 200), [row]);
+
+    const reversed = await request(csv + walletQuery + '&kind=send&status=reversed');
+    assert.equal(reversed.status, 200);
+    assert.deepEqual(parse(reversed.csv, { bom: true, columns: true }).map(entry => entry.id), [String(original.id)]);
+    const empty = await request(csv + walletQuery + '&kind=receive');
+    assert.equal(empty.status, 200);
+    assert.deepEqual(parse(empty.csv, { bom: true, columns: true }), []);
+    assertStatus(await request(csv + 'from=2026-02-02&to=2026-02-01'), 422);
+
+    const viewer = { identity: 3, cookie: true };
+    assert.equal(assertStatus(await request(list + filter, viewer), 200)[0].cash_delta_minor, null);
+    assertStatus(await request(list + filter + '&export=1', viewer), 403);
+    assertStatus(await request(csv + filter, viewer), 403);
+    assertStatus(await request(csv + filter, { identity: 1 }), 403);
+    assertStatus(await request(csv + filter, { identity: 2 }), 401);
+  });
+});
+
+test('a provider receipt is unique per wallet and a retry does not post twice', async t => {
+  const request = await worker(t);
+  const post = (path, body, options = {}) => request(path, { method: 'POST', body, ...options });
+  const first = assertStatus(await post('/wallets', { name: 'Receipt fixture A', opening_minor: 20000 }), 201);
+  const second = assertStatus(await post('/wallets', { name: 'Receipt fixture B', opening_minor: 20000 }), 201);
+  const route = id => '/wallets/' + id + '/transactions';
+  const receipt = { kind: 'send', amount_minor: 1000, provider_reference: ' 0001-Ab9 ' };
+  const key = randomUUID();
+  const saved = assertStatus(await post(route(first.id), receipt, { key }), 201);
+  assert.deepEqual(assertStatus(await post(route(first.id), { ...receipt, provider_reference: '0001-Ab9' }, { key }), 201), saved);
+  const duplicate = await post(route(first.id), { ...receipt, provider_reference: '0001-aB9' });
+  assertStatus(duplicate, 409);
+  assert.equal(duplicate.json.code, 'WALLET_PROVIDER_REFERENCE_DUPLICATE');
+  assertStatus(await post(route(first.id), { ...receipt, provider_reference: 'Ab\n9' }), 422);
+  assertStatus(await post(route(first.id), { ...receipt, kind: 'expense', note: 'reference only on transfers' }), 422);
+  assert.equal(assertStatus(await request('/wallets'), 200).find(row => row.id === first.id).balance_minor, 19000);
+  const rows = assertStatus(await request('/wallet-transactions?wallet_id=' + first.id + '&q=0001-ab'), 200);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].provider_reference, '0001-Ab9');
+  assertStatus(await post('/wallet-transactions/' + saved.id + '/reverse', { reason: 'fixture reversal' }), 201);
+  assertStatus(await post(route(first.id), receipt), 409);
+  assertStatus(await post(route(second.id), receipt), 201);
+  const latest = assertStatus(await request('/wallet-transactions?wallet_id=' + first.id), 200);
+  assert.equal(latest.find(row => row.kind === 'reversal').provider_reference, null);
 });

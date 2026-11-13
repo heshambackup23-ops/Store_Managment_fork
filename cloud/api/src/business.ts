@@ -1,8 +1,10 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { imageType } from './catalog';
+import { csvCell } from './csv';
 import { auditedWrite, body, fail, hasPermission, ok, page, paginated, permit, readBytes, searchPrefix, selectPage, timestamp, type ApiContext, type ApiEnv } from './http';
 import { purchaseReceiving } from './purchase-receiving';
+import { walletReconciliation } from './wallet-reconciliation';
 import { walletReporting } from './wallet-reporting';
 
 export const businessPermissions = [
@@ -63,6 +65,9 @@ function where(predicates: string[]) {
 
 function businessError(error: unknown): never {
   const message = error instanceof Error ? error.message : String(error);
+  if (/UNIQUE constraint failed: wallet_transactions\.wallet_id, wallet_transactions\.provider_reference/i.test(message)) {
+    return fail(409, 'WALLET_PROVIDER_REFERENCE_DUPLICATE', 'مرجع المزود مسجل بالفعل على هذه المحفظة. ابحث عنه في سجل الحركات قبل إعادة التسجيل.');
+  }
   const rules = [
     ['INSUFFICIENT_STOCK', 'المخزون غير كافٍ أو يتجاوز الحد المسموح.'],
     ['PAYMENT_EXCEEDS_BALANCE', 'المبلغ يتجاوز الرصيد المستحق أو أُغلقت العملية.'],
@@ -665,7 +670,10 @@ business.post('/purchases', permit('suppliers.manage'), async c => {
 const wallet = z.object({
   name,
   provider: z.string().trim().max(150).default(''),
-  phone: phone.default(''),
+  phone: z.string().trim().max(64).default(''),
+  holder_name: z.string().trim().max(100).optional(),
+  notes: z.string().trim().max(500).optional(),
+  warn_at_percent: z.number().int().min(1).max(100).optional(),
   transaction_limit_minor: positiveMoney.nullish(),
   daily_send_limit_minor: positiveMoney.nullish(),
   daily_receive_limit_minor: positiveMoney.nullish(),
@@ -707,11 +715,12 @@ business.post('/wallets', permit('wallets.manage'), async c => {
     const db = c.env.DB;
     const statements = [
       db.prepare(`
-        INSERT INTO wallets (id, name, provider, phone, transaction_limit_minor,
+        INSERT INTO wallets (id, name, provider, phone, holder_name, notes, warn_at_percent, transaction_limit_minor,
           daily_send_limit_minor, daily_receive_limit_minor, monthly_send_limit_minor, monthly_receive_limit_minor,
           default_commission_bps, default_commission_min_minor, default_fee_bps, default_fee_min_minor, default_fee_max_minor)
-        VALUES (${op}, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).bind(...binds, data.name, data.provider, data.phone, ...walletLimits(data), ...walletRates(data, 0), data.default_fee_max_minor ?? null),
+        VALUES (${op}, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).bind(...binds, data.name, data.provider, data.phone, data.holder_name ?? '', data.notes ?? '', data.warn_at_percent ?? 80,
+        ...walletLimits(data), ...walletRates(data, 0), data.default_fee_max_minor ?? null),
     ];
     if (data.opening_minor > 0) {
       statements.push(db.prepare(`
@@ -727,7 +736,9 @@ business.patch('/wallets/:id', permit('wallets.manage'), async c => {
   const data = await body(c, wallet.extend({ active: z.boolean() }));
   const walletId = identifier(c);
   return change(c, 'wallet.update', walletId, `
-    UPDATE wallets SET name = ?, provider = ?, phone = ?, transaction_limit_minor = ?,
+    UPDATE wallets SET name = ?, provider = ?, phone = ?,
+      holder_name = COALESCE(?, holder_name), notes = COALESCE(?, notes), warn_at_percent = COALESCE(?, warn_at_percent),
+      transaction_limit_minor = ?,
       daily_send_limit_minor = ?, daily_receive_limit_minor = ?, monthly_send_limit_minor = ?,
       monthly_receive_limit_minor = ?, default_commission_bps = COALESCE(?, default_commission_bps),
       default_commission_min_minor = COALESCE(?, default_commission_min_minor), default_fee_bps = COALESCE(?, default_fee_bps),
@@ -735,7 +746,8 @@ business.patch('/wallets/:id', permit('wallets.manage'), async c => {
       default_fee_max_minor = CASE WHEN ? THEN ? ELSE default_fee_max_minor END,
       active = ?, updated_at = ${timestamp}
     WHERE id = ? RETURNING *
-  `, data.name, data.provider, data.phone, ...walletLimits(data), ...walletRates(data, null),
+  `, data.name, data.provider, data.phone, data.holder_name ?? null, data.notes ?? null, data.warn_at_percent ?? null,
+  ...walletLimits(data), ...walletRates(data, null),
   Number(data.default_fee_max_minor !== undefined), data.default_fee_max_minor ?? null, Number(data.active), walletId);
 });
 
@@ -765,12 +777,28 @@ const walletTransactionFilters = z.object({
   wallet_id: z.coerce.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
   kind: z.enum(['opening', 'send', 'receive', 'expense', 'settlement_in', 'settlement_out', 'reversal']).optional(),
   status: z.enum(['effective', 'reversed']).optional(),
-  q: z.string().trim().max(80).optional(),
+  q: z.string().trim().max(100).optional(),
   from: date.optional(),
   to: date.optional(),
   export: z.enum(['1']).optional(),
 });
-business.get('/wallet-transactions', permit('wallets.view'), c => {
+
+const walletCsvText = ['id', 'wallet_name', 'business_day', 'kind', 'reversal_of', 'reversed_by'] as const;
+const walletCsvMoney = ['amount_minor', 'delta_minor', 'cash_delta_minor', 'commission_minor', 'fee_minor'] as const;
+const walletCsvDetails = ['counterparty', 'note'] as const;
+const walletExportLimit = 1000;
+
+type WalletExportRow = Record<(typeof walletCsvText)[number] | (typeof walletCsvDetails)[number], string | number | null>
+  & Record<(typeof walletCsvMoney)[number], number>
+  & { provider_reference: string | null };
+
+function egpDecimal(value: number) {
+  const minor = BigInt(value);
+  const absolute = minor < 0n ? -minor : minor;
+  return `${minor < 0n ? '-' : ''}${absolute / 100n}.${String(absolute % 100n).padStart(2, '0')}`;
+}
+
+async function walletLedger(c: ApiContext, attachment = false) {
   const filter = walletTransactionFilters.parse(c.req.query());
   if (filter.from && filter.to && filter.from > filter.to) {
     return fail(422, 'invalid_dates', 'تاريخ بداية الفترة يأتي بعد نهايتها.');
@@ -786,12 +814,15 @@ business.get('/wallet-transactions', permit('wallets.view'), c => {
   if (filter.status === 'effective') clauses.push("r.id IS NULL AND t.kind <> 'reversal'");
   if (filter.status === 'reversed') clauses.push("(r.id IS NOT NULL OR t.kind = 'reversal')");
   if (filter.q) {
-    clauses.push("(CAST(t.id AS TEXT) = ? OR t.counterparty LIKE ? ESCAPE '\\' OR w.name LIKE ? ESCAPE '\\')");
-    parameters.push(filter.q.replace(/^#/, ''), searchPrefix(filter.q), searchPrefix(filter.q));
+    const prefix = searchPrefix(filter.q);
+    clauses.push(`(CAST(t.id AS TEXT) = ? OR t.counterparty LIKE ? ESCAPE '\\'
+      OR w.name LIKE ? ESCAPE '\\' OR t.provider_reference LIKE ? ESCAPE '\\')`);
+    parameters.push(filter.q.replace(/^#/, ''), prefix, prefix, prefix);
   }
-  const cash = hasPermission(c.get('actor'), 'wallets.cash') ? 't.cash_delta_minor' : 'NULL';
+  const canReadCash = hasPermission(c.get('actor'), 'wallets.cash');
+  const cash = canReadCash ? 't.cash_delta_minor' : 'NULL';
   const columns = `t.id, t.wallet_id, t.kind, t.amount_minor, t.commission_minor, t.fee_minor, t.delta_minor,
-    ${cash} AS cash_delta_minor, t.business_day, t.reversal_of, t.note, t.actor_id, t.created_at, t.counterparty,
+    ${cash} AS cash_delta_minor, t.business_day, t.reversal_of, t.note, t.actor_id, t.created_at, t.counterparty, t.provider_reference,
     w.name AS wallet_name, r.id AS reversed_by, d.id AS wallet_debt_id, p.id AS profit_withdrawal_id, a.id AS adjustment_id`;
   const tables = `wallet_transactions t JOIN wallets w ON w.id = t.wallet_id
       LEFT JOIN wallet_transactions r ON r.reversal_of = t.id
@@ -800,16 +831,35 @@ business.get('/wallet-transactions', permit('wallets.view'), c => {
       LEFT JOIN wallet_adjustments a ON a.id = t.id AND a.wallet_id = t.wallet_id`;
   const where = clauses.length ? 'WHERE ' + clauses.join(' AND ') : '';
   const order = 't.business_day DESC, t.created_at DESC, t.id DESC';
-  if (filter.export) {
-    if (!hasPermission(c.get('actor'), 'wallets.cash')) return fail(403, 'forbidden', 'تصدير الكشف يتطلب صلاحية حركات النقدية.');
-    return c.env.DB.prepare(`SELECT ${columns} FROM ${tables} ${where} ORDER BY ${order} LIMIT 1001`)
-      .bind(...parameters).all().then(({ results }) => {
-        if (results.length > 1000) return fail(422, 'export_limit', 'حدد فترة أقصر أو محفظة واحدة لتصدير ما يصل إلى ١٬٠٠٠ سجل.');
-        return ok(c, results);
-      });
-  }
-  return selectPage(c, columns, tables, where, parameters, order);
-});
+  if (!attachment && !filter.export) return selectPage(c, columns, tables, where, parameters, order);
+  if (!canReadCash) return fail(403, 'forbidden', 'تصدير الكشف يتطلب صلاحية حركات النقدية.');
+  const { results } = await c.env.DB.prepare(`SELECT ${columns} FROM ${tables} ${where} ORDER BY ${order} LIMIT ?`)
+    .bind(...parameters, walletExportLimit + 1).all<WalletExportRow>();
+  if (results.length > walletExportLimit) return fail(422, 'export_limit', 'حدد فترة أقصر أو محفظة واحدة لتصدير ما يصل إلى ١٬٠٠٠ سجل.');
+  if (!attachment) return ok(c, results);
+
+  const headers = [...walletCsvText, ...walletCsvMoney.map(field => field.replace(/_minor$/, '_egp')),
+    ...walletCsvDetails, 'provider_reference'];
+  const lines = results.map(row => {
+    const reference = row.provider_reference;
+    // Spreadsheet imports can discard leading zeros or round long numeric references.
+    const referenceText = reference && /^(?:0\d+|\d{16,})$/.test(reference) ? "'" + reference : reference;
+    return [
+      ...walletCsvText.map(field => csvCell(row[field])),
+      ...walletCsvMoney.map(field => egpDecimal(row[field])),
+      ...walletCsvDetails.map(field => csvCell(row[field])),
+      csvCell(referenceText),
+    ].join(',');
+  });
+  return c.body('\uFEFF' + [headers.join(','), ...lines].join('\r\n') + '\r\n', 200, {
+    'Content-Type': 'text/csv; charset=utf-8',
+    'Content-Disposition': 'attachment; filename="hilal-wallet-ledger.csv"',
+    'Cache-Control': 'private, no-store',
+  });
+}
+
+business.get('/wallet-transactions', permit('wallets.view'), c => walletLedger(c));
+business.get('/wallet-transactions.csv', permit('wallets.view'), c => walletLedger(c, true));
 
 const walletTransaction = z.object({
   kind: z.enum(['receive', 'send', 'expense', 'settlement_in', 'settlement_out']),
@@ -817,11 +867,12 @@ const walletTransaction = z.object({
   commission_minor: money.optional(),
   fee_minor: money.optional(),
   counterparty: phone.default(''),
+  provider_reference: z.string().trim().min(1).max(100).regex(/^[^\p{Cc}\p{Cf}]+$/u).optional(),
   note: note.default(''),
   deferred: z.object({ customer_id: id, principal_minor: positiveMoney.optional(), due_date: date.nullish() }).strict().optional(),
 }).strict().refine(data => {
   const transfer = data.kind === 'send' || data.kind === 'receive';
-  if (!transfer) return !data.fee_minor && !data.commission_minor && !data.deferred && data.note.length > 0;
+  if (!transfer) return !data.fee_minor && !data.commission_minor && !data.deferred && !data.provider_reference && data.note.length > 0;
   if ((data.fee_minor ?? 0) > data.amount_minor || (data.commission_minor ?? 0) > data.amount_minor) return false;
   if (data.kind === 'receive') return !data.deferred;
   const owed = data.amount_minor + (data.commission_minor ?? 0);
@@ -853,14 +904,14 @@ business.post('/wallets/:id/transactions', permit('wallets.transact'), async c =
           FROM incoming LEFT JOIN wallets ON wallets.id = ?
         )
         INSERT INTO wallet_transactions (id, wallet_id, kind, amount_minor, commission_minor, fee_minor,
-          delta_minor, cash_delta_minor, business_day, counterparty, note, actor_id)
+          delta_minor, cash_delta_minor, business_day, counterparty, note, actor_id, provider_reference)
         SELECT ${op}, ?, kind, amount, commission, fee,
           CASE WHEN kind IN ('receive', 'settlement_in') THEN amount - fee ELSE -(amount + fee) END,
           CASE WHEN kind = 'receive' THEN -(amount - commission)
-            WHEN kind = 'send' AND deferred = 0 THEN amount + commission ELSE 0 END, ?, ?, ?, ?
+            WHEN kind = 'send' AND deferred = 0 THEN amount + commission ELSE 0 END, ?, ?, ?, ?, ?
         FROM priced
       `).bind(data.kind, data.amount_minor, data.commission_minor ?? null, data.fee_minor ?? null, Number(Boolean(data.deferred)),
-        walletId, ...binds, walletId, cairoDay(), data.counterparty, data.note, actor),
+        walletId, ...binds, walletId, cairoDay(), data.counterparty, data.note, actor, data.provider_reference ?? null),
     ];
     if (data.deferred) {
       statements.push(db.prepare(`
@@ -1268,3 +1319,4 @@ business.get('/reports/suppliers', permit('suppliers.view'), c =>
 
 business.route('/', purchaseReceiving(write));
 business.route('/', walletReporting);
+business.route('/', walletReconciliation);

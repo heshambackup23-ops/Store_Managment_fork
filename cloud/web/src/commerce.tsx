@@ -8,6 +8,7 @@ import { ActionDialog, DataModule, dataText, FormInput, idOf, Modal, Notice, Pag
 import type { Action, Column, Field, ModuleConfig, Row } from './ui'
 import { WalletAudit, WalletPeriodReport } from './WalletPeriodReport'
 import { WalletPositions } from './WalletOperations'
+import { walletProviderLabel, walletProviderOptions, walletProviderPreset } from './wallet-providers'
 
 const remaining = (row: Row, total: string) => Number(row[total]) - Number(row.paid_minor)
 const remainingColumn = (total: string): Column => ({ key: 'remaining', label: 'المتبقي', render: row => money(remaining(row, total)) })
@@ -80,18 +81,44 @@ const supplierFields: Field[] = [
   { name: 'notes', label: 'ملاحظات', kind: 'textarea' },
 ]
 const walletFields: Field[] = [
-  required('name', 'اسم المحفظة'), { name: 'provider', label: 'مزود المحفظة' }, { name: 'phone', label: 'رقم الهاتف' },
+  required('name', 'اسم المحفظة'),
+  {
+    ...required('provider_type', 'مزود الخدمة', 'select'),
+    options: [...walletProviderOptions, { value: 'custom', label: 'مزود آخر أو غير محدد' }],
+    read: row => walletProviderPreset(row.provider)?.value ?? 'custom',
+  },
+  {
+    name: 'custom_provider', label: 'اسم المزود',
+    visible: values => values.provider_type === 'custom',
+    read: row => walletProviderPreset(row.provider) ? '' : String(row.provider ?? ''),
+  },
+  {
+    name: 'phone', label: 'رقم المحفظة أو عنوان الدفع',
+    placeholder: 'رقم الهاتف أو عنوان إنستا باي',
+  },
+  { name: 'holder_name', label: 'اسم صاحب الحساب' },
   ...amounts({
     transaction_limit_minor: 'حد المعاملة بالجنيه', daily_send_limit_minor: 'حد الإرسال اليومي بالجنيه',
     daily_receive_limit_minor: 'حد الاستقبال اليومي بالجنيه', monthly_send_limit_minor: 'حد الإرسال الشهري بالجنيه',
     monthly_receive_limit_minor: 'حد الاستقبال الشهري بالجنيه',
   }).map(field => ({ ...field, read: (row: Row) => decimal(row[field.name]) })),
+  { ...required('warn_at_percent', 'التنبيه عند بلوغ نسبة من الحد (%)', 'number'), min: 1, initial: '80' },
   moneyField('default_commission_bps', 'نسبة العمولة الافتراضية (%)'),
   moneyField('default_commission_min_minor', 'أقل عمولة افتراضية بالجنيه'),
   moneyField('default_fee_bps', 'نسبة رسوم المزود الافتراضية (%)'),
   moneyField('default_fee_min_minor', 'أقل رسوم افتراضية بالجنيه'),
   { ...moneyField('default_fee_max_minor', 'أقصى رسوم افتراضية بالجنيه'), nullable: true },
+  { name: 'notes', label: 'ملاحظات المحفظة', kind: 'textarea' },
 ]
+
+function walletProfile({ provider_type, custom_provider, holder_name, notes, ...body }: Row): Row {
+  return {
+    ...body,
+    provider: provider_type === 'custom' ? custom_provider ?? '' : provider_type,
+    holder_name: holder_name ?? '',
+    notes: notes ?? '',
+  }
+}
 const maintenanceFields: Field[] = [
   reference('customer_id', 'رقم سجل العميل', '/customers'), required('customer_name', 'اسم العميل'),
   { name: 'phone', label: 'رقم الهاتف' }, { name: 'address', label: 'العنوان' },
@@ -110,6 +137,7 @@ export const walletTransaction: Action = {
     { ...required('kind', 'نوع المعاملة', 'select'), options: options(['receive', 'send', 'expense', 'settlement_in', 'settlement_out']) },
     required('amount_minor', 'المبلغ بالجنيه', 'money'),
     { name: 'counterparty', label: 'رقم الطرف الآخر', visible: values => ['send', 'receive'].includes(values.kind) },
+    { name: 'provider_reference', label: 'مرجع العملية لدى المزود (اختياري)', visible: values => ['send', 'receive'].includes(values.kind) },
     ...amounts({ commission_minor: 'العمولة بالجنيه (فارغ لاستخدام الإعداد)', fee_minor: 'رسوم المزود بالجنيه (فارغ لاستخدام الإعداد)' })
       .map(field => ({ ...field, visible: (values: Record<string, string>) => ['send', 'receive'].includes(values.kind) })), notes,
     { ...reference('deferred_customer', 'العميل للسداد الآجل', '/customers'), nullable: false, visible: values => values.kind === 'send' },
@@ -274,16 +302,20 @@ export const businessModules: Record<string, ModuleConfig> = {
   },
   wallets: {
     title: 'المحافظ', description: 'أرصدة المحافظ وحدودها والمعاملات المسجلة.', endpoint: '/wallets', permission: 'wallets.view', searchable: false,
-    columns: [numberColumn, { key: 'name', label: 'المحفظة' }, { key: 'provider', label: 'المزود' },
+    columns: [numberColumn, { key: 'name', label: 'المحفظة' }, { key: 'provider', label: 'المزود', render: row => walletProviderLabel(row.provider) },
       moneyColumn('balance_minor', 'الرصيد'), moneyColumn('transaction_limit_minor', 'حد المعاملة'), activeColumn],
-    create: createAction('إضافة محفظة', '/wallets', 'wallets.manage', [...walletFields, { name: 'opening_minor', label: 'الرصيد الافتتاحي بالجنيه', kind: 'money' }], true),
-    actions: [walletTransaction, walletAdjustment, editAction('/wallets', 'wallets.manage', [...walletFields, activeField])],
+    create: {
+      ...createAction('إضافة محفظة', '/wallets', 'wallets.manage', [...walletFields, { name: 'opening_minor', label: 'الرصيد الافتتاحي بالجنيه', kind: 'money' }], true),
+      transform: walletProfile,
+    },
+    actions: [walletTransaction, walletAdjustment, { ...editAction('/wallets', 'wallets.manage', [...walletFields, activeField]), transform: walletProfile }],
   },
   'wallet-transactions': {
     title: 'حركات المحافظ', description: 'سجل التحويلات والمصروفات والتسويات والحركات العكسية.', endpoint: '/wallet-transactions', permission: 'wallets.view', searchable: false,
     columns: [numberColumn, { key: 'wallet_name', label: 'المحفظة' }, statusColumn('kind', 'نوع الحركة'), moneyColumn('amount_minor', 'المبلغ'),
       moneyColumn('delta_minor', 'أثر المحفظة'), moneyColumn('cash_delta_minor', 'أثر النقدية'), moneyColumn('commission_minor', 'العمولة'),
-      { key: 'counterparty', label: 'الطرف الآخر' }, { key: 'note', label: 'الملاحظة' }, dateColumn('created_at', 'التاريخ')],
+      { key: 'counterparty', label: 'الطرف الآخر' }, { key: 'provider_reference', label: 'مرجع المزود' },
+      { key: 'note', label: 'الملاحظة' }, dateColumn('created_at', 'التاريخ')],
     actions: [reverse('/wallet-transactions', 'wallets.reverse')],
   },
   'wallet-cash': {
@@ -852,7 +884,8 @@ export function WalletReport({ user }: { user: User }) {
   }, [revision])
   return <>
     <PageTitle title="تقرير المحافظ" description="أرصدة المحافظ والدرج والذمم وصافي العمولات." action={
-      <div className="form-actions"><Link className="secondary" to="/wallet-profit-withdrawals">سجل سحب الأرباح</Link>
+      <div className="form-actions"><Link className="secondary" to="/wallet-reconciliation">مطابقة الدرج والمحافظ</Link>
+        <Link className="secondary" to="/wallet-profit-withdrawals">سجل سحب الأرباح</Link>
         {allowed(user, 'wallets.profit') && <button className="primary" onClick={() => setWithdrawing(true)}>سحب من الأرباح</button>}</div>
     } />
     {withdrawing && <ActionDialog action={createAction('سحب من الأرباح', '/wallet-profit-withdrawals', 'wallets.profit', [

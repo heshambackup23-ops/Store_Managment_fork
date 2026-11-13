@@ -33,6 +33,7 @@ const cashMetrics = [
 const auditLabels: Record<string, string> = {
   'wallet.create': 'إنشاء محفظة', 'wallet.update': 'تعديل محفظة', 'wallet.active': 'تغيير تفعيل المحفظة',
   'wallet.adjust': 'تسوية رصيد محفظة', 'wallet.transaction': 'عملية محفظة', 'wallet.reverse': 'عكس عملية',
+  'wallet.reconcile': 'جرد رصيد',
   'wallet.cash': 'حركة درج', 'wallet.expense.reverse': 'عكس مصروف', 'wallet.profit.withdraw': 'سحب أرباح',
   'wallet_debt_payments.create': 'تحصيل آجل',
 }

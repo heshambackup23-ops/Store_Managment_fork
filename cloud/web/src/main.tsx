@@ -7,6 +7,7 @@ import type { User } from './api'
 import { businessModules, CommerceModule, DamageReport, InvoiceDetail, Pos, SalesReport, WalletReport } from './commerce'
 import { coreModules, Dashboard, Notifications, Products, Profile, Roles, Settings, Staff } from './core'
 import { CustomerLedger, DamageDetail, PurchaseReceipts, SupplierDetail, WalletCashier } from './detail'
+import { WalletReconciliation } from './WalletReconciliation'
 import { DataModule, idOf, Notice, PageTitle } from './ui'
 import { WalletLedger } from './WalletOperations'
 import './styles.css'
@@ -40,6 +41,7 @@ const navGroups: { title: string; items: NavigationItem[] }[] = [
     { path: '/wallet-debts', label: 'ديون المحافظ', permission: 'wallets.view' },
     { path: '/wallet-cash', label: 'حركات نقدية المحافظ', permission: 'wallets.cash' },
     { path: '/wallet-report', label: 'تقرير المحافظ', permission: 'wallets.cash' },
+    { path: '/wallet-reconciliation', label: 'مطابقة الدرج والمحافظ', permission: 'wallets.cash' },
     { path: '/maintenance', label: 'الصيانة', permission: 'maintenance.view' },
   ] },
   { title: 'إدارة النظام', items: [
@@ -237,6 +239,7 @@ function Shell({ user, update, clear, theme, toggle }: {
             <Route path="/invoices/:id" element={protect('invoices.view', <InvoiceDetail user={user} />)} />
             <Route path="/reports" element={protect('reports.view', <SalesReport />)} />
             <Route path="/wallet-report" element={protect('wallets.cash', <WalletReport user={user} />)} />
+            <Route path="/wallet-reconciliation" element={protect('wallets.cash', <WalletReconciliation />)} />
             <Route path="/wallet-cashier" element={protect('wallets.view', <WalletCashier user={user} />)} />
             <Route path="/customers/:id/ledger" element={protect('customers.view', <CustomerLedger key={location.pathname} />)} />
             <Route path="/suppliers/:id" element={protect('suppliers.view', <SupplierDetail user={user} />)} />
