@@ -6,7 +6,7 @@ import {
 } from './http'
 import type { ApiContext, ApiEnv } from './http'
 import { emailSchema } from './auth'
-import { retailTracking } from './retail-devices'
+import { retailTracking, warrantyBasis, warrantyGuarantor } from './retail-devices'
 
 export const catalog = new Hono<ApiEnv>()
 export const catalogPermissions = ['categories', 'products', 'customers']
@@ -31,6 +31,8 @@ const product = z.object({
   low_stock_threshold: z.number().int().min(0).max(1000000000).optional(),
   tracking: retailTracking.optional(),
   warranty_months: z.number().int().min(0).max(120).optional(),
+  warranty_basis: warrantyBasis.optional(),
+  warranty_guarantor: warrantyGuarantor.nullish(),
   variant_group: title.nullish(), variant_color: title.nullish(), variant_size: title.nullish(),
   compatible_models: description,
   units_per_pack: z.number().int().min(1).max(1_000_000).optional(),
@@ -43,6 +45,7 @@ const categoryColumns = `categories.id, name, description, created_at, updated_a
 const customerColumns = 'id, name, phone, email, address, notes, created_at, updated_at'
 const productColumns = `p.id, p.name, p.description, p.notes, p.category_id, c.name AS category_name,
   p.barcode, p.price_minor, p.cost_minor, p.stock, p.low_stock_threshold, p.active, p.tracking, p.warranty_months,
+  p.warranty_basis, p.warranty_guarantor,
   p.variant_group, p.variant_color, p.variant_size, p.compatible_models, p.units_per_pack, p.pack_barcode,
   EXISTS(SELECT 1 FROM product_images i WHERE i.product_id = p.id) AS has_image,
   printf('%d.%02d', p.price_minor / 100, p.price_minor % 100) AS price, p.created_at, p.updated_at`

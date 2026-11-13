@@ -14,6 +14,7 @@ import { mobileCompatibility } from './mobile-compat'
 import { mobileWriteCompatibility } from './mobile-write-compat'
 import { retailDeviceErrors } from './retail-devices'
 import { retailMargin } from './retail-margin'
+import { retailAccountant, retailAccountantPermissions } from './retail-accountant'
 
 const app = new Hono<ApiEnv>()
 
@@ -49,10 +50,11 @@ api.route('/', protectedAuth)
 api.route('/', dashboard)
 api.route('/', catalog)
 api.route('/', customerLedger)
-api.route('/', adminRoutes([...catalogPermissions, ...adminPermissions, ...businessPermissions, 'backup.export']))
+api.route('/', adminRoutes([...catalogPermissions, ...adminPermissions, ...businessPermissions, ...retailAccountantPermissions, 'backup.export']))
 api.route('/', notifications)
 api.route('/', business)
 api.route('/', retailMargin)
+api.route('/', retailAccountant)
 api.route('/', backup)
 app.route('/api/v1', api)
 

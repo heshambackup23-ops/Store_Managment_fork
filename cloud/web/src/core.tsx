@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { Link } from 'react-router-dom'
 import { allowed, apiUrl, decimal, formatDate, integer, money, request } from './api'
+import { RetailQuantityCost } from './RetailQuantityCost'
 import type { User } from './api'
 import { AccessKeyDialog, DataModule, idOf, Modal, Notice, PageTitle } from './ui'
 import type { Action, Column, Field, ModuleConfig, Row } from './ui'
@@ -32,6 +33,7 @@ const customerFields = [
   required('name', 'اسم العميل'), optional('phone', 'رقم الهاتف'), optional('email', 'البريد الإلكتروني', 'email'),
   optional('address', 'العنوان'), optional('notes', 'ملاحظات', 'textarea'),
 ]
+const warrantyEnabled = (values: Record<string, string>) => values.tracking !== 'quantity' && Number(values.warranty_months) > 0
 const productFields: Field[] = [
   required('name', 'اسم المنتج'),
   { ...required('price_minor', 'سعر البيع بالجنيه', 'money'), read: row => decimal(row.price_minor) },
@@ -44,6 +46,11 @@ const productFields: Field[] = [
     { value: 'quantity', label: 'بالكمية' }, { value: 'serial', label: 'بالرقم التسلسلي' }, { value: 'imei', label: 'برقم IMEI' },
   ] },
   { ...optional('warranty_months', 'مدة الضمان بالشهور', 'number'), min: 0, initial: '0', visible: values => values.tracking !== 'quantity' },
+  { ...required('warranty_basis', 'بداية احتساب الضمان', 'select'), initial: 'sale', visible: warrantyEnabled, options: [
+    { value: 'sale', label: 'تاريخ الفاتورة' }, { value: 'delivery', label: 'تاريخ التسليم' },
+    { value: 'installation', label: 'تاريخ التركيب' },
+  ] },
+  { ...optional('warranty_guarantor', 'اسم جهة الضمان'), visible: warrantyEnabled },
   { ...optional('units_per_pack', 'عدد القطع في العبوة', 'number'), min: 1, visible: values => values.tracking === 'quantity' },
   { ...optional('pack_barcode', 'باركود العبوة'), visible: values => values.tracking === 'quantity' },
   optional('description', 'الوصف', 'textarea'),
@@ -170,6 +177,7 @@ export function Products({ user }: { user: User }) {
   const [image, setImage] = useState<Row>()
   const [label, setLabel] = useState<Row>()
   const [version, setVersion] = useState(0)
+  const [valuation, setValuation] = useState<string>()
   const productConfig = coreModules.products
   const withoutCost = (action: Action) => ({ ...action, fields: action.fields?.filter(field => field.name !== 'cost_minor') })
   const config = allowed(user, 'products.cost.manage') ? productConfig : {
@@ -181,10 +189,12 @@ export function Products({ user }: { user: User }) {
         <>
           {allowed(user, 'products.update') && <button className="link-button" onClick={() => setImage(row)}>الصورة</button>}
           {Boolean(row.barcode) && <button className="link-button" onClick={() => setLabel(row)}>الملصق</button>}
+          {row.tracking === 'quantity' && (allowed(user, 'products.cost.view') || allowed(user, 'products.cost.manage')) && <button className="link-button" onClick={() => setValuation(idOf(row))}>تقييم المخزون</button>}
         </>
       )} />
       {image && <RecordImageDialog row={image} collection="/products" title="صورة المنتج" close={() => setImage(undefined)} done={() => { setImage(undefined); setVersion(current => current + 1) }} />}
       {label && <ProductLabel row={label} close={() => setLabel(undefined)} />}
+      {valuation && <RetailQuantityCost productId={valuation} user={user} close={() => setValuation(undefined)} />}
     </>
   )
 }
@@ -203,6 +213,9 @@ const moduleNames: Record<string, string> = {
 function permissionLabel(value: string) {
   if (value === 'retail.shifts.operate') return 'ورديات الكاشير — فتح وإقفال'
   if (value === 'retail.shifts.approve') return 'ورديات الكاشير — اعتماد الفروق'
+  if (value === 'retail.cash.manage') return 'ورديات الكاشير — حركات الدرج والخزنة'
+  if (value === 'retail.audit.view') return 'الرقابة — عرض سجل تدقيق المتجر'
+  if (value === 'retail.accountant.export') return 'الحسابات — تصدير الحركات للمحاسب'
   if (value === 'products.cost.view') return 'المنتجات — عرض التكلفة والهامش'
   if (value === 'products.cost.manage') return 'المنتجات — تعديل التكلفة'
   if (value === 'invoices.discount') return 'الفواتير — السماح بخصم السعر'

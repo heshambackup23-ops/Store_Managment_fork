@@ -6,9 +6,10 @@ import { auditedWrite, body, fail, hasPermission, ok, page, paginated, permit, r
 import { purchaseReceiving } from './purchase-receiving';
 import { retailFinanceReports, retailTenderMatch } from './retail-finance-reports';
 import { retailSalesReport } from './retail-sales-report';
-import { retailPayments, retailPermissions, retailShifts, retailTenderInput, retailTenderStatements } from './retail-shifts';
-import { retailDeviceErrors, retailDevices } from './retail-devices';
+import { cairoRetailDay, retailPayments, retailPermissions, retailShifts, retailTenderInput, retailTenderStatements } from './retail-shifts';
+import { deviceWarrantyView, retailDeviceErrors, retailDevices } from './retail-devices';
 import { procurementErrors, purchaseOrderDetail, purchaseOrderItems, purchaseOrderStatements, retailProcurement } from './retail-procurement';
+import { retailQuantityCosts } from './retail-quantity-costs';
 import { retailReturns } from './retail-returns';
 import { retailStocktakes, stocktakePermissions } from './retail-stocktakes';
 import { walletReconciliation } from './wallet-reconciliation';
@@ -78,6 +79,8 @@ function businessError(error: unknown): never {
     [409, 'RETAIL_SHIFT_REQUIRED', 'سجّل الدفع على وردية مفتوحة واختر وسائل السداد.'],
     [409, 'RETAIL_SHIFT_UNAVAILABLE', 'الوردية مغلقة أو غير مرتبطة بالمستخدم الحالي.'],
     [409, 'RETAIL_SHIFT_ALREADY_OPEN', 'يوجد بالفعل وردية مفتوحة لهذا الدرج أو لهذا الموظف.'],
+    [409, 'RETAIL_CASH_MOVEMENT_DUPLICATE', 'سُجّلت هذه الحركة أو مرجعها من قبل في الوردية.'],
+    [409, 'RETAIL_CASH_MOVEMENT_BALANCE', 'الرصيد المتوقع للدرج لا يسمح بهذه الحركة.'],
     [403, 'RETAIL_SHIFT_NOT_OWNED', 'يمكن لموظف الوردية وحده تسجيل إقفالها.'],
     [409, 'RETAIL_SHIFT_NOT_OPEN', 'الوردية مغلقة بالفعل.'],
     [409, 'RETAIL_SHIFT_BALANCE_CHANGED', 'تغيّر الرصيد المتوقع. حدّث الوردية وأعد الجرد.'],
@@ -127,6 +130,8 @@ function businessError(error: unknown): never {
     ['PURCHASE_RECEIPT_EMPTY', 'سند الاستلام لا يحتوي على أصناف.'],
     ...retailDeviceErrors,
     ...procurementErrors,
+    ['RETAIL_OPENING_VALUE_STALE', 'راجع الرصيد وآخر حركة قبل اعتماد قيمة افتتاحية لصنف كمي غير مقيّم.'],
+    ['RETAIL_INVENTORY_VALUE_LIMIT', 'قيمة المخزون تتجاوز النطاق المسموح.'],
     ['IMMUTABLE_LEDGER', 'سجل الحركات لا يسمح بالتعديل المباشر.'],
     ['UNIQUE constraint failed', 'يوجد سجل مطابق لهذه العملية.'],
     ['FOREIGN KEY constraint failed', 'السجل المرتبط غير موجود أو مرتبط بعمليات أخرى.'],
@@ -258,16 +263,17 @@ business.get('/invoices/:id', permit('invoices.view'), async c => {
     db.prepare(`SELECT operation_id, source, shift_id, method, amount_minor, reference, delta_minor, created_at
       FROM retail_tender_ledger WHERE invoice_id = ? ORDER BY operation_id, position`).bind(invoiceId),
     db.prepare(`SELECT s.*, d.serial_number, d.imei1, d.imei2, d.status
-      FROM retail_device_sales s JOIN retail_devices d ON d.id = s.device_id
+      FROM retail_device_sale_warranty s JOIN retail_devices d ON d.id = s.device_id
       WHERE s.invoice_id = ? ORDER BY s.product_id, s.device_id`).bind(invoiceId),
   ]);
   if (!invoices.results[0]) return fail(404, 'NOT_FOUND', 'الفاتورة غير موجودة.');
+  const canReadCost = hasPermission(c.get('actor'), 'products.cost.view') || hasPermission(c.get('actor'), 'products.cost.manage');
+  const today = cairoRetailDay();
   return ok(c, { ...asInvoice(invoices.results[0]),
     items: items.results.map(({ device_ids_json, unit_cost_minor, ...item }) => ({ ...item, device_ids: JSON.parse(String(device_ids_json)),
-      ...(hasPermission(c.get('actor'), 'products.cost.view') || hasPermission(c.get('actor'), 'products.cost.manage') ? { unit_cost_minor } : {}) })),
+      ...(canReadCost ? { unit_cost_minor } : {}) })),
     payments: payments.results, refund: refunds.results[0] ?? null, tenders: tenders.results,
-    devices: devices.results.map(({ unit_cost_minor, ...device }) => ({ ...device,
-      ...(hasPermission(c.get('actor'), 'products.cost.view') || hasPermission(c.get('actor'), 'products.cost.manage') ? { unit_cost_minor } : {}) })) });
+    devices: devices.results.map(row => deviceWarrantyView(row, today, canReadCost)) });
 });
 
 const basketItem = z.object({ product_id: id, quantity, device_ids: z.array(id).max(200).optional() }).strict();
@@ -1165,8 +1171,12 @@ business.get('/reports/damaged', permit('damaged.view'), async c => {
 business.get('/damaged/:id', permit('damaged.view'), async c => {
   const damageId = identifier(c);
   const db = c.env.DB;
+  const actor = c.get('actor');
+  const canReadCost = hasPermission(actor, 'products.cost.view') || hasPermission(actor, 'products.cost.manage');
   const [records, corrections] = await db.batch([
-    db.prepare(`SELECT ${damageColumns} FROM ${damageTables} WHERE d.id = ?`).bind(damageId),
+    db.prepare(`SELECT ${damageColumns}${canReadCost ? `, (SELECT damage_value_after_minor
+      FROM retail_quantity_movement_costs WHERE damage_id = d.id ORDER BY movement_id DESC LIMIT 1) AS verified_inventory_loss_minor` : ''}
+      FROM ${damageTables} WHERE d.id = ?`).bind(damageId),
     db.prepare('SELECT * FROM damaged_stock_corrections WHERE damage_id = ? ORDER BY id DESC LIMIT 100').bind(damageId),
   ]);
   if (!records.results[0]) return fail(404, 'NOT_FOUND', 'سجل الهالك غير موجود.');
@@ -1435,6 +1445,7 @@ business.route('/', retailReturns(write));
 business.route('/', retailStocktakes(write));
 business.route('/', retailDevices(write));
 business.route('/', retailProcurement(write));
+business.route('/', retailQuantityCosts(write));
 business.route('/', walletReporting);
 business.route('/', walletReconciliation);
 business.route('/', retailShifts(write));

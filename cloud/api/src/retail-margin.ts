@@ -27,6 +27,14 @@ retailMargin.get('/reports/retail-margin', permit('reports.view'), permit('produ
       FROM sold s JOIN retail_device_sales d ON d.invoice_id = s.invoice_id AND d.product_id = s.product_id
       WHERE NOT EXISTS (SELECT 1 FROM retail_return_devices r WHERE r.invoice_id = d.invoice_id AND r.device_id = d.device_id)
       GROUP BY s.invoice_id, s.product_id
+    ), quantity_cost AS (
+      SELECT s.invoice_id, s.product_id, s.net_quantity AS costed_quantity,
+        q.cost_minor - COALESCE((SELECT SUM(r.cost_minor) FROM retail_quantity_return_costs r
+          WHERE r.invoice_id = s.invoice_id AND r.product_id = s.product_id), 0) AS verified_cost_minor
+      FROM sold s JOIN retail_quantity_sale_costs q ON q.invoice_id = s.invoice_id AND q.product_id = s.product_id
+      WHERE q.cost_minor IS NOT NULL
+    ), verified_cost AS (
+      SELECT * FROM device_cost UNION ALL SELECT * FROM quantity_cost
     )
     SELECT c.id AS category_id, COALESCE(c.name, 'بدون تصنيف') AS category,
       SUM(s.net_quantity) AS net_quantity, SUM(s.net_quantity * s.unit_price_minor) AS net_sales_minor,
@@ -35,7 +43,7 @@ retailMargin.get('/reports/retail-margin', permit('reports.view'), permit('produ
       SUM(COALESCE(d.verified_cost_minor, 0)) AS verified_cost_minor,
       SUM(COALESCE(d.costed_quantity, 0) * s.unit_price_minor - COALESCE(d.verified_cost_minor, 0)) AS verified_margin_minor,
       SUM(s.net_quantity - COALESCE(d.costed_quantity, 0)) AS unverified_quantity
-    FROM sold s LEFT JOIN device_cost d ON d.invoice_id = s.invoice_id AND d.product_id = s.product_id
+    FROM sold s LEFT JOIN verified_cost d ON d.invoice_id = s.invoice_id AND d.product_id = s.product_id
     LEFT JOIN categories c ON c.id = s.category_id WHERE s.net_quantity > 0
     GROUP BY c.id, c.name ORDER BY net_sales_minor DESC, c.id
   `).bind(from, to).all();

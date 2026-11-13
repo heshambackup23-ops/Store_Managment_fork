@@ -1,16 +1,15 @@
 import { useEffect, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import type { FormEvent } from 'react'
-import { allowed, integer, money, readMoney, request } from './api'
+import { allowed, apiUrl, decimal, integer, money, readMoney, request } from './api'
 import type { User } from './api'
 import { tenderLabels } from './RetailShifts'
 import { dataText, Modal, Notice, PageTitle } from './ui'
 import type { Row } from './ui'
-import { decimal } from './api'
 
 const ages: Record<string, string> = { undated: 'بلا استحقاق مسجل', not_due: 'غير مستحق بعد', overdue_1_30: 'متأخر ١–٣٠ يومًا', overdue_31_60: '٣١–٦٠ يومًا', overdue_61_90: '٦١–٩٠ يومًا', overdue_90_plus: 'أكثر من ٩٠ يومًا' }
 const sourceLabels: Record<string, string> = { invoice: 'فاتورة', installment: 'قسط', wallet_debt: 'آجل محفظة', personal_debt: 'دين شخصي', maintenance: 'صيانة', purchase: 'شراء', supplier_opening: 'افتتاحي مورد' }
-const labels = { aging: 'أعمار الأرصدة', settlement: 'حركات القنوات غير النقدية', margin: 'هامش البضاعة المثبت' }
+const labels = { aging: 'أعمار الأرصدة', settlement: 'حركات القنوات غير النقدية', margin: 'هامش البضاعة المثبت', audit: 'سجل تدقيق المتجر' }
 type View = keyof typeof labels
 type Report = { items: Row[]; totals?: Record<string, number> | Row[]; from?: string; to?: string; as_of?: string }
 type Column = [string, string, ('money' | 'number' | 'method' | 'source' | 'bucket')?]
@@ -18,6 +17,7 @@ type Column = [string, string, ('money' | 'number' | 'method' | 'source' | 'buck
 const agingColumns: Column[] = [['party', 'الطرف', undefined], ['source', 'المصدر', 'source'], ['id', 'رقم المستند', 'number'], ['due_date', 'الاستحقاق', undefined], ['outstanding_minor', 'المتبقي', 'money'], ['bucket', 'الفترة', 'bucket']]
 const settlementColumns: Column[] = [['method', 'الوسيلة', 'method'], ['register_name', 'الدرج', undefined], ['reference', 'المرجع', undefined], ['delta_minor', 'الصافي', 'money'], ['created_at', 'توقيت القيد', undefined]]
 const marginColumns: Column[] = [['category', 'الفئة', undefined], ['net_sales_minor', 'صافي المبيعات', 'money'], ['verified_sales_minor', 'مبيعات بتكلفة مثبتة', 'money'], ['verified_cost_minor', 'تكلفة مثبتة', 'money'], ['verified_margin_minor', 'الهامش المثبت', 'money'], ['unverified_quantity', 'قطع بلا تكلفة مثبتة', 'number']]
+const auditColumns: Column[] = [['actor_name', 'الموظف'], ['action', 'الإجراء'], ['entity_type', 'نوع السجل'], ['entity_id', 'رقم السجل', 'number'], ['created_at', 'توقيت القيد']]
 
 function exportReport(rows: Row[], columns: Column[], filename: string) {
   const csv = (value: unknown) => {
@@ -38,12 +38,16 @@ export function RetailFinance({ user }: { user: User }) {
   const [params, setParams] = useSearchParams()
   const canViewSettlement = allowed(user, 'retail.shifts.approve')
   const canViewMargin = allowed(user, 'products.cost.view')
-  const view: View = params.get('view') === 'settlement' && canViewSettlement ? 'settlement' : params.get('view') === 'margin' && canViewMargin ? 'margin' : 'aging'
+  const canAudit = allowed(user, 'retail.audit.view')
+  const canExport = allowed(user, 'retail.accountant.export')
+  const selectedView = params.get('view')
+  const view: View = selectedView === 'settlement' && canViewSettlement ? 'settlement' : selectedView === 'margin' && canViewMargin ? 'margin' : selectedView === 'audit' && canAudit ? 'audit' : 'aging'
   const [from, setFrom] = useState('')
   const [to, setTo] = useState('')
   const [side, setSide] = useState('receivable')
   const [method, setMethod] = useState('')
   const [status, setStatus] = useState('')
+  const [auditQuery, setAuditQuery] = useState('')
   const [page, setPage] = useState(1)
   const [total, setTotal] = useState(0)
   const [report, setReport] = useState<Report>()
@@ -55,19 +59,23 @@ export function RetailFinance({ user }: { user: User }) {
     const controller = new AbortController()
     setError(''); setReport(undefined)
     const query = new URLSearchParams({ page: String(page), per_page: '25' })
-    const path = view === 'aging' ? '/reports/aging' : view === 'settlement' ? '/reports/tender-settlements' : '/reports/retail-margin'
+    const path = view === 'aging' ? '/reports/aging' : view === 'settlement' ? '/reports/tender-settlements' : view === 'audit' ? '/retail/audit' : '/reports/retail-margin'
     if (view === 'aging') query.set('side', side)
     else {
       if (from) query.set('from', from)
       if (to) query.set('to', to)
       if (view === 'settlement' && method) query.set('method', method)
       if (view === 'settlement' && status) query.set('status', status)
+      if (view === 'audit' && auditQuery.trim()) query.set('q', auditQuery.trim())
     }
-    request<Report>(path + '?' + query, { signal: controller.signal }).then(result => {
-      if (!controller.signal.aborted) { setReport(result.data); setTotal(result.meta?.total ?? result.data.items.length) }
+    request<Report | Row[]>(path + '?' + query, { signal: controller.signal }).then(result => {
+      if (!controller.signal.aborted) {
+        const data = Array.isArray(result.data) ? { items: result.data, from, to } : result.data
+        setReport(data); setTotal(result.meta?.total ?? data.items.length)
+      }
     }).catch(error => { if (!controller.signal.aborted) setError(error.message) })
     return () => controller.abort()
-  }, [view, page, side, from, to, method, status, revision])
+  }, [view, page, side, from, to, method, status, revision, auditQuery])
 
   function render(value: unknown, kind: Column[2]) {
     if (kind === 'money') return money(value)
@@ -77,11 +85,14 @@ export function RetailFinance({ user }: { user: User }) {
     if (kind === 'bucket') return ages[String(value)] ?? dataText(value)
     return dataText(value)
   }
-  const columns = view === 'aging' ? agingColumns : view === 'settlement' ? settlementColumns : marginColumns
+  const columns = view === 'aging' ? agingColumns : view === 'settlement' ? settlementColumns : view === 'audit' ? auditColumns : marginColumns
   const totals = report?.totals
+  const exportQuery = new URLSearchParams()
+  if (from) exportQuery.set('from', from)
+  if (to) exportQuery.set('to', to)
   return <>
-    <PageTitle title="تقارير مالية للمتجر" />
-    <div className="form-actions section-space" aria-label="التقرير المعروض">{(Object.keys(labels) as View[]).filter(name => name === 'aging' || name === 'settlement' && canViewSettlement || name === 'margin' && canViewMargin).map(name =>
+    <PageTitle title="تقارير مالية للمتجر" action={canExport && <a className="secondary" href={apiUrl('/retail/accountant.csv?' + exportQuery)}>حركات المتجر للمحاسب CSV</a>} />
+    <div className="form-actions section-space" aria-label="التقرير المعروض">{(Object.keys(labels) as View[]).filter(name => name === 'aging' || name === 'settlement' && canViewSettlement || name === 'margin' && canViewMargin || name === 'audit' && canAudit).map(name =>
       <button className={name === view ? 'primary' : 'secondary'} aria-pressed={name === view} key={name} onClick={() => { setPage(1); setParams({ view: name }) }}>{labels[name]}</button>)}</div>
     <section className="panel panel-inner form-section section-space"><h2>{labels[view]}</h2>
       {view === 'aging' ? <label className="field">نوع الرصيد<select value={side} onChange={event => { setSide(event.target.value); setPage(1) }}>
@@ -92,9 +103,11 @@ export function RetailFinance({ user }: { user: User }) {
           <option value="">كل القنوات</option><option value="card">بطاقة</option><option value="wallet">محفظة</option><option value="bank_transfer">تحويل بنكي</option></select></label>}
         {view === 'settlement' && <label className="field">حالة المطابقة<select value={status} onChange={event => { setStatus(event.target.value); setPage(1) }}>
           <option value="">كل الحالات</option><option value="pending">بانتظار المطابقة</option><option value="matched">مطابق</option></select></label>}
+        {view === 'audit' && <label className="field">الموظف أو الإجراء أو رقم السجل<input type="search" value={auditQuery} onChange={event => { setAuditQuery(event.target.value); setPage(1) }} /></label>}
       </div>}
       {view === 'settlement' && <p>قارن الحركات المسجّلة ومراجعها بكشف البنك أو المزود.</p>}
-      {view === 'margin' && <p>الهامش محسوب للأجهزة التي ثبتت تكلفة استلامها. القطع الأخرى تظهر في عمود التكلفة غير المثبتة، وتظهر المرتجعات مقابل تاريخ الفاتورة الأصلية.</p>}
+      {canExport && <p className="muted">ملف المحاسب يفصل مستندات البيع والشراء عن التحصيل وحركات الدرج، ويبيّن المدفوعات القديمة مجهولة الوسيلة.</p>}
+      {view === 'margin' && <p>الهامش يضم الأجهزة التي ثبتت تكلفة استلامها والأصناف الكمية ذات المتوسط المرجّح المثبت. القطع الأخرى تظهر بلا تكلفة مثبتة، وتظهر المرتجعات مقابل تاريخ الفاتورة الأصلية.</p>}
       {report && <p className="muted">{report.as_of ? `الأرصدة القائمة في ${report.as_of}` : `الفترة ${report.from ?? '—'} إلى ${report.to ?? '—'}`}</p>}
       {report?.items.length ? <button type="button" className="secondary" onClick={() => exportReport(report.items, columns, `hilal-${view}-${page}.csv`)}>تصدير الصفحة للمحاسب CSV</button> : null}
       {totals && (Array.isArray(totals) ? <div className="metric-grid">{totals.map(row => <div className="panel metric" key={String(row.method)}><p>{render(row.method, 'method')}</p><strong>{money(row.net_minor)}</strong><p>وارد {money(row.received_minor)} · صادر {money(row.paid_out_minor)}</p></div>)}</div>

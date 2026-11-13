@@ -2,10 +2,13 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import type { write } from './business';
 import { body, fail, hasPermission, identifier, ok, permit, searchPrefix, selectPage, type ApiEnv } from './http';
+import { cairoRetailDay } from './retail-shifts';
 
 export const retailTracking = z.enum(['quantity', 'serial', 'imei']);
 export const retailDeviceStatuses = z.enum(['available', 'sold', 'quarantined', 'voided', 'returned_to_supplier']);
 export const retailDeviceEvents = z.enum(['delivered', 'installed', 'warranty_claim']);
+export const warrantyBasis = z.enum(['sale', 'delivery', 'installation']);
+export const warrantyGuarantor = z.string().trim().min(1).max(160).regex(/^[^\p{Cc}]+$/u);
 const imei = z.string().trim().regex(/^[0-9]{15}$/).refine(value => value !== '000000000000000' &&
   Array.from(value).reduce((sum, digit, index) => {
     const n = Number(digit);
@@ -30,14 +33,24 @@ export const retailDeviceErrors: ReadonlyArray<readonly [string, string]> = [
   ['RETAIL_DEVICE_RETURN_REQUIRED', 'سجّل استرجاع الأجهزة من شاشة مرتجعات البنود.'],
   ['RETAIL_DEVICE_MOVEMENT_REQUIRED', 'حركة مخزون هذا الصنف تتطلب تحديد الأجهزة المسجلة.'],
   ['RETAIL_DEVICE_EVENT_STATE', 'أضف هذا الحدث لقطعة مبيعة وفي تاريخ لا يسبق الفاتورة.'],
+  ['RETAIL_DEVICE_MILESTONE_ORDER', 'يجب أن يسبق التسليم التركيب أو يوافقه في التاريخ.'],
   ['RETAIL_QUARANTINE_STATE', 'القطعة ليست معزولة للفحص أو تغيّر المرتجع المرتبط بها.'],
 ];
 
-const dateFormatter = new Intl.DateTimeFormat('en-CA', {
-  timeZone: 'Africa/Cairo', year: 'numeric', month: '2-digit', day: '2-digit',
-});
 const deviceColumns = 'd.*, p.name AS product_name, p.tracking';
 const devicesTable = 'retail_devices d JOIN products p ON p.id = d.product_id';
+
+export function deviceWarrantyView(row: Record<string, unknown>, today: string, canReadCost: boolean) {
+  const { unit_cost_minor, warranty_returned, ...data } = row;
+  let status = 'none';
+  if (Number(row.warranty_months) > 0) {
+    if (warranty_returned) status = 'returned';
+    else if (typeof row.warranty_starts_on !== 'string' || row.warranty_starts_on > today ||
+      typeof row.warranty_expires_on !== 'string') status = 'pending';
+    else status = today > row.warranty_expires_on ? 'expired' : 'active';
+  }
+  return { ...data, warranty_status: status, ...(canReadCost ? { unit_cost_minor } : {}) };
+}
 
 export function retailDevices(writeOperation: typeof write) {
   const routes = new Hono<ApiEnv>();
@@ -81,8 +94,8 @@ export function retailDevices(writeOperation: typeof write) {
     const [devices, sales, events, returns, quarantine, repairs] = await db.batch<Record<string, unknown>>([
       db.prepare(`SELECT ${deviceColumns}, r.purchase_id FROM ${devicesTable}
         JOIN purchase_stock_receipts r ON r.id = d.receipt_id WHERE d.id = ?`).bind(id),
-      db.prepare(`SELECT s.*, i.invoice_date FROM retail_device_sales s JOIN invoices i ON i.id = s.invoice_id
-        WHERE s.device_id = ? ORDER BY s.rowid DESC LIMIT 100`).bind(id),
+      db.prepare(`SELECT w.*, i.invoice_date FROM retail_device_sale_warranty w JOIN invoices i ON i.id = w.invoice_id
+        WHERE w.device_id = ? ORDER BY w.invoice_id DESC LIMIT 100`).bind(id),
       db.prepare('SELECT * FROM retail_device_events WHERE device_id = ? ORDER BY id DESC LIMIT 100').bind(id),
       db.prepare('SELECT * FROM retail_return_devices WHERE device_id = ? ORDER BY return_id DESC LIMIT 100').bind(id),
       db.prepare('SELECT * FROM retail_quarantine_resolutions WHERE device_id = ? ORDER BY id DESC LIMIT 100').bind(id),
@@ -93,8 +106,8 @@ export function retailDevices(writeOperation: typeof write) {
     ]);
     if (!devices.results[0]) return fail(404, 'not_found', 'الجهاز غير موجود.');
     const canReadCost = hasPermission(actor, 'products.cost.view') || hasPermission(actor, 'products.cost.manage');
-    const history = sales.results.map(({ unit_cost_minor, ...row }) =>
-      canReadCost ? { ...row, unit_cost_minor } : row);
+    const today = cairoRetailDay();
+    const history = sales.results.map(row => deviceWarrantyView(row, today, canReadCost));
     return ok(c, { ...devices.results[0], sales: history, events: events.results, returns: returns.results,
       quarantine_resolutions: quarantine.results, ...(repairs ? { repairs: repairs.results } : {}) });
   });
@@ -124,9 +137,9 @@ export function retailDevices(writeOperation: typeof write) {
       kind: retailDeviceEvents,
       occurred_on: z.iso.date().optional(),
       note: z.string().trim().max(1000).default(''),
+      proof_reference: z.string().trim().min(1).max(120).regex(/^[^\p{Cc}]+$/u).nullish(),
     }));
-    const parts = dateFormatter.formatToParts(new Date());
-    const today = ['year', 'month', 'day'].map(type => parts.find(part => part.type === type)?.value).join('-');
+    const today = cairoRetailDay();
     if (data.occurred_on && data.occurred_on > today) return fail(422, 'future_device_event', 'تاريخ الحدث لا يمكن أن يكون في المستقبل.');
     const occurredOn = data.occurred_on ?? today;
     return writeOperation(c, 'retail.device.event', { deviceId, ...data }, (op, binds, actor) => [
@@ -136,10 +149,10 @@ export function retailDevices(writeOperation: typeof write) {
           FROM retail_device_sales s JOIN invoices i ON i.id = s.invoice_id JOIN retail_devices d ON d.id = s.device_id
           WHERE s.device_id = ? AND d.status = 'sold' ORDER BY s.rowid DESC LIMIT 1
         )
-        INSERT INTO retail_device_events (id, invoice_id, product_id, device_id, kind, occurred_on, note, actor_id)
+        INSERT INTO retail_device_events (id, invoice_id, product_id, device_id, kind, occurred_on, note, actor_id, proof_reference)
         VALUES (${op}, (SELECT invoice_id FROM last_sale), (SELECT product_id FROM last_sale),
-          ?, ?, ?, ?, ?)
-      `).bind(deviceId, ...binds, deviceId, data.kind, occurredOn, data.note, actor),
+          ?, ?, ?, ?, ?, ?)
+      `).bind(deviceId, ...binds, deviceId, data.kind, occurredOn, data.note, actor, data.proof_reference ?? null),
     ]);
   });
 

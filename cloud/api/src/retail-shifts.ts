@@ -11,7 +11,9 @@ const methods = ['cash', 'card', 'wallet', 'bank_transfer'] as const;
 const statuses = ['open', 'closed', 'pending_approval', 'approved'] as const;
 const operates = 'retail.shifts.operate';
 const approves = 'retail.shifts.approve';
-export const retailPermissions = [operates, approves];
+const managesCash = 'retail.cash.manage';
+export const retailPermissions = [operates, approves, managesCash];
+const cashMovementKinds = ['safe_deposit', 'safe_withdrawal', 'general_expense'] as const;
 
 export const retailPayments = z.array(z.strictObject({
   method: z.enum(methods), amount_minor: amount.min(1),
@@ -74,18 +76,22 @@ function shiftScope(c: ApiContext) {
 async function shiftDetail(c: ApiContext, id: number, status: 200 | 201 = 200) {
   const scope = shiftScope(c);
   const db = c.env.DB;
-  const [shifts, sums] = await db.batch<Record<string, unknown>>([
+  const [shifts, sums, cashMovements] = await db.batch<Record<string, unknown>>([
     db.prepare('SELECT s.* FROM retail_shift_positions s WHERE s.id = ?' + scope.clause).bind(id, ...scope.values),
     db.prepare(`SELECT method,
       SUM(CASE WHEN delta_minor > 0 THEN delta_minor ELSE 0 END) AS received_minor,
       SUM(CASE WHEN delta_minor < 0 THEN -delta_minor ELSE 0 END) AS paid_out_minor
       FROM retail_tender_ledger t JOIN retail_shifts s ON s.id = t.shift_id WHERE s.id = ?${scope.clause}
       GROUP BY method`).bind(id, ...scope.values),
+    db.prepare(`SELECT m.kind, SUM(m.amount_minor) AS amount_minor
+      FROM retail_cash_movements m JOIN retail_shifts s ON s.id = m.shift_id WHERE s.id = ?${scope.clause}
+      GROUP BY m.kind`).bind(id, ...scope.values),
   ]);
   const shift = shifts.results[0];
   if (!shift) return fail(404, 'RETAIL_SHIFT_NOT_FOUND', 'الوردية المطلوبة غير موجودة.');
   const totals = methods.map(method => sums.results.find(row => row.method === method) ?? { method, received_minor: 0, paid_out_minor: 0 });
-  return ok(c, { ...shift, totals }, status);
+  const cash_movement_totals = cashMovementKinds.map(kind => cashMovements.results.find(row => row.kind === kind) ?? { kind, amount_minor: 0 });
+  return ok(c, { ...shift, totals, cash_movement_totals }, status);
 }
 
 const openInput = z.strictObject({
@@ -98,6 +104,12 @@ const closeInput = z.strictObject({
   reason: reason.default(''),
 });
 const approvalInput = z.strictObject({ reason: reason.refine(value => value.length > 0) });
+const movementInput = z.strictObject({
+  kind: z.enum(cashMovementKinds),
+  amount_minor: amount.min(1),
+  reason: reason.refine(value => value.length > 0),
+  reference: z.string().trim().min(1).max(100).regex(/^[^\p{Cc}\p{Cf}]+$/u).optional(),
+});
 const settingsInput = z.strictObject({ require_shift: z.boolean() });
 
 export function retailShifts(writeOperation: typeof write) {
@@ -123,6 +135,28 @@ export function retailShifts(writeOperation: typeof write) {
   });
 
   routes.get('/retail/shifts/:id', c => shiftDetail(c, identifier.parse(c.req.param('id'))));
+
+  routes.get('/retail/shifts/:id/cash-movements', async c => {
+    const shiftId = identifier.parse(c.req.param('id'));
+    const scope = shiftScope(c);
+    const values = [shiftId, ...scope.values];
+    const where = 'WHERE s.id = ?' + scope.clause;
+    const visible = await c.env.DB.prepare(`SELECT s.id FROM retail_shifts s ${where}`).bind(...values).first();
+    if (!visible) return fail(404, 'RETAIL_SHIFT_NOT_FOUND', 'الوردية المطلوبة غير موجودة.');
+    return selectPage(c, 'm.*', 'retail_cash_movements m JOIN retail_shifts s ON s.id = m.shift_id', where, values, 'm.id DESC');
+  });
+
+  routes.post('/retail/shifts/:id/cash-movements', permit(operates), permit(managesCash), async c => {
+    const shiftId = identifier.parse(c.req.param('id'));
+    const data = await body(c, movementInput);
+    const now = new Date().toISOString();
+    const db = c.env.DB;
+    return writeOperation(c, 'retail.shift.cash.' + data.kind, { shiftId, ...data }, (op, binds, actor) => [
+      db.prepare(`INSERT INTO retail_cash_movements(id, shift_id, kind, amount_minor, reason, reference, actor_id, actor_name, created_at)
+        VALUES (${op}, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .bind(...binds, shiftId, data.kind, data.amount_minor, data.reason, data.reference ?? null, actor, c.get('actor').name, now),
+    ], async id => ok(c, await db.prepare('SELECT * FROM retail_cash_movements WHERE id = ?').bind(id).first(), 201));
+  });
 
   routes.post('/retail/shifts', permit(operates), async c => {
     const data = await body(c, openInput);

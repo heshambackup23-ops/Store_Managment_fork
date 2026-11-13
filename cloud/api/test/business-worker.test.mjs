@@ -578,6 +578,7 @@ test('Worker and local D1 enforce financial rules through the mounted API', asyn
     assert.equal(beforeEvent.status, 'sold');
     assert.equal(beforeEvent.sales[0].warranty_starts_on, '2026-01-31');
     assert.equal(beforeEvent.sales[0].warranty_expires_on, '2026-02-28');
+    assert.equal(beforeEvent.sales[0].warranty_basis, 'sale');
     assert.equal((await post(physical + '/events', { kind: 'installed', occurred_on: '2026-01-30' })).json.code,
       'RETAIL_DEVICE_EVENT_STATE');
     assertStatus(await post(physical + '/events', { kind: 'delivered', occurred_on: '2026-02-01' }), 201);
@@ -598,7 +599,37 @@ test('Worker and local D1 enforce financial rules through the mounted API', asyn
     assert.equal(returned.items[0].devices[0].id, physicalId);
     assert.equal(assertStatus(await request(physical), 200).status, 'available');
     assert.equal(await stock(), 1);
+    const profile = { warranty_basis: 'installation', warranty_months: 120, warranty_guarantor: '  الوكيل التجريبي  ' };
+    const configured = assertStatus(await request('/products/' + product.id, { method: 'PATCH', body: profile }), 200);
+    assert.equal(configured.warranty_guarantor, 'الوكيل التجريبي');
+    assertStatus(await request('/products/' + product.id, { method: 'PATCH', body: { warranty_basis: 'unsupported' } }), 422);
     const resale = assertStatus(await sell([saleLine]), 201);
+    const resaleInvoice = '/invoices/' + resale.id;
+    const pending = assertStatus(await request(resaleInvoice), 200).devices[0];
+    assert.equal(pending.warranty_status, 'pending');
+    assert.equal(pending.warranty_basis, 'installation');
+    assert.equal(pending.warranty_starts_on, null);
+    assert.equal(pending.warranty_expires_on, null);
+    assertStatus(await post(physical + '/events', { kind: 'delivered', occurred_on: '2026-02-02', proof_reference: 'DL-١٢٣' }), 201);
+    assertStatus(await post(physical + '/events', { kind: 'warranty_claim', proof_reference: 'x'.repeat(121) }), 422);
+    assert.equal(assertStatus(await request(resaleInvoice), 200).devices[0].warranty_status, 'pending');
+    assert.equal((await post(physical + '/events', { kind: 'installed', occurred_on: '2026-02-01' })).json.code,
+      'RETAIL_DEVICE_MILESTONE_ORDER');
+    const installed = { kind: 'installed', occurred_on: '2026-02-04', proof_reference: '  INST-٤٥٦  ' };
+    const installKey = randomUUID();
+    const recordedInstallation = assertStatus(await post(physical + '/events', installed, { key: installKey }), 201);
+    assert.deepEqual(assertStatus(await post(physical + '/events', installed, { key: installKey }), 201), recordedInstallation);
+    assertStatus(await request('/products/' + product.id, { method: 'PATCH', body: {
+      warranty_basis: 'delivery', warranty_guarantor: 'مركز التجربة', warranty_months: 2,
+    } }), 200);
+    const warranty = assertStatus(await request(physical), 200);
+    assert.deepEqual(warranty.sales.map(s => [s.warranty_basis, s.warranty_guarantor, s.warranty_status]), [
+      ['installation', 'الوكيل التجريبي', 'active'], ['sale', null, 'returned'],
+    ]);
+    assert.equal(warranty.events[0].proof_reference, 'INST-٤٥٦');
+    const active = assertStatus(await request(resaleInvoice), 200).devices[0];
+    assert.deepEqual([active.warranty_starts_on, active.warranty_expires_on, active.warranty_proof_reference],
+      ['2026-02-04', '2036-02-04', 'INST-٤٥٦']);
     assert.equal((await returnOne(returnItem)).json.code, 'RETAIL_RETURN_INVOICE_CLOSED');
     assertStatus(await post('/invoices/' + resale.id + '/returns', {
       reason: 'defective after resale', items: [{ ...saleLine, disposition: 'quarantine' }],
@@ -606,6 +637,7 @@ test('Worker and local D1 enforce financial rules through the mounted API', asyn
     const held = assertStatus(await request(physical), 200);
     assert.equal(held.status, 'quarantined');
     assert.deepEqual(held.returns.map(row => row.disposition), ['quarantine', 'resale']);
+    assert.equal(held.sales[0].warranty_status, 'returned');
     assert.equal(await stock(), 0);
     assert.equal((await sell([saleLine])).json.code, 'RETAIL_DEVICE_UNAVAILABLE');
     const repair = assertStatus(await post('/maintenance', {
@@ -626,9 +658,16 @@ test('Worker and local D1 enforce financial rules through the mounted API', asyn
     const restored = assertStatus(await request(physical), 200);
     assert.equal(restored.status, 'available');
     assert.deepEqual(restored.quarantine_resolutions.map(record => record.return_id), [inspection.return_id]);
+    const deliverySale = assertStatus(await sell([saleLine]), 201);
+    const deliveryInvoice = '/invoices/' + deliverySale.id;
+    assert.equal(assertStatus(await request(deliveryInvoice), 200).devices[0].warranty_status, 'pending');
+    assertStatus(await post(physical + '/events', { kind: 'delivered', occurred_on: '2026-02-28', proof_reference: 'DL-٢' }), 201);
+    const delivery = assertStatus(await request(deliveryInvoice), 200).devices[0];
+    assert.deepEqual([delivery.warranty_basis, delivery.warranty_guarantor, delivery.warranty_starts_on, delivery.warranty_expires_on],
+      ['delivery', 'مركز التجربة', '2026-02-28', '2026-04-28']);
+    assert.equal(delivery.warranty_status, 'expired');
     const movements = assertStatus(await request('/inventory/movements?product_id=' + product.id), 200);
     assert.equal(movements.filter(row => row.quarantine_resolution_id === resolved.id && row.delta === 1).length, 1);
-    assertStatus(await sell([saleLine]), 201);
 
     const migrated = assertStatus(await post('/products', { name: 'Previously untracked unit', price_minor: 1000 }), 201);
     assertStatus(await post('/inventory/adjustments', { product_id: migrated.id, delta: 1, note: 'historical quantity fixture' }), 201);
@@ -686,6 +725,104 @@ test('Worker and local D1 enforce financial rules through the mounted API', asyn
     assert.equal(assertStatus(await request('/suppliers/' + supplier.id), 200).balance_minor, 0);
     assert.equal(assertStatus(await request('/products/' + product.id), 200).stock, 1);
     assert.equal(assertStatus(await request('/retail/devices/' + devices[0].id), 200).status, 'returned_to_supplier');
+  });
+
+  await t.test('quantity costs reconcile priced receipts, sales, returns, losses and authorized opening valuations', async () => {
+    const product = assertStatus(await post('/products', { name: 'Quantity cost fixture', price_minor: 1000 }), 201);
+    const productId = product.id;
+    const supplier = assertStatus(await post('/suppliers', { name: 'Quantity cost supplier' }), 201);
+    const costPath = '/retail/quantity-costs/' + productId;
+    const valuation = async () => assertStatus(await request(costPath), 200);
+    const movements = async () => assertStatus(await request(costPath + '/movements'), 200);
+    const verify = async (stock, amount) => {
+      const current = await valuation();
+      assert.deepEqual([current.stock, current.inventory_value_minor], [stock, amount]);
+    };
+    const createReceipt = async (reference, quantity, unitCost, landedCost = 0) => {
+      const items = unitCost === null ? undefined : [{
+        product_id: productId, quantity, unit_cost_minor: unitCost, landed_unit_minor: landedCost,
+      }];
+      const purchase = assertStatus(await post('/purchases', { supplier_id: supplier.id, description: reference,
+        purchase_date: '2026-01-01', total_minor: unitCost === null ? 999 : unitCost * quantity, items }), 201);
+      const receiptPath = '/purchases/' + purchase.id + '/receipts';
+      const receipt = assertStatus(await post(receiptPath, { reference, items: [{ product_id: productId, quantity }] }), 201);
+      return { purchase, reversePath: receiptPath + '/' + receipt.id + '/reverse' };
+    };
+    const sale = async quantity => assertStatus(await post('/invoices', {
+      items: [{ product_id: productId, quantity }], paid_minor: quantity * 1000,
+    }), 201);
+    const returnLine = async (invoiceId, disposition) => assertStatus(await post('/invoices/' + invoiceId + '/returns', {
+      reason: 'quantity cost return', items: [{ product_id: productId, quantity: 1, disposition }],
+    }), 201);
+    await verify(0, 0);
+    await createReceipt('Landed A', 2, 23, 10);
+    await createReceipt('Landed B', 1, 30, 5);
+    await verify(3, 101);
+    const sold = await sale(3);
+    assert.equal((await movements()).find(row => row.source_type === 'invoice' && row.source_id === sold.id).cost_delta_minor, -101);
+    await verify(0, 0);
+    const resaleA = await returnLine(sold.id, 'resale');
+    await verify(1, 33);
+    await returnLine(sold.id, 'quarantine');
+    await verify(1, 33);
+    const resaleB = await returnLine(sold.id, 'resale');
+    await verify(2, 67);
+    const refunds = (await movements()).filter(row => row.source_type === 'refund' && [resaleA.id, resaleB.id].includes(row.source_id));
+    assert.deepEqual(refunds.map(row => row.cost_delta_minor), [34, 33]);
+
+    const one = await sale(1);
+    await verify(1, 34);
+    assertStatus(await post('/invoices/' + one.id + '/refund', { reason: 'legacy full refund' }), 201);
+    await verify(2, 67);
+    const loss = assertStatus(await post('/damaged', { product_id: productId, quantity: 2, reason: 'damage quantity pool' }), 201);
+    await verify(0, 0);
+    assertStatus(await post('/damaged/' + loss.id + '/correct', { quantity: 1, reason: 'one unit recovered' }), 201);
+    await verify(1, 33);
+    assert.equal(assertStatus(await request('/damaged/' + loss.id), 200).verified_inventory_loss_minor, 34);
+    assertStatus(await post('/damaged/' + loss.id + '/reverse', { reason: 'restored remaining known loss' }), 201);
+    await verify(2, 67);
+
+    const immediate = await createReceipt('Reverse exact', 2, 22);
+    await verify(4, 111);
+    assertStatus(await post(immediate.reversePath, { reason: 'cancel untouched receipt' }), 201);
+    await verify(2, 67);
+    const returned = await createReceipt('Supplier return', 2, 11);
+    await verify(4, 89);
+    assertStatus(await post('/purchases/' + returned.purchase.id + '/returns', {
+      reason: 'supplier return', items: [{ product_id: productId, quantity: 1 }],
+    }), 201);
+    await verify(3, 67);
+    const unpriced = await createReceipt('No proven price', 1, null);
+    await verify(4, null);
+    assertStatus(await post(unpriced.reversePath, { reason: 'unpriced receipt reversed' }), 201);
+    await verify(3, null);
+    const pending = await valuation();
+    const value = { expected_stock: pending.stock, expected_movement_id: pending.last_movement_id,
+      value_minor: 801, reason: 'authorized opening valuation after physical count' };
+    assertStatus(await request(costPath, { identity: 1 }), 403);
+    assertStatus(await post(costPath + '/opening', value, { identity: 1 }), 403);
+    assert.equal((await post(costPath + '/opening', { ...value, expected_movement_id: 0 })).json.code, 'RETAIL_OPENING_VALUE_STALE');
+    const key = randomUUID();
+    const opened = assertStatus(await post(costPath + '/opening', value, { key }), 201);
+    assert.deepEqual(assertStatus(await post(costPath + '/opening', value, { key }), 201), opened);
+    await verify(3, 801);
+    assert.equal((await post(costPath + '/opening', value)).json.code, 'RETAIL_OPENING_VALUE_STALE');
+    assertStatus(await post('/inventory/adjustments', { product_id: productId, delta: -1, note: 'known shrinkage' }), 201);
+    await verify(2, 534);
+    assertStatus(await post('/inventory/adjustments', { product_id: productId, delta: 1, note: 'unpriced adjustment' }), 201);
+    await verify(3, null);
+    await createReceipt('Priced does not prove old stock', 1, 9);
+    await verify(4, null);
+    const unknownSale = await sale(4);
+    assert.equal((await movements()).find(row => row.source_id === unknownSale.id).cost_delta_minor, null);
+    await verify(0, 0);
+    await createReceipt('Known after depletion', 2, 20);
+    await verify(2, 40);
+    const ambiguous = await createReceipt('Prior receipt later corrected', 1, 80);
+    await createReceipt('Later priced receipt', 1, 30);
+    await verify(4, 150);
+    assertStatus(await post(ambiguous.reversePath, { reason: 'historical receipt correction after later movement' }), 201);
+    await verify(3, null);
   });
 
   await t.test('wallet CSV downloads through cookie auth with the ledger filters and exact EGP values', async () => {
@@ -923,4 +1060,22 @@ test('a provider receipt is unique per wallet and a retry does not post twice', 
   assertStatus(await post(route(second.id), receipt), 201);
   const latest = assertStatus(await request('/wallet-transactions?wallet_id=' + first.id), 200);
   assert.equal(latest.find(row => row.kind === 'reversal').provider_reference, null);
+});
+
+test('accountant export separates cash movements from documents and requires its own permission', async t => {
+  const request = await worker(t);
+  const post = (path, body) => request(path, { method: 'POST', body });
+  const shift = assertStatus(await post('/retail/shifts', { register_name: 'Accountant fixture', opening_minor: 10000 }), 201);
+  assertStatus(await post(`/retail/shifts/${shift.id}/cash-movements`, {
+    kind: 'general_expense', amount_minor: 1200, reason: 'fixture expense', reference: '=TEST-EXPENSE',
+  }), 201);
+  const denied = await request('/retail/accountant.csv', { identity: 1 });
+  assertStatus(denied, 403);
+  assertStatus(await request('/retail/audit', { identity: 1 }), 403);
+  const exported = await request('/retail/accountant.csv');
+  assert.equal(exported.status, 200, JSON.stringify(exported.json));
+  const rows = parse(exported.csv, { bom: true, columns: true });
+  assert.deepEqual(rows.map(row => [row.record_type, row.amount_egp]).sort(), [['manual_drawer', '-12.00'], ['shift_open', '100.00']]);
+  assert.equal(rows.find(row => row.record_type === 'manual_drawer').reference, "'=TEST-EXPENSE");
+  assert.ok(assertStatus(await request('/retail/audit?q=retail.'), 200).some(row => row.action.includes('cash')));
 });

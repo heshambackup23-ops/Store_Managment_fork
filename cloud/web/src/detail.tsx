@@ -167,6 +167,7 @@ export function DamageDetail() {
           <div><dt>المنتج</dt><dd>{dataText(result.product_name)}</dd></div>
           <div><dt>الكمية</dt><dd>{dataText(result.quantity)}</dd></div>
           <div><dt>قيمة الوحدة</dt><dd>{money(result.unit_value_minor)}</dd></div>
+          {'verified_inventory_loss_minor' in result && <div><dt>تكلفة الهالك المثبتة</dt><dd>{result.verified_inventory_loss_minor == null ? 'غير مثبتة' : money(result.verified_inventory_loss_minor)}</dd></div>}
           {result.legacy_stock_before != null && <div><dt>الرصيد وقت تسجيل الهالك</dt>
             <dd>{dataText(result.legacy_stock_before)} ← {dataText(result.legacy_stock_after)}</dd></div>}
           <div><dt>تاريخ الهالك</dt><dd>{formatDate(result.damaged_on)}</dd></div>

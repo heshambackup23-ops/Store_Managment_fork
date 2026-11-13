@@ -14,6 +14,8 @@ export const trackingOf = (value: unknown): Tracking => value === 'serial' || va
 export const deviceLabel = (device: Device) => [device.serial_number, device.imei1, device.imei2].filter(Boolean).join(' / ') || '#' + device.id
 const states: Record<string, string> = { available: 'متاح', sold: 'مباع', quarantined: 'معزول للفحص', quarantine: 'معزول للفحص', voided: 'استلام معكوس', returned_to_supplier: 'مرتجع للمورد' }
 const eventLabels = { delivered: 'إثبات تسليم', installed: 'إثبات تركيب', warranty_claim: 'مطالبة ضمان' }
+const warrantyBasis = { sale: 'الفاتورة', delivery: 'التسليم', installation: 'التركيب' }
+const warrantyStates = { none: 'بدون ضمان مسجل', pending: 'بانتظار تاريخ البدء', active: 'سارٍ', expired: 'منتهي', returned: 'مرتجع' }
 
 export function DevicePicker({ productId, purchaseId, productName, quantity, selected, change, disabled }: {
   productId: number; purchaseId?: number; productName: string; quantity: number; selected: number[]; change: (ids: number[]) => void; disabled?: boolean
@@ -60,12 +62,14 @@ export function DevicePicker({ productId, purchaseId, productName, quantity, sel
 }
 
 type DeviceDetailData = Device & {
-  sales?: { invoice_id: number; warranty_months?: number; invoice_date?: string; warranty_starts_on?: string; warranty_expires_on?: string }[];
-  events?: { id: number; kind: keyof typeof eventLabels; occurred_on: string; note?: string; invoice_id?: number }[];
+  sales?: { invoice_id: number; warranty_months?: number; invoice_date?: string; warranty_starts_on?: string | null;
+    warranty_expires_on?: string | null; warranty_basis?: keyof typeof warrantyBasis; warranty_guarantor?: string | null;
+    warranty_status?: keyof typeof warrantyStates; warranty_proof_reference?: string | null }[];
+  events?: { id: number; kind: keyof typeof eventLabels; occurred_on: string; note?: string; proof_reference?: string | null; invoice_id?: number }[];
   returns?: { return_id: number; disposition: string }[];
   quarantine_resolutions?: { id: number; reason: string; created_at: string }[];
   repairs?: { id: number; item: string; status: string; requested_date: string }[];
-  warranty_months?: number; warranty_until?: string | null; invoice_id?: number | null; purchase_id?: number | null;
+  purchase_id?: number | null;
 }
 
 export function DeviceDetail({ user }: { user: User }) {
@@ -74,6 +78,7 @@ export function DeviceDetail({ user }: { user: User }) {
   const [kind, setKind] = useState<keyof typeof eventLabels>('delivered')
   const [occurredOn, setOccurredOn] = useState('')
   const [note, setNote] = useState('')
+  const [proofReference, setProofReference] = useState('')
   const [resolution, setResolution] = useState('')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
@@ -93,8 +98,11 @@ export function DeviceDetail({ user }: { user: User }) {
     setBusy(true)
     setError('')
     try {
-      await request(path + '/events', { method: 'POST', financial: true, body: { kind, occurred_on: occurredOn || undefined, note: note.trim() || undefined } })
-      setNote(''); setOccurredOn(''); refresh(value => value + 1)
+      await request(path + '/events', { method: 'POST', financial: true, body: {
+        kind, occurred_on: occurredOn || undefined, note: note.trim() || undefined,
+        proof_reference: proofReference.trim() || undefined,
+      } })
+      setNote(''); setOccurredOn(''); setProofReference(''); refresh(value => value + 1)
     } catch (error) { setError(error instanceof Error ? error.message : 'تعذّر تسجيل الإجراء.') }
     finally { setBusy(false) }
   }
@@ -119,10 +127,17 @@ export function DeviceDetail({ user }: { user: User }) {
         <h2>{device.product_name}</h2>
         <p><bdi>{deviceLabel(device)}</bdi> · {states[device.status] ?? device.status}</p>
         {device.purchase_id && <Link to={'/purchases/' + device.purchase_id + '/receipts'}>استلام المورد</Link>}
-        {device.warranty_months !== undefined && device.warranty_months !== null && <p>مدة الضمان · {device.warranty_months} شهر</p>}
-        {device.warranty_until && <p>الضمان حتى {formatDate(device.warranty_until)}</p>}
-        {(device.sales ?? []).map(sale => <p key={sale.invoice_id}><Link to={'/invoices/' + sale.invoice_id}>فاتورة {sale.invoice_id}</Link> · {formatDate(sale.invoice_date)}
-          {sale.warranty_expires_on && <> · الضمان حتى {formatDate(sale.warranty_expires_on)}</>}</p>)}
+        {(device.sales ?? []).map(sale => <article className="form-section" key={sale.invoice_id}>
+          <p><Link to={'/invoices/' + sale.invoice_id}>فاتورة {sale.invoice_id}</Link> · {formatDate(sale.invoice_date)}
+            {sale.warranty_status && <> · {warrantyStates[sale.warranty_status]}</>}</p>
+          {Boolean(sale.warranty_months) && <dl className="invoice-summary">
+            <div><dt>مدة الضمان</dt><dd>{sale.warranty_months} شهر {sale.warranty_basis && `من ${warrantyBasis[sale.warranty_basis]}`}</dd></div>
+            {sale.warranty_guarantor && <div><dt>جهة الضمان</dt><dd>{sale.warranty_guarantor}</dd></div>}
+            {sale.warranty_starts_on && <div><dt>بداية الضمان</dt><dd>{formatDate(sale.warranty_starts_on)}</dd></div>}
+            {sale.warranty_expires_on && <div><dt>الضمان حتى</dt><dd>{formatDate(sale.warranty_expires_on)}</dd></div>}
+            {sale.warranty_proof_reference && <div><dt>مرجع إثبات البدء</dt><dd><bdi>{sale.warranty_proof_reference}</bdi></dd></div>}
+          </dl>}
+        </article>)}
       </section>
       {device.status === 'sold' && allowed(user, 'inventory.manage') && <form className="panel form-card section-space" onSubmit={save}>
         <h2>إجراء على الجهاز</h2>
@@ -130,7 +145,8 @@ export function DeviceDetail({ user }: { user: User }) {
           {Object.entries(eventLabels).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
         </select></label>
         <label className="field">تاريخ الإجراء<input type="date" value={occurredOn} onChange={event => setOccurredOn(event.target.value)} /></label>
-        <label className="field">البيان أو مرجع المستند<textarea maxLength={500} value={note} onChange={event => setNote(event.target.value)} /></label>
+        <label className="field">مرجع مستند الإثبات<input value={proofReference} maxLength={120} onChange={event => setProofReference(event.target.value)} /></label>
+        <label className="field">البيان<textarea maxLength={500} value={note} onChange={event => setNote(event.target.value)} /></label>
         <button className="primary" disabled={busy}>سجّل الإجراء</button>
       </form>}
       {device.status === 'quarantined' && allowed(user, 'inventory.manage') && <form className="panel form-card section-space" onSubmit={release}>
@@ -141,7 +157,8 @@ export function DeviceDetail({ user }: { user: User }) {
       <section className="panel panel-inner form-section">
         <h2>التسليم والتركيب والضمان</h2>
         {!device.events?.length ? <p className="muted">لا توجد إجراءات مسجلة.</p> : <ul className="dash-list">
-          {device.events.map(event => <li key={event.id}><strong>{eventLabels[event.kind]}</strong> · {formatDate(event.occurred_on)} {event.note && ' · ' + event.note}</li>)}
+          {device.events.map(event => <li key={event.id}><strong>{eventLabels[event.kind]}</strong> · {formatDate(event.occurred_on)}
+            {event.proof_reference && <> · مرجع الإثبات <bdi>{event.proof_reference}</bdi></>}{event.note && ' · ' + event.note}</li>)}
         </ul>}
       </section>
       {Boolean(device.quarantine_resolutions?.length) && <section className="panel panel-inner form-section section-space"><h2>سجل فحص العزل</h2>

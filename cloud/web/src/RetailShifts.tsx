@@ -20,8 +20,13 @@ export type Shift = {
   expected_minor: number; observed_minor: number | null; difference_minor: number | null;
   close_reason: string; approval_reason: string; closed_at: string | null;
   totals?: { method: TenderMethod; received_minor: number; paid_out_minor: number }[];
+  cash_movements_minor?: number;
+  cash_movement_totals?: { kind: CashMovementKind; amount_minor: number }[];
 }
 export const shiftStatus = { open: 'مفتوحة', closed: 'مغلقة', pending_approval: 'بانتظار اعتماد الفرق', approved: 'تم اعتماد الفرق' }
+const cashMovementLabels = { safe_deposit: 'توريد نقدية من الدرج للخزنة', safe_withdrawal: 'تغذية الدرج من الخزنة', general_expense: 'مصروف عام من الدرج' }
+type CashMovementKind = keyof typeof cashMovementLabels
+type CashMovement = { id: number; kind: CashMovementKind; amount_minor: number; reason: string; reference?: string | null; created_at: string }
 
 export function tendersForAmount(rows: TenderDraft[], amount: number): Tender[] {
   if (!amount) return []
@@ -126,6 +131,11 @@ export function RetailShifts({ user }: { user: User }) {
   const [page, setPage] = useState(1)
   const [total, setTotal] = useState(0)
   const [details, setDetails] = useState<Shift>()
+  const [cashEntries, setCashEntries] = useState<CashMovement[]>([])
+  const [cashKind, setCashKind] = useState<CashMovementKind>('general_expense')
+  const [cashAmount, setCashAmount] = useState('')
+  const [cashReason, setCashReason] = useState('')
+  const [cashReference, setCashReference] = useState('')
 
   useEffect(() => {
     const abort = new AbortController()
@@ -147,6 +157,10 @@ export function RetailShifts({ user }: { user: User }) {
     request<Shift>('/retail/shifts/' + selected, { signal: abort.signal }).then(result => {
       if (!abort.signal.aborted) setDetails(result.data)
     }).catch(error => { if (!abort.signal.aborted) setError(error.message) })
+    setCashEntries([])
+    request<CashMovement[]>(`/retail/shifts/${selected}/cash-movements?per_page=20`, { signal: abort.signal })
+      .then(result => { if (!abort.signal.aborted) setCashEntries(result.data) })
+      .catch(error => { if (!abort.signal.aborted) setError(error.message) })
     return () => abort.abort()
   }, [selected, revision])
 
@@ -158,11 +172,12 @@ export function RetailShifts({ user }: { user: User }) {
     setMessage('')
     try {
       const response = await request<Shift>(path, { method, financial: method === 'POST', body: makeBody() })
-      if (method === 'POST' && response.data?.id) setSelected(response.data.id)
+      if (path === '/retail/shifts' && response.data?.id) setSelected(response.data.id)
       setMessage(success)
       setObserved('')
       setReason('')
       if (path === '/retail/shifts') { setRegister(''); setOpening(''); setPage(1) }
+      if (path.endsWith('/cash-movements')) { setCashAmount(''); setCashReason(''); setCashReference('') }
     } catch (error) { setError(error instanceof Error ? error.message : 'تعذّر تنفيذ العملية.') }
     finally { setBusy(false); refresh(value => value + 1) }
   }
@@ -197,6 +212,24 @@ export function RetailShifts({ user }: { user: User }) {
       {details.approval_reason && <p>اعتماد المشرف · {details.approval_reason}</p>}
       {details.totals?.length ? <div className="table-scroll"><table><thead><tr><th scope="col">الوسيلة</th><th scope="col">الوارد</th><th scope="col">الصادر</th></tr></thead>
         <tbody>{details.totals.map(row => <tr key={row.method}><th scope="row">{tenderLabels[row.method]}</th><td>{money(row.received_minor)}</td><td>{money(row.paid_out_minor)}</td></tr>)}</tbody></table></div> : null}
+      {details.cash_movements_minor !== undefined && <section className="form-section" aria-label="حركات الدرج والخزنة">
+        <h3>حركات الدرج والخزنة</h3>
+        <p>صافي الحركات اليدوية ضمن المتوقع · <strong>{money(details.cash_movements_minor)}</strong></p>
+        {cashEntries.length > 0 && <ul className="dash-list">{cashEntries.map(row => <li key={row.id}>
+          {cashMovementLabels[row.kind]} · {money(row.amount_minor)} · {row.reason}{row.reference ? ` · ${row.reference}` : ''} · {formatDate(row.created_at)}
+        </li>)}</ul>}
+        {close && allowed(user, 'retail.cash.manage') && <form className="form-section" onSubmit={event => action(event, `/retail/shifts/${details.id}/cash-movements`, () => ({
+          kind: cashKind, amount_minor: readMoney(cashAmount), reason: cashReason.trim(), reference: cashReference.trim() || undefined,
+        }), 'تم تسجيل حركة الدرج.') }>
+          <label className="field">نوع حركة الدرج<select value={cashKind} disabled={busy} onChange={event => setCashKind(event.target.value as CashMovementKind)}>
+            {Object.entries(cashMovementLabels).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
+          </select></label>
+          <label className="field">مبلغ الحركة بالجنيه<input value={cashAmount} required inputMode="decimal" disabled={busy} onChange={event => setCashAmount(event.target.value)} /></label>
+          <label className="field">بيان الحركة<textarea value={cashReason} required maxLength={500} disabled={busy} onChange={event => setCashReason(event.target.value)} /></label>
+          <label className="field">مرجع السند<input value={cashReference} maxLength={100} disabled={busy} onChange={event => setCashReference(event.target.value)} /></label>
+          <button className="secondary" disabled={busy}>سجّل حركة الدرج</button>
+        </form>}
+      </section>}
       {close && <form className="form-section" onSubmit={event => action(event, `/retail/shifts/${details.id}/close`, () => ({ observed_minor: readMoney(observed), expected_minor: details.expected_minor, reason: reason.trim() || undefined }), 'تم تسجيل إقفال الوردية.')}>
         <label className="field">النقدية المعدودة بالجنيه<input required inputMode="decimal" value={observed} disabled={busy} onChange={event => setObserved(event.target.value)} /></label>
         {difference !== undefined && <p>الفرق عند الإقفال · {money(difference)}</p>}

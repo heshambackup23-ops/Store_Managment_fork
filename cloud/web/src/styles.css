@@ -223,6 +223,8 @@
   }
   .modal-header h2 { font-size: 1.17rem; }
   .modal-form, .modal-content, .form-card { display: grid; gap: .85rem; padding: 1rem; }
+  .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(12rem, 100%), 1fr)); gap: .75rem; align-items: start; }
+  .form-grid > * { min-inline-size: 0; }
   .form-card { max-inline-size: 48rem; }
   .form-actions { display: flex; gap: .55rem; flex-wrap: wrap; margin-block-start: .25rem; }
   .field { display: grid; gap: .35rem; font-size: .88rem; font-weight: 700; }
