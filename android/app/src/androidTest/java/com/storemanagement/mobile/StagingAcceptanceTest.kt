@@ -81,7 +81,15 @@ class StagingAcceptanceTest {
         compose.onNodeWithText("اعتماد فرق الوردية").assertDoesNotExist()
 
         openRetailMenu("retail-menu-devices", retailDeviceScreenTag)
+        val deviceSearch = compose.onNodeWithText("الرقم التسلسلي أو IMEI")
+        deviceSearch.performTextReplacement("NO-EMULATOR-DEVICE")
         waitForText("لا توجد أجهزة مطابقة.")
+        deviceSearch.performTextReplacement("490154203237518")
+        waitForText("HILAL-EMU-IMEI")
+        compose.onNode(hasText("HILAL-EMU-IMEI") and hasClickAction()).performSemanticsAction(SemanticsActions.OnClick)
+        waitForText("استلام المخزون")
+        waitForText("490154203237518")
+        waitForText("ضمان ساري")
 
         compose.onNodeWithContentDescription("تسجيل الخروج").performClick()
         waitForText("سجّل الدخول للمتابعة")
