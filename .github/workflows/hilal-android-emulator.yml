@@ -54,16 +54,36 @@ jobs:
           sudo chmod a+rw /dev/kvm
           emulator="$ANDROID_HOME/emulator/emulator"
           adb="$ANDROID_HOME/platform-tools/adb"
-          mkdir -p "$RUNNER_TEMP/hilal-emulator"
-          echo no | "$ANDROID_HOME/cmdline-tools/latest/bin/avdmanager" create avd \
-            --name hilal-ci --package "$HILAL_EMULATOR_IMAGE" --force
+          export ANDROID_AVD_HOME="$RUNNER_TEMP/hilal-emulator/avd"
+          mkdir -p "$ANDROID_AVD_HOME"
+          avdmanager="$ANDROID_HOME/cmdline-tools/latest/bin/avdmanager"
+          echo no | "$avdmanager" create avd --name hilal-ci --package "$HILAL_EMULATOR_IMAGE" \
+            --path "$ANDROID_AVD_HOME/hilal-ci.avd" --force
+          test -f "$ANDROID_AVD_HOME/hilal-ci.avd/config.ini"
+          if [ ! -f "$ANDROID_AVD_HOME/hilal-ci.ini" ]; then
+            printf 'avd.ini.encoding=UTF-8\npath=%s/hilal-ci.avd\ntarget=android-35\n' \
+              "$ANDROID_AVD_HOME" > "$ANDROID_AVD_HOME/hilal-ci.ini"
+          fi
+          "$emulator" -list-avds | grep -Fx 'hilal-ci'
           "$emulator" -accel-check
-          nohup "$emulator" -avd hilal-ci -no-window -no-boot-anim -no-snapshot -no-audio \
-            -gpu swiftshader_indirect -camera-back none -camera-front none \
-            > "$RUNNER_TEMP/hilal-emulator/boot.log" 2>&1 < /dev/null &
           "$adb" start-server
-          timeout 180 "$adb" wait-for-device
-          timeout 240 bash -c 'until [ "$(adb shell getprop sys.boot_completed | tr -d "\r")" = 1 ]; do sleep 2; done'
+          boot_log="$RUNNER_TEMP/hilal-emulator/boot.log"
+          nohup "$emulator" -avd hilal-ci -port 5554 -no-window -no-boot-anim -no-snapshot -no-audio \
+            -gpu software -feature -Vulkan -camera-back none -camera-front none \
+            > "$boot_log" 2>&1 < /dev/null &
+          emulator_pid=$!
+          export ANDROID_SERIAL=emulator-5554
+          deadline=$((SECONDS + 240))
+          until [[ "$(timeout 5 "$adb" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true)" = 1 ]]; do
+            if ! kill -0 "$emulator_pid" 2>/dev/null || (( SECONDS >= deadline )); then
+              tail -n 100 "$boot_log"
+              "$adb" devices -l
+              exit 1
+            fi
+            sleep 3
+          done
+          tail -n 25 "$boot_log"
+          echo "ANDROID_SERIAL=$ANDROID_SERIAL" >> "$GITHUB_ENV"
           "$adb" shell input keyevent 82
           for setting in window_animation_scale transition_animation_scale animator_duration_scale; do
             "$adb" shell settings put global "$setting" 0

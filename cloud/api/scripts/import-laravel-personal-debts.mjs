@@ -98,10 +98,11 @@ try {
     }
     const created = dateTime(row.created_at, null)
     if (!created) throw new Error('created_at is required')
-    return { expectedPaid: paid, sourceActor: row.created_by == null ? null : identifier(row.created_by), row: {
+    const sourceActor = row.created_by == null ? null : identifier(row.created_by)
+    return { expectedPaid: paid, sourceActor, sourceUpdatedAt: dateTime(row.updated_at, null), row: {
       id, person_name: text(row.creditor, 255, true), direction: 'payable', principal_minor: principal,
       due_date: date(row.due_date, true), description: text(row.description, 255), note: text(row.notes, 2000),
-      actor_id: actor, created_at: created,
+      actor_id: actor, created_at: created, legacy_created_by: sourceActor,
     } }
   })
   const payments = fromRows(input.tables.personal_debt_payments, tables[1], (row, id) => {
@@ -109,9 +110,10 @@ try {
     const amount = money(row.amount)
     if (!debts.has(debt) || amount <= 0) throw new Error('invalid amount or missing related debt')
     const day = date(row.paid_on)
-    return { sourceActor: row.created_by == null ? null : identifier(row.created_by), row: {
+    const sourceActor = row.created_by == null ? null : identifier(row.created_by)
+    return { sourceActor, row: {
       id, debt_id: debt, amount_minor: amount, note: text(row.notes, 500), actor_id: actor,
-      created_at: dateTime(row.created_at, `${day}T00:00:00.000Z`),
+      created_at: dateTime(row.created_at, `${day}T00:00:00.000Z`), legacy_paid_on: day, legacy_created_by: sourceActor,
     } }
   })
   if (!debts.size) throw new Error('no personal debts to import')
@@ -129,6 +131,9 @@ try {
   const commands = [
     ...Array.from(debts.values(), ({ row }) => insert(tables[0], row)),
     ...Array.from(payments.values(), ({ row }) => insert(tables[1], row, { payment: true })),
+    ...Array.from(debts.values(), ({ row, sourceUpdatedAt }) => sourceUpdatedAt
+      ? `UPDATE personal_debts SET updated_at = ${literal(sourceUpdatedAt)} WHERE id = ${row.id};`
+      : null).filter(Boolean),
     reserve,
   ]
   const sql = commands.join('\n') + '\n'
@@ -144,6 +149,10 @@ try {
       const imported = db.prepare('SELECT id, paid_minor, principal_minor FROM personal_debts').all()
       if (imported.length !== debts.size || db.prepare('SELECT count(*) AS total FROM personal_debt_payments').get().total !== payments.size
         || imported.some(row => row.paid_minor !== debts.get(row.id)?.expectedPaid || row.principal_minor !== debts.get(row.id)?.row.principal_minor)
+        || db.prepare('SELECT id, legacy_paid_on, legacy_created_by FROM personal_debt_payments').all().some(row => {
+          const source = payments.get(row.id)?.row
+          return !source || row.legacy_paid_on !== source.legacy_paid_on || row.legacy_created_by !== source.legacy_created_by
+        })
         || db.prepare('PRAGMA foreign_key_check').all().length > 0) throw new Error('replayed database did not reconcile')
       db.exec('COMMIT')
     }
