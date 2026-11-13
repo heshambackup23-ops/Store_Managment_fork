@@ -1,15 +1,18 @@
 package com.storemanagement.mobile
 
+import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.hasClickAction
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.performTextReplacement
 import androidx.compose.ui.test.printToString
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -63,9 +66,7 @@ class StagingAcceptanceTest {
         compose.onNodeWithText("حفظ المنتج").performClick()
         waitForText("منتج من محاكي هلال")
 
-        compose.onNodeWithTag("store-tab-More").performClick()
-        compose.onNodeWithTag("retail-menu-shifts").performScrollTo().performClick()
-        compose.onNodeWithTag(retailShiftScreenTag).assertExists()
+        openRetailMenu("retail-menu-shifts", retailShiftScreenTag)
         waitForText("لا توجد ورديات مطابقة.")
         compose.onNodeWithTag(retailShiftOpenTag).performClick()
         compose.onNodeWithText("اسم درج النقدية").performTextReplacement("درج محاكي هلال")
@@ -79,26 +80,33 @@ class StagingAcceptanceTest {
         waitForText("تنتظر الاعتماد")
         compose.onNodeWithText("اعتماد فرق الوردية").assertDoesNotExist()
 
-        compose.onNodeWithTag("store-tab-More").performClick()
-        compose.onNodeWithTag("retail-menu-devices").performScrollTo().performClick()
-        compose.onNodeWithTag(retailDeviceScreenTag).assertExists()
+        openRetailMenu("retail-menu-devices", retailDeviceScreenTag)
         waitForText("لا توجد أجهزة مطابقة.")
 
         compose.onNodeWithContentDescription("تسجيل الخروج").performClick()
         waitForText("سجّل الدخول للمتابعة")
     }
 
-    private fun waitForText(text: String) {
+    private fun openRetailMenu(menu: String, screen: String) {
+        compose.onNodeWithTag("store-tab-More").performSemanticsAction(SemanticsActions.OnClick)
+        val entry = compose.onNodeWithTag(menu).performScrollTo()
+        entry.performSemanticsAction(SemanticsActions.OnClick)
+        waitFor("screen '$screen'") { compose.onAllNodes(hasTestTag(screen)).fetchSemanticsNodes().isNotEmpty() }
+    }
+
+    private fun waitForText(text: String) = waitFor("visible text '$text'") {
+        compose.onAllNodesWithText(text).fetchSemanticsNodes().isNotEmpty()
+    }
+
+    private fun waitFor(description: String, predicate: () -> Boolean) {
         try {
-            compose.waitUntil(timeoutMillis = 30_000) {
-                compose.onAllNodesWithText(text).fetchSemanticsNodes().isNotEmpty()
-            }
+            compose.waitUntil(timeoutMillis = 30_000, condition = predicate)
         } catch (failure: AssertionError) {
             val tree = runCatching { compose.onRoot().printToString(maxDepth = 15) }.getOrElse { it.toString() }
-            throw AssertionError("Expected visible text '$text'.\n$tree", failure)
+            throw AssertionError("Expected $description.\n$tree", failure)
         } catch (failure: Exception) {
             val tree = runCatching { compose.onRoot().printToString(maxDepth = 15) }.getOrElse { it.toString() }
-            throw AssertionError("Expected visible text '$text'.\n$tree", failure)
+            throw AssertionError("Expected $description.\n$tree", failure)
         }
     }
 }

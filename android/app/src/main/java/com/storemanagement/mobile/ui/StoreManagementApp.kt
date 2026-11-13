@@ -1033,16 +1033,8 @@ private fun StoreHomeScreen(
                         searchQuery = ""
                         storeViewModel.searchCashierProducts("")
                     },
-                    onOpenRetailShifts = {
-                        retailViewModel.useSession(user.id)
-                        moreSectionName = MoreSection.RetailShifts.name
-                        searchQuery = ""
-                    },
-                    onOpenRetailDevices = {
-                        retailViewModel.useSession(user.id)
-                        moreSectionName = MoreSection.RetailDevices.name
-                        searchQuery = ""
-                    },
+                    onOpenRetailShifts = { openSection(MoreSection.RetailShifts) },
+                    onOpenRetailDevices = { openSection(MoreSection.RetailDevices) },
                     onOpenSales = {
                         moreSectionName = MoreSection.Sales.name
                         searchQuery = ""
