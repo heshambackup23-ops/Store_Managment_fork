@@ -1079,3 +1079,42 @@ test('accountant export separates cash movements from documents and requires its
   assert.equal(rows.find(row => row.record_type === 'manual_drawer').reference, "'=TEST-EXPENSE");
   assert.ok(assertStatus(await request('/retail/audit?q=retail.'), 200).some(row => row.action.includes('cash')));
 });
+
+test('shared drawer counts maintenance and wallet cash once and preserves the wallet provider ledger', async t => {
+  const request = await worker(t);
+  const post = (path, body, options = {}) => request(path, { method: 'POST', body, ...options });
+  const shift = assertStatus(await post('/retail/shifts', { register_name: 'Shared drawer test', opening_minor: 10000 }), 201);
+  const wallet = assertStatus(await post('/wallets', { name: 'Shared drawer test', opening_minor: 50000 }), 201);
+  const repair = assertStatus(await post('/maintenance', { customer_name: 'Synthetic repair', item: 'Synthetic device', problem: 'Synthetic fault', price_minor: 15000 }), 201);
+  const shiftPath = '/retail/shifts/' + shift.id;
+  const walletPath = '/wallets/' + wallet.id + '/transactions';
+  const maintenancePath = '/maintenance/' + repair.id + '/payments';
+  const mobileSale = assertStatus(await post('/retail/checkout', { items: [{ product_id: 1, quantity: 1 }], paid_minor: 2500,
+    expected_total_minor: 2500, shift_id: shift.id, payments: [{ method: 'card', amount_minor: 2500, reference: 'Android fixture' }] }, { android: true }), 409);
+  assert.equal(mobileSale, undefined);
+  assertStatus(await post('/inventory/adjustments', { product_id: 1, delta: 1, note: 'Android fixture stock' }), 201);
+  const invoice = assertStatus(await post('/retail/checkout', { items: [{ product_id: 1, quantity: 1 }], paid_minor: 2500,
+    expected_total_minor: 2500, shift_id: shift.id, payments: [{ method: 'card', amount_minor: 2500, reference: 'Android fixture' }] }, { android: true }), 201);
+  assert.deepEqual({ total: invoice.total_minor, paid: invoice.paid_minor, number: invoice.invoice_number },
+    { total: 2500, paid: 2500, number: String(invoice.id) });
+  const cashTransfer = { kind: 'send', amount_minor: 5000, commission_minor: 100, fee_minor: 50, shared_shift_id: shift.id };
+  const key = randomUUID();
+  const move = assertStatus(await post(walletPath, cashTransfer, { key }), 201);
+  assert.deepEqual(assertStatus(await post(walletPath, cashTransfer, { key }), 201), move);
+  assertStatus(await post(maintenancePath, { amount_minor: 2500, shared_shift_id: shift.id }), 201);
+  assertStatus(await post(maintenancePath, { amount_minor: 1500 }), 201);
+  assertStatus(await post(walletPath, { kind: 'send', amount_minor: 1000, commission_minor: 0, fee_minor: 0 }), 201);
+  assert.equal(assertStatus(await request(shiftPath), 200).expected_minor, 17600);
+  const report = assertStatus(await request('/reports/wallets'), 200);
+  assert.equal(report.drawer_minor, 1000);
+  assert.equal(report.shared_drawer_minor, 5100);
+  assert.equal(assertStatus(await request('/wallets'), 200).find(row => row.id === wallet.id).balance_minor, 43950);
+  assertStatus(await post('/wallet-transactions/' + move.id + '/reverse', { reason: 'must attribute the same cash' }), 409);
+  assertStatus(await post(walletPath, { kind: 'receive', amount_minor: 18000, shared_shift_id: shift.id }), 409);
+  assertStatus(await post('/wallet-transactions/' + move.id + '/reverse', { reason: 'shared reversal', shared_shift_id: shift.id }), 201);
+  assert.equal(assertStatus(await request(shiftPath), 200).expected_minor, 12500);
+  assert.equal(assertStatus(await request('/reports/wallets'), 200).shared_drawer_minor, 0);
+  assertStatus(await post(shiftPath + '/close', { observed_minor: 12500, expected_minor: 12500 }), 201);
+  assertStatus(await post(maintenancePath, { amount_minor: 1000, shared_shift_id: shift.id }), 409);
+  assert.equal(assertStatus(await request('/maintenance/' + repair.id), 200).paid_minor, 4000);
+});

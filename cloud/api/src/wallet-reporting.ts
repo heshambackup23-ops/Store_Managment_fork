@@ -51,7 +51,7 @@ const completedTransfers = `
     AND t.kind IN ('send', 'receive')
     AND NOT EXISTS (SELECT 1 FROM wallet_transactions r WHERE r.reversal_of = t.id)
 `;
-const moneyColumns = ['cash_movement_minor', 'cash_collections_minor'] as const;
+const moneyColumns = ['cash_movement_minor', 'cash_collections_minor', 'shared_cash_movement_minor'] as const;
 
 function number(value: unknown) {
   const result = Number(value ?? 0);
@@ -129,16 +129,19 @@ walletReporting.get('/reports/wallets/period', permit('wallets.cash'), async c =
     `).bind(from, until),
     db.prepare(`
       WITH cash_entries AS (
-        SELECT COALESCE(SUM(cash_delta_minor), 0) AS cash FROM wallet_transactions WHERE business_day >= ? AND business_day < ?
+        SELECT COALESCE(SUM(t.cash_delta_minor), 0) AS cash FROM wallet_transactions t WHERE t.business_day >= ? AND t.business_day < ?
+          AND NOT EXISTS (SELECT 1 FROM retail_service_cash r WHERE r.operation_id = t.id AND r.source = 'wallet_cash')
         UNION ALL SELECT COALESCE(SUM(amount_minor), 0) FROM wallet_debt_payments WHERE created_at >= ? AND created_at < ?
         UNION ALL SELECT COALESCE(SUM(delta_minor), 0) FROM wallet_cash_entries WHERE business_day >= ? AND business_day < ?
         UNION ALL SELECT -COALESCE(SUM(amount_minor), 0) FROM wallet_profit_withdrawals
           WHERE wallet_id IS NULL AND business_day >= ? AND business_day < ?
       )
       SELECT CAST(SUM(cash) AS TEXT) AS cash_movement_minor,
-        CAST((SELECT COALESCE(SUM(amount_minor), 0) FROM wallet_debt_payments WHERE created_at >= ? AND created_at < ?) AS TEXT) AS cash_collections_minor
+        CAST((SELECT COALESCE(SUM(amount_minor), 0) FROM wallet_debt_payments WHERE created_at >= ? AND created_at < ?) AS TEXT) AS cash_collections_minor,
+        CAST((SELECT COALESCE(SUM(r.delta_minor), 0) FROM retail_service_cash r JOIN wallet_transactions t ON t.id = r.operation_id
+          WHERE r.source = 'wallet_cash' AND t.business_day >= ? AND t.business_day < ?) AS TEXT) AS shared_cash_movement_minor
       FROM cash_entries
-    `).bind(from, until, utcFrom, utcUntil, from, until, from, until, utcFrom, utcUntil),
+    `).bind(from, until, utcFrom, utcUntil, from, until, from, until, utcFrom, utcUntil, from, until),
   ]);
 
   const activity = new Map(byDay.results.map(row => [String(row.day), row]));

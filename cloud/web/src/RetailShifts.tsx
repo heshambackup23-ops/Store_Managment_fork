@@ -21,6 +21,7 @@ export type Shift = {
   close_reason: string; approval_reason: string; closed_at: string | null;
   totals?: { method: TenderMethod; received_minor: number; paid_out_minor: number }[];
   cash_movements_minor?: number;
+  service_cash_minor?: number;
   cash_movement_totals?: { kind: CashMovementKind; amount_minor: number }[];
 }
 export const shiftStatus = { open: 'مفتوحة', closed: 'مغلقة', pending_approval: 'بانتظار اعتماد الفرق', approved: 'تم اعتماد الفرق' }
@@ -111,6 +112,23 @@ export function RetailActionDialog({ user, ...props }: ActionDialogProps & { use
     <ShiftContext value={shift} />
     {shift.shift && <TenderFields rows={rows} set={setRows} />}
   </>} />
+}
+
+export function SharedDrawerDialog({ user, ...props }: ActionDialogProps & { user: User }) {
+  const shift = useOpenShift(user)
+  const required = props.action.sharedDrawer === 'wallet_reversal' && props.row?.shared_shift_id != null
+  const [useDrawer, setUseDrawer] = useState(false)
+  function prepare(body: Row) {
+    if (!required && !useDrawer) return body
+    if (!shift.shift) throw new Error('افتح وردية قبل استخدام الدرج المشترك.')
+    return { ...body, shared_shift_id: shift.shift.id }
+  }
+  return <ActionDialog {...props} prepare={prepare} waiting={required && shift.loading} extra={required || props.action.sharedDrawer === 'optional' ? <>
+    {required ? <p>أثر الحركة الأصلية مسجل في درج البيع. عكسها يحتاج وردية مفتوحة.</p> : shift.shift ? <label className="check-field">
+      <input type="checkbox" checked={useDrawer} onChange={event => setUseDrawer(event.target.checked)} /> استخدم نفس الدرج النقدي للوردية
+    </label> : null}
+    {(required || useDrawer) && <ShiftContext value={shift} />}
+  </> : undefined} />
 }
 
 export function RetailShifts({ user }: { user: User }) {
@@ -215,6 +233,7 @@ export function RetailShifts({ user }: { user: User }) {
       {details.cash_movements_minor !== undefined && <section className="form-section" aria-label="حركات الدرج والخزنة">
         <h3>حركات الدرج والخزنة</h3>
         <p>صافي الحركات اليدوية ضمن المتوقع · <strong>{money(details.cash_movements_minor)}</strong></p>
+        {details.service_cash_minor !== undefined && <p>صافي نقدية المحافظ والصيانة المسجلة على نفس الدرج · <strong>{money(details.service_cash_minor)}</strong></p>}
         {cashEntries.length > 0 && <ul className="dash-list">{cashEntries.map(row => <li key={row.id}>
           {cashMovementLabels[row.kind]} · {money(row.amount_minor)} · {row.reason}{row.reference ? ` · ${row.reference}` : ''} · {formatDate(row.created_at)}
         </li>)}</ul>}

@@ -38,6 +38,8 @@ retailAccountant.get('/retail/accountant.csv', permit('retail.accountant.export'
         shift_id, invoice_id, reference, created_at FROM retail_tender_ledger
       UNION ALL SELECT 'manual_drawer', id, kind, 'cash', delta_minor, shift_id, NULL, reference, created_at
         FROM retail_cash_movements
+      UNION ALL SELECT 'shared_drawer', operation_id, source, 'cash', delta_minor, shift_id, NULL, NULL, created_at
+        FROM retail_service_cash
       UNION ALL SELECT 'shift_open', id, 'opening_float', 'cash', opening_minor, id, NULL, register_name, opened_at
         FROM retail_shifts`;
   const documents = `

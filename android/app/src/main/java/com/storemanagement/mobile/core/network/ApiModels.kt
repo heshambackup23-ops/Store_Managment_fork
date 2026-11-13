@@ -295,6 +295,7 @@ data class CashierProductDto(
     val price: String,
     val barcode: String? = null,
     val stock: Int,
+    val tracking: String = "quantity",
     @SerialName("image_url") val imageUrl: String? = null,
 )
 

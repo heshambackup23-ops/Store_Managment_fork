@@ -214,6 +214,7 @@ function permissionLabel(value: string) {
   if (value === 'retail.shifts.operate') return 'ورديات الكاشير — فتح وإقفال'
   if (value === 'retail.shifts.approve') return 'ورديات الكاشير — اعتماد الفروق'
   if (value === 'retail.cash.manage') return 'ورديات الكاشير — حركات الدرج والخزنة'
+  if (value === 'retail.safe.manage') return 'الخزنة — توثيق الافتتاح والجرد'
   if (value === 'retail.audit.view') return 'الرقابة — عرض سجل تدقيق المتجر'
   if (value === 'retail.accountant.export') return 'الحسابات — تصدير الحركات للمحاسب'
   if (value === 'products.cost.view') return 'المنتجات — عرض التكلفة والهامش'

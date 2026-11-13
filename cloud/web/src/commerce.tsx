@@ -9,7 +9,7 @@ import type { Action, Column, Field, ModuleConfig, Row } from './ui'
 import { WalletAudit, WalletPeriodReport } from './WalletPeriodReport'
 import { WalletPositions } from './WalletOperations'
 import { walletProviderLabel, walletProviderOptions, walletProviderPreset } from './wallet-providers'
-import { blankTender, RetailActionDialog, ShiftContext, tenderLabels, TenderFields, tendersForAmount, useOpenShift } from './RetailShifts'
+import { blankTender, RetailActionDialog, SharedDrawerDialog, ShiftContext, tenderLabels, TenderFields, tendersForAmount, useOpenShift } from './RetailShifts'
 import { DevicePicker, trackingOf } from './RetailDevices'
 import type { Tracking } from './RetailDevices'
 import { RetailReturns } from './RetailReturns'
@@ -45,6 +45,7 @@ function payment(path: string, permission: string, total: string, note = false):
     label: 'تسجيل سداد', permission, financial: true, visible: row => remaining(row, total) > 0 && !row.voided_at && row.status !== 'cancelled',
     endpoint: row => path + '/' + idOf(row) + '/payments',
     retailTender: ['/invoices', '/purchases', '/installments'].includes(path) ? 'amount' : undefined,
+    sharedDrawer: path === '/maintenance' ? 'optional' : undefined,
     fields: [required('amount_minor', 'المبلغ بالجنيه', 'money'), ...(note ? [notes] : [])],
   }
 }
@@ -325,7 +326,7 @@ export const businessModules: Record<string, ModuleConfig> = {
       { key: 'counterparty', label: 'الطرف الآخر' },
       { key: 'provider_reference', label: 'مرجع المزود', render: row => row.provider_reference ? <bdi>{String(row.provider_reference)}</bdi> : '—' },
       { key: 'note', label: 'الملاحظة' }, dateColumn('created_at', 'التاريخ')],
-    actions: [reverse('/wallet-transactions', 'wallets.reverse')],
+    actions: [{ ...reverse('/wallet-transactions', 'wallets.reverse'), sharedDrawer: 'wallet_reversal' }],
   },
   'wallet-cash': {
     title: 'حركات نقدية المحافظ', description: 'قيود الدرج النقدي ومصروفاته.', endpoint: '/wallet-cash', permission: 'wallets.cash', searchable: false,
@@ -435,7 +436,8 @@ export function CommerceModule({ name, user }: { name: string; user: User }) {
   const endpoint = config.endpoint + (params.size ? '?' + params : '')
   return <>
     <DataModule key={endpoint + ':' + imageVersion} user={user} config={{ ...config, endpoint }}
-      renderAction={props => props.action.retailTender ? <RetailActionDialog {...props} user={user} /> : <ActionDialog {...props} />}
+      renderAction={props => props.action.retailTender ? <RetailActionDialog {...props} user={user} /> : props.action.sharedDrawer
+        ? <SharedDrawerDialog {...props} user={user} /> : <ActionDialog {...props} />}
       extra={isInvoice ? <form className="panel panel-inner invoice-filter section-space" onSubmit={event => {
         event.preventDefault()
         if (invoiceId.trim()) navigate('/invoices/' + encodeURIComponent(invoiceId.trim()))
@@ -919,7 +921,7 @@ export function SalesReport() {
 }
 
 const walletMetrics = [
-  ['drawer_minor', 'رصيد الدرج النقدي'], ['provider_balance_minor', 'أرصدة المزودين'],
+  ['drawer_minor', 'رصيد الدرج الخاص بالمحافظ'], ['shared_drawer_minor', 'صافي حركات المحافظ على درج البيع'], ['provider_balance_minor', 'أرصدة المزودين'],
   ['receivables_minor', 'مستحقات المحافظ'], ['transfer_margin_minor', 'صافي عمولات التحويل'],
   ['drawer_expense_minor', 'مصروفات الدرج'], ['profit_available_minor', 'الربح المتاح'],
   ['profit_withdrawn_minor', 'الأرباح المسحوبة'], ['working_capital_minor', 'رأس المال العامل'],

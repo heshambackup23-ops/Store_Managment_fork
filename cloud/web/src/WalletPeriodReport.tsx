@@ -15,7 +15,7 @@ type PeriodRow = {
 type Report = {
   from: string
   to: string
-  totals: PeriodRow & { cash_movement_minor: number; cash_collections_minor: number; new_deferred_minor: number }
+  totals: PeriodRow & { cash_movement_minor: number; shared_cash_movement_minor: number; cash_collections_minor: number; new_deferred_minor: number }
   wallets: (PeriodRow & { wallet_id: number; name: string })[]
   days: (PeriodRow & { day: string })[]
 }
@@ -27,7 +27,7 @@ const metrics = [
   ['net_minor', 'صافي الربح', money],
 ] as const
 const cashMetrics = [
-  ['cash_movement_minor', 'صافي حركة الدرج'], ['cash_collections_minor', 'تحصيل الآجل'], ['new_deferred_minor', 'الآجل الجديد'],
+  ['cash_movement_minor', 'صافي حركة درج المحافظ'], ['shared_cash_movement_minor', 'صافي الحركة على درج البيع'], ['cash_collections_minor', 'تحصيل الآجل'], ['new_deferred_minor', 'الآجل الجديد'],
 ] as const
 
 const auditLabels: Record<string, string> = {

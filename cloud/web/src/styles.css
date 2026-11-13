@@ -324,6 +324,9 @@
 .product-image { max-inline-size: 100%; max-block-size: 15rem; object-fit: contain; }
 .barcode-canvas { max-inline-size: 100%; object-fit: contain; background: #fff; }
 @media print {
+  body:has(.retail-hardware) .retail-hardware-print { max-inline-size: 54mm; padding: 0; margin: 0; font-size: 10pt; }
+  body:has(.retail-hardware) .retail-hardware-print canvas { max-inline-size: 100%; block-size: auto; }
+  body:has(.retail-hardware) .retail-hardware > :not(.retail-hardware-print) { display: none !important; }
   body:has(.invoice-detail) .sidebar, body:has(.invoice-detail) .topbar { display: none; }
   body:has(.invoice-detail) .shell { display: block; }
   body:has(.invoice-detail) .main { padding: 0; }

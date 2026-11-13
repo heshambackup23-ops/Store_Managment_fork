@@ -3,7 +3,8 @@ import type { FormEvent } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { allowed, apiUrl, formatDate, integer, money, request } from './api'
 import type { User } from './api'
-import { DataModule, Notice } from './ui'
+import { ActionDialog, DataModule, Notice } from './ui'
+import { SharedDrawerDialog } from './RetailShifts'
 import type { ModuleConfig, Row } from './ui'
 
 type Position = {
@@ -151,5 +152,6 @@ export function WalletLedger({ user, config }: { user: User; config: ModuleConfi
   </form>
   return <DataModule key={queryText} user={user}
     config={{ ...config, columns, endpoint: config.endpoint + querySuffix }}
+    renderAction={props => props.action.sharedDrawer ? <SharedDrawerDialog {...props} user={user} /> : <ActionDialog {...props} />}
     extra={<>{filterForm}{walletError && <Notice error>{walletError}</Notice>}</>} />
 }

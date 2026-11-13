@@ -241,6 +241,8 @@ function mobileActor(user: Actor, hilalClient: boolean) {
       ['wallet_cashier.reverse', 'wallets.reverse'], ['damaged.manage', 'damaged.manage'],
       ['suppliers.manage', 'suppliers.manage'], ['maintenance.manage', 'maintenance.manage'],
       ['invoices.pay', 'invoices.pay'], ['invoices.refund', 'invoices.refund'],
+      ['retail_shifts.operate', 'retail.shifts.operate'], ['retail_shifts.approve', 'retail.shifts.approve'],
+      ['retail_devices.view', 'inventory.view'],
     ]) {
       if (user.permissions.includes('*') || user.permissions.includes(permission)) permits.add('page.' + clientPermission)
     }

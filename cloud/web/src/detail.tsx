@@ -9,7 +9,7 @@ import { businessModules, supplierPayment, walletTransaction } from './commerce'
 import { walletProviderLabel } from './wallet-providers'
 import { RetailReceipt } from './RetailReceipt'
 import { deviceLabel } from './RetailDevices'
-import { RetailActionDialog } from './RetailShifts'
+import { RetailActionDialog, SharedDrawerDialog } from './RetailShifts'
 import { RetailPurchaseSummary } from './RetailSupplierReturns'
 
 export function WalletCashier({ user }: { user: User }) {
@@ -48,7 +48,7 @@ export function WalletCashier({ user }: { user: User }) {
       }))
     setSuccess(false)
     setSelectedAction({
-      ...walletTransaction, label, fields,
+      ...walletTransaction, label, fields, sharedDrawer: 'optional',
       transform: body => walletTransaction.transform?.({ ...body, kind }) ?? { ...body, kind },
     })
   }
@@ -81,8 +81,9 @@ export function WalletCashier({ user }: { user: User }) {
         </div>
       </>}
     </section>
-    <DataModule key={revision + ':' + selectedId} config={config} user={user} onChange={() => setBalanceVersion(value => value + 1)} />
-    {selectedAction && chosen && <ActionDialog action={selectedAction} row={chosen}
+    <DataModule key={revision + ':' + selectedId} config={config} user={user} onChange={() => setBalanceVersion(value => value + 1)}
+      renderAction={props => props.action.sharedDrawer ? <SharedDrawerDialog {...props} user={user} /> : <ActionDialog {...props} />} />
+    {selectedAction && chosen && <SharedDrawerDialog user={user} action={selectedAction} row={chosen}
       close={() => setSelectedAction(undefined)} done={() => {
         setSelectedAction(undefined)
         setSuccess(true)

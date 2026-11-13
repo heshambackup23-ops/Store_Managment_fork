@@ -36,6 +36,7 @@ export interface Action {
   danger?: boolean
   financial?: boolean
   retailTender?: 'amount' | 'purchase'
+  sharedDrawer?: 'optional' | 'wallet_reversal'
   initialFromRow?: boolean
   visible?: (row: Row) => boolean
   transform?: (body: Row, row?: Row) => Row

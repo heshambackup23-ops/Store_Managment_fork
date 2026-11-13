@@ -55,6 +55,29 @@ class StagingAcceptanceTest {
         compose.onNodeWithText("حفظ المنتج").performClick()
         waitForText("منتج من محاكي هلال")
 
+        compose.onNodeWithText("المزيد").performClick()
+        compose.onNodeWithText("ورديات الكاشير").performScrollTo().performClick()
+        waitForText("لا توجد ورديات مطابقة.")
+        compose.onNodeWithText("فتح وردية").performClick()
+        compose.onNodeWithText("اسم درج النقدية").performTextReplacement("درج محاكي هلال")
+        compose.onNodeWithText("عهدة الفتح بالجنيه").performTextReplacement("50.00")
+        compose.onAllNodes(hasText("فتح وردية") and hasClickAction()).fetchSemanticsNodes().let { buttons ->
+            compose.onAllNodes(hasText("فتح وردية") and hasClickAction())[buttons.lastIndex].performClick()
+        }
+        waitForText("درج محاكي هلال")
+        compose.onNodeWithText("إغلاق الوردية").performScrollTo().performClick()
+        compose.onNodeWithText("النقد الفعلي بالجنيه").performTextReplacement("49.00")
+        compose.onNodeWithText("سبب الفرق (مطلوب)").performTextReplacement("فرق اختبار المحاكي")
+        compose.onAllNodes(hasText("إغلاق الوردية") and hasClickAction()).fetchSemanticsNodes().let { buttons ->
+            compose.onAllNodes(hasText("إغلاق الوردية") and hasClickAction())[buttons.lastIndex].performClick()
+        }
+        waitForText("تنتظر الاعتماد")
+        compose.onNodeWithText("اعتماد فرق الوردية").assertDoesNotExist()
+
+        compose.onNodeWithText("المزيد").performClick()
+        compose.onNodeWithText("الأجهزة المتتبعة").performScrollTo().performClick()
+        waitForText("لا توجد أجهزة مطابقة.")
+
         compose.onNodeWithContentDescription("تسجيل الخروج").performClick()
         waitForText("سجّل الدخول للمتابعة")
     }

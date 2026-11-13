@@ -1,14 +1,20 @@
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { createReadStream } from 'node:fs'
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises'
 import { isAbsolute, join, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { getPlatformProxy, unstable_splitSqlQuery } from 'wrangler'
+import { summarizeRetailBackup } from './retail-backup-checks.mjs'
 
 const api = fileURLToPath(new URL('../', import.meta.url))
 const wrangler = join(api, 'node_modules', 'wrangler', 'bin', 'wrangler.js')
 const backupRoot = join(api, 'backups')
+const args = process.argv.slice(2)
+if (args.length && (args.length !== 2 || args[0] !== '--persist-to' || !args[1].trim())) {
+  throw new Error('Usage: node scripts/backup-drill.mjs [--persist-to LOCAL_D1_DIRECTORY]')
+}
+const sourcePath = args[1]
 
 function run(args) {
   const result = spawnSync(process.execPath, [wrangler, 'd1', ...args], {
@@ -44,7 +50,7 @@ function orderRestoreStatements(sql) {
   return [...pragmas, ...tables, ...rows, ...schema].map(sql => sql.replace(/;\s*$/, '') + ';').join('\n') + '\n'
 }
 
-async function summarize(persist) {
+async function inspectDatabase(persist, exportSnapshot = false) {
   const local = await getPlatformProxy({ configPath: join(api, 'wrangler.jsonc'), persist, remoteBindings: false })
   try {
     const db = local.env.DB
@@ -58,14 +64,14 @@ async function summarize(persist) {
     if ((await db.prepare('PRAGMA foreign_key_check').all()).results.length) {
       throw new Error('The database failed the foreign-key check.')
     }
-    const balanceColumns = { products: 'stock', invoices: 'total_minor', wallets: 'balance_minor' }
-    const balances = {}
-    for (const [table, column] of Object.entries(balanceColumns)) {
-      if (tables.some(({ name, sql }) => name === table && new RegExp(`\\b${column}\\b`).test(sql))) {
-        balances[table] = await db.prepare(`SELECT CAST(COALESCE(sum(${identifier(column)}), 0) AS TEXT) AS total FROM ${identifier(table)}`).first('total')
-      }
-    }
-    return { schema: objects.map(({ type, name }) => `${type}:${name}`), counts, balances }
+    const retail = await summarizeRetailBackup(db, new Set(objects.map(({ name }) => name)))
+    const schema = objects.map(({ type, name }) => `${type}:${name}`)
+    const schemaSha256 = createHash('sha256').update(JSON.stringify(objects.map(({ type, name, sql }) =>
+      [type, name, sql.replace(/;\s*$/, '')]))).digest('hex')
+    const snapshot = exportSnapshot
+      ? (await db.prepare('PRAGMA miniflare_d1_export(?,?,?);').bind(false, false).raw())[0].join('\n')
+      : undefined
+    return { summary: { schema, schemaSha256, counts, retail }, snapshot }
   } finally {
     await local.dispose()
   }
@@ -79,13 +85,14 @@ const restoreTarget = ['--persist-to', isolated]
 process.env.WRANGLER_REGISTRY_PATH = join(directory, 'registry')
 
 try {
-  const before = await summarize(true)
-  run(['export', 'DB', '--local', '--output', backup])
-  await writeFile(backup, orderRestoreStatements(await readFile(backup, 'utf8')), { mode: 0o600 })
+  const { summary: before, snapshot } = await inspectDatabase(sourcePath ? { path: join(sourcePath, 'v3') } : true, true)
+  await writeFile(backup, orderRestoreStatements(snapshot), { mode: 0o600 })
   run(['execute', 'DB', '--local', '--file', backup, ...restoreTarget])
-  const after = await summarize({ path: join(isolated, 'v3') })
+  const { summary: after } = await inspectDatabase({ path: join(isolated, 'v3') })
   if (JSON.stringify(before) !== JSON.stringify(after)) {
-    throw new Error('The restored schema, table counts or financial totals differ from the source snapshot.')
+    const mismatched = Object.keys(before.retail).filter(name => JSON.stringify(before.retail[name]) !== JSON.stringify(after.retail[name]))
+    throw new Error('The restored schema, table counts or retail ledgers differ from the source snapshot.' +
+      (mismatched.length ? ` Differences: ${mismatched.join(', ')}.` : ''))
   }
   const sha = createHash('sha256')
   for await (const chunk of createReadStream(backup)) sha.update(chunk)

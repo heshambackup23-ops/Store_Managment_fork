@@ -152,6 +152,7 @@ import com.storemanagement.mobile.core.network.CashierCheckoutInputDto
 import com.storemanagement.mobile.core.network.CashierCheckoutItemDto
 import com.storemanagement.mobile.core.network.CashierCheckoutResponseDto
 import com.storemanagement.mobile.core.network.CashierProductDto
+import com.storemanagement.mobile.core.network.RetailCheckoutReceiptDto
 import com.storemanagement.mobile.ui.theme.StoreTheme
 import coil3.compose.AsyncImage
 import com.google.mlkit.vision.barcode.common.Barcode
@@ -321,7 +322,10 @@ private enum class StoreTab(val label: String, val permission: String?, val icon
     More("المزيد", null, Icons.Filled.MoreHoriz),
 }
 
-private enum class MoreSection { Home, Categories, Customers, Sales, Suppliers, Installments, Wallets, WalletCashier, ProductCashier, Damaged, Notifications, Maintenance, Profile, Backup }
+private enum class MoreSection {
+    Home, Categories, Customers, Sales, Suppliers, Installments, Wallets, WalletCashier, ProductCashier,
+    RetailShifts, RetailDevices, Damaged, Notifications, Maintenance, Profile, Backup,
+}
 internal enum class CashierAction { Settle, Reverse }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -335,6 +339,10 @@ private fun StoreHomeScreen(
     onSessionExpired: () -> Unit,
 ) {
     val isSaving by storeViewModel.isSaving.collectAsStateWithLifecycle()
+    val retailViewModel: RetailViewModel = hiltViewModel(key = "retail-${user.id}")
+    val retailSessionExpired by retailViewModel.expired.collectAsStateWithLifecycle()
+    val canViewRetailShifts = user.canOperateRetailShifts() || user.canApproveRetailShifts()
+    val canViewRetailDevices = user.canViewRetailDevices()
     val products by storeViewModel.products.collectAsStateWithLifecycle()
     val cacheTime by storeViewModel.productCacheTime.collectAsStateWithLifecycle()
     val categories by storeViewModel.categories.collectAsStateWithLifecycle()
@@ -430,7 +438,19 @@ private fun StoreHomeScreen(
     val backupMessageHost = remember { SnackbarHostState() }
     LaunchedEffect(storeViewModel) { storeViewModel.backupMessage.collect { backupMessageHost.showSnackbar(it) } }
     var moreSectionName by rememberSaveable { mutableStateOf(MoreSection.Home.name) }
-    val moreSection = MoreSection.entries.firstOrNull { it.name == moreSectionName } ?: MoreSection.Home
+    val moreSection = MoreSection.entries.firstOrNull {
+        it.name == moreSectionName && when (it) {
+            MoreSection.RetailShifts -> canViewRetailShifts
+            MoreSection.RetailDevices -> canViewRetailDevices
+            else -> true
+        }
+    } ?: MoreSection.Home
+    var retailRefreshVersion by remember { mutableStateOf(0) }
+    LaunchedEffect(retailSessionExpired, moreSection) {
+        if (retailSessionExpired && moreSection in listOf(MoreSection.RetailShifts, MoreSection.RetailDevices, MoreSection.ProductCashier)) {
+            onSessionExpired()
+        }
+    }
     var selectedProductCategoryId by rememberSaveable { mutableStateOf<Long?>(null) }
     var productStockFilter by rememberSaveable { mutableStateOf<Boolean?>(null) }
     val activeTab = StoreTab.entries.firstOrNull { it.name == selectedTab && it in availableTabs }
@@ -445,6 +465,8 @@ private fun StoreHomeScreen(
             MoreSection.Wallets -> "المحافظ"
             MoreSection.WalletCashier -> "كاشير المحافظ"
             MoreSection.ProductCashier -> "نقطة البيع"
+            MoreSection.RetailShifts -> "ورديات الكاشير"
+            MoreSection.RetailDevices -> "الأجهزة المتتبعة"
             MoreSection.Damaged -> "الهالك"
             MoreSection.Notifications -> "الإشعارات"
             MoreSection.Maintenance -> "الصيانة"
@@ -617,6 +639,7 @@ private fun StoreHomeScreen(
                 MoreSection.Maintenance -> storeViewModel.refreshMaintenances(query)
                 MoreSection.WalletCashier -> storeViewModel.refreshWalletCashier()
                 MoreSection.ProductCashier -> storeViewModel.searchCashierProducts("")
+                MoreSection.RetailShifts, MoreSection.RetailDevices -> if (force) retailRefreshVersion++
                 MoreSection.Damaged -> storeViewModel.refreshDamagedItems(query, damagedStatusFilter)
                 else -> Unit
             }
@@ -965,6 +988,8 @@ private fun StoreHomeScreen(
                     canViewWallets = "page.wallets.view" in user.permissions,
                     canViewWalletCashier = "page.wallet_cashier.view" in user.permissions,
                     canViewProductCashier = "page.invoices.manage" in user.permissions,
+                    canViewRetailShifts = canViewRetailShifts,
+                    canViewRetailDevices = canViewRetailDevices,
                     canViewSales = "page.sales.view" in user.permissions,
                     canViewNotifications = "page.notifications.view" in user.permissions,
                     canViewMaintenance = "page.maintenance.view" in user.permissions,
@@ -1005,6 +1030,16 @@ private fun StoreHomeScreen(
                         moreSectionName = MoreSection.ProductCashier.name
                         searchQuery = ""
                         storeViewModel.searchCashierProducts("")
+                    },
+                    onOpenRetailShifts = {
+                        retailViewModel.useSession(user.id)
+                        moreSectionName = MoreSection.RetailShifts.name
+                        searchQuery = ""
+                    },
+                    onOpenRetailDevices = {
+                        retailViewModel.useSession(user.id)
+                        moreSectionName = MoreSection.RetailDevices.name
+                        searchQuery = ""
                     },
                     onOpenSales = {
                         moreSectionName = MoreSection.Sales.name
@@ -1145,8 +1180,17 @@ private fun StoreHomeScreen(
                     isSaving = isSaving,
                     onSearch = storeViewModel::searchCashierProducts,
                     onCheckout = storeViewModel::checkoutCashier,
+                    retailUser = user.takeIf { hilal },
+                    retailViewModel = retailViewModel,
+                    onOpenShifts = { openSection(MoreSection.RetailShifts) },
+                    onRetailSale = {
+                        storeViewModel.refreshProducts(null)
+                        if ("page.invoices.view" in user.permissions) storeViewModel.refreshInvoices(null)
+                    },
                     modifier = Modifier.padding(padding),
                 )
+                MoreSection.RetailShifts -> RetailShiftsScreen(user, retailViewModel, retailRefreshVersion, Modifier.padding(padding))
+                MoreSection.RetailDevices -> RetailDevicesScreen(user, retailViewModel, retailRefreshVersion, Modifier.padding(padding))
                 MoreSection.Damaged -> DamagedScreen(
                     state = damagedItems,
                     statusFilter = damagedStatusFilter,
@@ -2038,6 +2082,8 @@ private fun MoreHubScreen(
     canViewWallets: Boolean,
     canViewWalletCashier: Boolean,
     canViewProductCashier: Boolean,
+    canViewRetailShifts: Boolean,
+    canViewRetailDevices: Boolean,
     canViewSales: Boolean,
     canViewNotifications: Boolean,
     canViewMaintenance: Boolean,
@@ -2051,6 +2097,8 @@ private fun MoreHubScreen(
     onOpenWallets: () -> Unit,
     onOpenWalletCashier: () -> Unit,
     onOpenProductCashier: () -> Unit,
+    onOpenRetailShifts: () -> Unit,
+    onOpenRetailDevices: () -> Unit,
     onOpenSales: () -> Unit,
     onOpenNotifications: () -> Unit,
     onOpenMaintenance: () -> Unit,
@@ -2076,6 +2124,8 @@ private fun MoreHubScreen(
             if (canViewWallets) MoreActionRow("المحافظ", "الأرصدة والنقدية والحدود", Icons.Filled.AccountBalanceWallet, onOpenWallets)
             if (canViewWalletCashier) MoreActionRow("كاشير المحافظ", "تسجيل التحويلات والتحصيلات", Icons.Filled.AccountBalanceWallet, onOpenWalletCashier)
             if (canViewProductCashier) MoreActionRow("نقطة البيع", "بحث المنتجات والسلة والتحصيل", Icons.Filled.Store, onOpenProductCashier)
+            if (canViewRetailShifts) MoreActionRow("ورديات الكاشير", "الفتح والإغلاق واعتماد الفروق", Icons.Filled.Payments, onOpenRetailShifts)
+            if (canViewRetailDevices) MoreActionRow("الأجهزة المتتبعة", "بحث السيريال وIMEI والضمان", Icons.Filled.Inventory2, onOpenRetailDevices)
             if (canViewDamaged) MoreActionRow("الهالك", "تسجيل التالف وعكس القيود بالسبب", Icons.Filled.Delete, onOpenDamaged)
             if (canViewMaintenance) MoreActionRow("الصيانة", "طلبات الصيانة وحالتها", Icons.Filled.Build, onOpenMaintenance)
         }
@@ -2314,14 +2364,16 @@ private fun WalletCashierScreen(
     }
 }
 
-private data class PosCartLine(val product: CashierProductDto, val quantity: Int)
-
 @Composable
 private fun ProductCashierScreen(
     state: CashierPosUiState,
     isSaving: Boolean,
     onSearch: (String) -> Unit,
     onCheckout: (CashierCheckoutInputDto, String, (CashierCheckoutResponseDto) -> Unit) -> Unit,
+    retailUser: UserDto?,
+    retailViewModel: RetailViewModel,
+    onOpenShifts: () -> Unit,
+    onRetailSale: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var searchText by rememberSaveable { mutableStateOf("") }
@@ -2330,6 +2382,8 @@ private fun ProductCashierScreen(
     var cart by remember { mutableStateOf(emptyMap<Long, PosCartLine>()) }
     var formError by remember { mutableStateOf<String?>(null) }
     var receipt by remember { mutableStateOf<CashierCheckoutResponseDto?>(null) }
+    var retailReceipt by remember { mutableStateOf<RetailCheckoutReceiptDto?>(null) }
+    var retailCart by remember { mutableStateOf<List<PosCartLine>?>(null) }
     var checkoutKey by remember { mutableStateOf(UUID.randomUUID().toString()) }
     var attemptedCheckoutPayload by remember { mutableStateOf<String?>(null) }
 
@@ -2464,28 +2518,39 @@ private fun ProductCashierScreen(
                 Text("الإجمالي", fontWeight = FontWeight.SemiBold)
                 Text("${total.toPlainString()} ج.م", fontWeight = FontWeight.Bold)
             }
-            OutlinedTextField(
-                customer,
-                { updateCheckoutKey(checkoutPayload(nextCustomer = it)); customer = it },
-                label = { Text("اسم العميل (مطلوب للدفع الجزئي)") },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
-            )
-            OutlinedTextField(
-                received,
-                { value -> val normalized = value.normalizeArabicDigits(); updateCheckoutKey(checkoutPayload(nextReceived = normalized)); received = normalized },
-                label = { Text("المبلغ المستلم (فارغ = دفع كامل)") },
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
-            )
-            if (changeDue > java.math.BigDecimal.ZERO) {
-                Text("الباقي للعميل: ${changeDue.setScale(2, java.math.RoundingMode.HALF_UP).toPlainString()} ج.م")
+            if (retailUser == null) {
+                OutlinedTextField(
+                    customer,
+                    { updateCheckoutKey(checkoutPayload(nextCustomer = it)); customer = it },
+                    label = { Text("اسم العميل (مطلوب للدفع الجزئي)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                OutlinedTextField(
+                    received,
+                    { value -> val normalized = value.normalizeArabicDigits(); updateCheckoutKey(checkoutPayload(nextReceived = normalized)); received = normalized },
+                    label = { Text("المبلغ المستلم (فارغ = دفع كامل)") },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                if (changeDue > java.math.BigDecimal.ZERO) {
+                    Text("الباقي للعميل: ${changeDue.setScale(2, java.math.RoundingMode.HALF_UP).toPlainString()} ج.م")
+                }
             }
             formError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
             Button(
                 onClick = {
                     if (cart.isEmpty()) formError = "أضف منتجاً واحداً على الأقل."
+                    else if (retailUser != null) {
+                        if (retailMinorUnits(total.toPlainString()) == null) formError = "إجمالي الفاتورة يتجاوز النطاق المسموح."
+                        else if (cart.size > 40 || cart.values.any { it.product.tracking != "quantity" && it.quantity > 200 }) {
+                            formError = "الحد 40 صنفًا للفاتورة و200 جهاز لكل صنف متتبع."
+                        } else {
+                            formError = null
+                            retailCart = cart.values.toList()
+                        }
+                    }
                     else if (received.isNotBlank() && !received.isValidPaidAmount()) formError = "أدخل مبلغاً مستلماً صحيحاً."
                     else if (enteredReceived != null && enteredReceived < total && customer.isBlank()) formError = "اسم العميل مطلوب عند الدفع الجزئي."
                     else {
@@ -2515,6 +2580,43 @@ private fun ProductCashierScreen(
                 else Text("إتمام البيع")
             }
         }
+    }
+
+    val checkoutCart = retailCart
+    if (checkoutCart != null && retailUser != null) {
+        RetailCheckoutDialog(
+            user = retailUser,
+            viewModel = retailViewModel,
+            cart = checkoutCart,
+            totalMinor = requireNotNull(retailMinorUnits(total.toPlainString())),
+            onOpenShifts = onOpenShifts,
+            onDismiss = { retailCart = null },
+            onComplete = {
+                retailCart = null
+                retailReceipt = it
+                cart = emptyMap()
+                onSearch(searchText)
+                onRetailSale()
+            },
+        )
+    }
+    retailReceipt?.let { result ->
+        val totalText = java.math.BigDecimal.valueOf(result.totalMinor, 2).toPlainString()
+        val paidText = java.math.BigDecimal.valueOf(result.paidMinor, 2).toPlainString()
+        val dueText = java.math.BigDecimal.valueOf(result.totalMinor - result.paidMinor, 2).toPlainString()
+        AlertDialog(
+            onDismissRequest = { retailReceipt = null },
+            title = { Text("تمت عملية البيع") },
+            text = {
+                DialogForm {
+                    Text("الفاتورة ${result.invoiceNumber ?: result.id}")
+                    DetailLine("الإجمالي", "$totalText ج.م.")
+                    DetailLine("المدفوع", "$paidText ج.م.")
+                    if (result.paidMinor < result.totalMinor) DetailLine("المتبقي", "$dueText ج.م.")
+                }
+            },
+            confirmButton = { Button(onClick = { retailReceipt = null }) { Text("تم") } },
+        )
     }
 
     receipt?.let { result ->

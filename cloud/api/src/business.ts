@@ -7,6 +7,7 @@ import { purchaseReceiving } from './purchase-receiving';
 import { retailFinanceReports, retailTenderMatch } from './retail-finance-reports';
 import { retailSalesReport } from './retail-sales-report';
 import { cairoRetailDay, retailPayments, retailPermissions, retailShifts, retailTenderInput, retailTenderStatements } from './retail-shifts';
+import { retailSafe, retailSafePermission } from './retail-safe';
 import { deviceWarrantyView, retailDeviceErrors, retailDevices } from './retail-devices';
 import { procurementErrors, purchaseOrderDetail, purchaseOrderItems, purchaseOrderStatements, retailProcurement } from './retail-procurement';
 import { retailQuantityCosts } from './retail-quantity-costs';
@@ -26,6 +27,7 @@ export const businessPermissions = [
   'maintenance.view', 'maintenance.manage', 'maintenance.pay',
   'reports.view',
   ...retailPermissions,
+  retailSafePermission,
   ...stocktakePermissions,
 ];
 
@@ -78,9 +80,15 @@ function businessError(error: unknown): never {
   const retailRules = [
     [409, 'RETAIL_SHIFT_REQUIRED', 'سجّل الدفع على وردية مفتوحة واختر وسائل السداد.'],
     [409, 'RETAIL_SHIFT_UNAVAILABLE', 'الوردية مغلقة أو غير مرتبطة بالمستخدم الحالي.'],
+    [409, 'RETAIL_SERVICE_SOURCE', 'تعذر ربط الحركة بمصدر النقدية المسجل.'],
     [409, 'RETAIL_SHIFT_ALREADY_OPEN', 'يوجد بالفعل وردية مفتوحة لهذا الدرج أو لهذا الموظف.'],
     [409, 'RETAIL_CASH_MOVEMENT_DUPLICATE', 'سُجّلت هذه الحركة أو مرجعها من قبل في الوردية.'],
     [409, 'RETAIL_CASH_MOVEMENT_BALANCE', 'الرصيد المتوقع للدرج لا يسمح بهذه الحركة.'],
+    [409, 'RETAIL_SAFE_ALREADY_OPEN', 'تم تسجيل الرصيد الافتتاحي للخزنة بالفعل.'],
+    [409, 'RETAIL_SAFE_NOT_OPEN', 'سجّل الرصيد الافتتاحي للخزنة قبل الجرد.'],
+    [409, 'RETAIL_SAFE_BALANCE_CHANGED', 'تغيّر الرصيد المتوقع للخزنة. حدّث الرصيد وأعد الجرد.'],
+    [409, 'RETAIL_SAFE_BALANCE', 'الرصيد المتوقع للخزنة لا يسمح بهذه الحركة.'],
+    [422, 'RETAIL_SAFE_REASON_REQUIRED', 'اذكر سبب الفرق بين الرصيد المتوقع والرصيد الفعلي للخزنة.'],
     [403, 'RETAIL_SHIFT_NOT_OWNED', 'يمكن لموظف الوردية وحده تسجيل إقفالها.'],
     [409, 'RETAIL_SHIFT_NOT_OPEN', 'الوردية مغلقة بالفعل.'],
     [409, 'RETAIL_SHIFT_BALANCE_CHANGED', 'تغيّر الرصيد المتوقع. حدّث الوردية وأعد الجرد.'],
@@ -371,6 +379,14 @@ export function checkoutInvoice(c: ApiContext, data: z.infer<typeof checkout>, o
 }
 
 business.post('/invoices', permit('invoices.create'), async c => checkoutInvoice(c, await body(c, checkout)));
+business.post('/retail/checkout', permit('invoices.create'), async c => checkoutInvoice(c, await body(c, checkout), undefined, undefined,
+  async invoiceId => {
+    const row = await c.env.DB.prepare(`SELECT total_minor,
+      COALESCE((SELECT amount_minor FROM invoice_payments WHERE id = invoices.id AND source_type = 'checkout'), 0) AS paid_minor
+      FROM invoices WHERE id = ?`).bind(invoiceId).first();
+    if (!row) throw new Error('Missing checkout invoice');
+    return ok(c, { id: invoiceId, invoice_number: String(invoiceId), ...row }, 201);
+  }));
 
 business.patch('/invoices/:id/due-date', permit('invoices.create'), async c => {
   const invoiceId = identifier(c);
@@ -953,7 +969,8 @@ async function walletLedger(c: ApiContext, attachment = false) {
   const cash = canReadCash ? 't.cash_delta_minor' : 'NULL';
   const columns = `t.id, t.wallet_id, t.kind, t.amount_minor, t.commission_minor, t.fee_minor, t.delta_minor,
     ${cash} AS cash_delta_minor, t.business_day, t.reversal_of, t.note, t.actor_id, t.created_at, t.counterparty, t.provider_reference,
-    w.name AS wallet_name, r.id AS reversed_by, d.id AS wallet_debt_id, p.id AS profit_withdrawal_id, a.id AS adjustment_id`;
+    w.name AS wallet_name, r.id AS reversed_by, d.id AS wallet_debt_id, p.id AS profit_withdrawal_id, a.id AS adjustment_id,
+    (SELECT x.shift_id FROM retail_service_cash x WHERE x.operation_id = t.id AND x.source = 'wallet_cash') AS shared_shift_id`;
   const tables = `wallet_transactions t JOIN wallets w ON w.id = t.wallet_id
       LEFT JOIN wallet_transactions r ON r.reversal_of = t.id
       LEFT JOIN wallet_debts d ON d.wallet_transaction_id = t.id
@@ -998,11 +1015,12 @@ const walletTransaction = z.object({
   fee_minor: money.optional(),
   counterparty: phone.default(''),
   provider_reference: z.string().trim().min(1).max(100).regex(/^[^\p{Cc}\p{Cf}]+$/u).optional(),
+  shared_shift_id: id.optional(),
   note: note.default(''),
   deferred: z.object({ customer_id: id, principal_minor: positiveMoney.optional(), due_date: date.nullish() }).strict().optional(),
 }).strict().refine(data => {
   const transfer = data.kind === 'send' || data.kind === 'receive';
-  if (!transfer) return !data.fee_minor && !data.commission_minor && !data.deferred && !data.provider_reference && data.note.length > 0;
+  if (!transfer) return !data.fee_minor && !data.commission_minor && !data.deferred && !data.provider_reference && !data.shared_shift_id && data.note.length > 0;
   if ((data.fee_minor ?? 0) > data.amount_minor || (data.commission_minor ?? 0) > data.amount_minor) return false;
   if (data.kind === 'receive') return !data.deferred;
   const owed = data.amount_minor + (data.commission_minor ?? 0);
@@ -1014,9 +1032,24 @@ const walletTransaction = z.object({
 const rateAmount = (column: 'default_commission_bps' | 'default_fee_bps') =>
   `((amount / 10000) * ${column} + ((amount % 10000) * ${column} + 5000) / 10000)`;
 
+function sharedDrawer(c: ApiContext, shiftId: number | undefined) {
+  if (shiftId !== undefined && !hasPermission(c.get('actor'), 'retail.shifts.operate')) {
+    return fail(403, 'SHARED_DRAWER_PERMISSION', 'ربط الحركة بالدرج يتطلب صلاحية تشغيل ورديات الكاشير.');
+  }
+}
+
+function sharedCashStatement(c: ApiContext, op: string, binds: Bind[], actor: number, shiftId: number, source: 'maintenance_cash' | 'wallet_cash') {
+  const table = source === 'maintenance_cash' ? 'maintenance_payments' : 'wallet_transactions';
+  const delta = source === 'maintenance_cash' ? 'amount_minor' : 'cash_delta_minor';
+  return c.env.DB.prepare(`INSERT INTO retail_service_cash(operation_id,shift_id,actor_id,source,delta_minor)
+    SELECT id, ?, ?, ?, ${delta} FROM ${table} WHERE id = ${op} AND ${delta} <> 0`)
+    .bind(shiftId, actor, source, ...binds);
+}
+
 business.post('/wallets/:id/transactions', permit('wallets.transact'), async c => {
   const walletId = identifier(c);
   const data = await body(c, walletTransaction);
+  sharedDrawer(c, data.shared_shift_id);
   return write(c, 'wallet.transaction', { walletId, ...data }, (op, binds, actor) => {
     const db = c.env.DB;
     const statements = [
@@ -1050,13 +1083,15 @@ business.post('/wallets/:id/transactions', permit('wallets.transact'), async c =
         FROM wallet_transactions WHERE id = ${op}
       `).bind(data.deferred.customer_id, data.deferred.principal_minor ?? null, data.deferred.due_date ?? null, ...binds));
     }
+    if (data.shared_shift_id !== undefined) statements.push(sharedCashStatement(c, op, binds, actor, data.shared_shift_id, 'wallet_cash'));
     return statements;
   });
 });
 
 business.post('/wallet-transactions/:id/reverse', permit('wallets.reverse'), async c => {
   const transactionId = identifier(c);
-  const data = await body(c, z.object({ reason }).strict());
+  const data = await body(c, z.object({ reason, shared_shift_id: id.optional() }).strict());
+  sharedDrawer(c, data.shared_shift_id);
   return write(c, 'wallet.reverse', { transactionId, ...data }, (op, binds, actor) => [
     c.env.DB.prepare(`
       WITH original AS (SELECT * FROM wallet_transactions WHERE id = ?)
@@ -1066,6 +1101,10 @@ business.post('/wallet-transactions/:id/reverse', permit('wallets.reverse'), asy
         (SELECT commission_minor FROM original), (SELECT fee_minor FROM original), (SELECT -delta_minor FROM original),
         (SELECT -cash_delta_minor FROM original), ?, ?, (SELECT counterparty FROM original), ?, ?)
     `).bind(transactionId, ...binds, cairoDay(), transactionId, data.reason, actor),
+    c.env.DB.prepare(`INSERT INTO retail_service_cash(operation_id,shift_id,actor_id,source,delta_minor)
+      SELECT t.id, COALESCE(?, -1), ?, 'wallet_cash', t.cash_delta_minor
+      FROM wallet_transactions t JOIN retail_service_cash original ON original.operation_id = t.reversal_of
+      WHERE t.id = ${op} AND original.source = 'wallet_cash'`).bind(data.shared_shift_id ?? null, actor, ...binds),
   ]);
 });
 
@@ -1380,7 +1419,10 @@ for (const endpoint of paymentEndpoints) {
     const source = retailSources[endpoint.table as keyof typeof retailSources];
     const data = source
       ? await body(c, endpoint.hasNote ? retailPaymentWithNote : retailPaymentBody)
-      : await body(c, endpoint.hasNote ? paymentWithNote : paymentBody);
+      : endpoint.table === 'maintenance_payments' ? await body(c, paymentBody.extend({ shared_shift_id: id.optional() }))
+        : await body(c, endpoint.hasNote ? paymentWithNote : paymentBody);
+    const sharedShiftId = 'shared_shift_id' in data && typeof data.shared_shift_id === 'number' ? data.shared_shift_id : undefined;
+    sharedDrawer(c, sharedShiftId);
     const withNote = 'note' in data ? String(data.note) : null;
     const fields = (endpoint.fields ?? '') + (endpoint.hasNote ? ', note' : '');
     const placeholders = (endpoint.values ?? '') + (endpoint.hasNote ? ', ?' : '');
@@ -1395,6 +1437,7 @@ for (const endpoint of paymentEndpoints) {
       }
       if (source) statements.push(...retailTenderStatements(c.env.DB, op, binds, actor, source,
         data as z.infer<typeof retailPaymentBody>));
+      if (sharedShiftId !== undefined) statements.push(sharedCashStatement(c, op, binds, actor, sharedShiftId, 'maintenance_cash'));
       return statements;
     });
   });
@@ -1449,5 +1492,6 @@ business.route('/', retailQuantityCosts(write));
 business.route('/', walletReporting);
 business.route('/', walletReconciliation);
 business.route('/', retailShifts(write));
+business.route('/', retailSafe(write));
 business.route('/', retailFinanceReports);
 business.route('/', retailTenderMatch(write));
