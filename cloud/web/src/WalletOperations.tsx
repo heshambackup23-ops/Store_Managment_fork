@@ -92,8 +92,9 @@ function csvCell(value: unknown) {
 function saveLedger(rows: Row[], showCash: boolean) {
   const moneyKeys = ['amount_minor', 'delta_minor', ...(showCash ? ['cash_delta_minor'] : []), 'commission_minor', 'fee_minor']
   const fields = ['id', 'wallet_name', 'business_day', 'kind', 'reversal_of', 'reversed_by', ...moneyKeys, 'counterparty', 'note']
+  const headings = fields.map(key => moneyKeys.includes(key) ? key.replace(/_minor$/, '_egp') : key)
   const lines = rows.map(row => fields.map(key => moneyKeys.includes(key) ? decimal(row[key]) : csvCell(row[key])).join(','))
-  const url = URL.createObjectURL(new Blob(['\uFEFF', fields.join(','), '\r\n', lines.join('\r\n')], { type: 'text/csv;charset=utf-8' }))
+  const url = URL.createObjectURL(new Blob(['\uFEFF', headings.join(','), '\r\n', lines.join('\r\n')], { type: 'text/csv;charset=utf-8' }))
   const link = document.createElement('a')
   link.href = url
   link.download = 'hilal-wallet-ledger.csv'
