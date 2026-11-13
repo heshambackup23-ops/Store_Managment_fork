@@ -87,6 +87,17 @@ jobs:
           mysql_root mysql -u root --execute="CREATE DATABASE hilal_migration_restored CHARACTER SET utf8mb4; GRANT SELECT ON hilal_migration_restored.* TO 'hilal_fixture'@'%';"
           mysql_root mysql -u root hilal_migration_restored < "$source_dump"
           (cd "$RUNNER_TEMP/hilal-source-evidence" && sha256sum hilal-original.synthetic.sql > SHA256SUMS.txt)
+      - name: Export the actual legacy ZIP and XLSX from the restored source
+        working-directory: laravel-original
+        shell: bash
+        env:
+          DB_DATABASE: hilal_migration_restored
+        run: |
+          evidence="$RUNNER_TEMP/hilal-source-evidence"
+          php ../cloud/api/fixtures/export-original-backup.synthetic.php > "$evidence/hilal-laravel-v2.synthetic.zip"
+          unzip -tq "$evidence/hilal-laravel-v2.synthetic.zip"
+          unzip -p "$evidence/hilal-laravel-v2.synthetic.zip" pages/catalog.xlsx > "$evidence/hilal-catalog.synthetic.xlsx"
+          unzip -tq "$evidence/hilal-catalog.synthetic.xlsx"
       - name: Extract, restore and reconcile in local D1
         working-directory: cloud/api
         shell: bash
@@ -112,6 +123,12 @@ jobs:
           ' "$work/hilal-source.private.json"
           node scripts/restore-laravel-backup.mjs "$work/hilal-source.private.json" \
             --emit-d1-sql "$work/hilal-load.generated.sql" > "$evidence/restore-report.json"
+          node scripts/restore-laravel-backup.mjs "$evidence/hilal-laravel-v2.synthetic.zip" \
+            --source-time-zone UTC > "$evidence/legacy-zip-restore-report.json"
+          node scripts/restore-laravel-backup.mjs "$evidence/hilal-catalog.synthetic.xlsx" \
+            --source-time-zone UTC > "$evidence/legacy-xlsx-restore-report.json"
+          jq -e '.status == "verified" and .source_counts.invoices == 2' "$evidence/legacy-zip-restore-report.json"
+          jq -e '.status == "verified" and .source_counts.products == 2' "$evidence/legacy-xlsx-restore-report.json"
           export AUTH_PEPPER="$(openssl rand -hex 32)"
           node scripts/provision-user.mjs "$work/operator.generated.sql"
           npx --no-install wrangler d1 migrations apply DB --local --persist-to "$work/d1"
@@ -122,6 +139,8 @@ jobs:
             | jq -e '.[0].results[0] | select(. == {invoices:2,invoice_total_minor:2830,invoice_paid_minor:1220,installment_due_minor:1610,personal_debt_due_minor:1075,stock_units:7,barcode:"000123"})' \
             > "$evidence/d1-reconciliation.json"
           cat "$evidence/d1-reconciliation.json"
+          # Contains only the pre-verified synthetic rows and the isolated target guard.
+          cp "$work/hilal-load.generated.sql" "$evidence/hilal-d1.synthetic.generated.sql"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
