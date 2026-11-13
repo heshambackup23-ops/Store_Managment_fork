@@ -127,7 +127,6 @@ export function WalletLedger({ user, config }: { user: User; config: ModuleConfi
       return <Link to={'/wallet-transactions?' + relatedQuery}>{row.reversed_by ? 'معكوس بالقيد' : 'عكس القيد'} <bdi>#{related}</bdi></Link>
     } },
     { key: 'fee_minor', label: 'رسوم المزود', render: row => money(row.fee_minor) },
-    { key: 'provider_reference', label: 'مرجع المزود', render: row => row.provider_reference ? <bdi>{String(row.provider_reference)}</bdi> : '—' },
   )
   const filterForm = <form className="panel form-card section-space" key={queryText} onSubmit={filter}>
     <label className="field">المحفظة<select name="wallet_id" defaultValue={walletId}>
