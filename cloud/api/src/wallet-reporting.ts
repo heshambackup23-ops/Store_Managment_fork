@@ -131,17 +131,19 @@ walletReporting.get('/reports/wallets/period', permit('wallets.cash'), async c =
       WITH cash_entries AS (
         SELECT COALESCE(SUM(t.cash_delta_minor), 0) AS cash FROM wallet_transactions t WHERE t.business_day >= ? AND t.business_day < ?
           AND NOT EXISTS (SELECT 1 FROM retail_service_cash r WHERE r.operation_id = t.id AND r.source = 'wallet_cash')
-        UNION ALL SELECT COALESCE(SUM(amount_minor), 0) FROM wallet_debt_payments WHERE created_at >= ? AND created_at < ?
-        UNION ALL SELECT COALESCE(SUM(delta_minor), 0) FROM wallet_cash_entries WHERE business_day >= ? AND business_day < ?
+        UNION ALL SELECT COALESCE(SUM(p.amount_minor), 0) FROM wallet_debt_payments p WHERE p.created_at >= ? AND p.created_at < ?
+          AND NOT EXISTS (SELECT 1 FROM retail_wallet_drawer r WHERE r.operation_id = p.id AND r.source = 'wallet_collection')
+        UNION ALL SELECT COALESCE(SUM(e.delta_minor), 0) FROM wallet_cash_entries e WHERE e.business_day >= ? AND e.business_day < ?
+          AND NOT EXISTS (SELECT 1 FROM retail_wallet_drawer r WHERE r.operation_id = e.id AND r.source = 'wallet_expense')
         UNION ALL SELECT -COALESCE(SUM(amount_minor), 0) FROM wallet_profit_withdrawals
-          WHERE wallet_id IS NULL AND business_day >= ? AND business_day < ?
+          WHERE wallet_id IS NULL AND shared_shift_id IS NULL AND business_day >= ? AND business_day < ?
       )
       SELECT CAST(SUM(cash) AS TEXT) AS cash_movement_minor,
         CAST((SELECT COALESCE(SUM(amount_minor), 0) FROM wallet_debt_payments WHERE created_at >= ? AND created_at < ?) AS TEXT) AS cash_collections_minor,
-        CAST((SELECT COALESCE(SUM(r.delta_minor), 0) FROM retail_service_cash r JOIN wallet_transactions t ON t.id = r.operation_id
-          WHERE r.source = 'wallet_cash' AND t.business_day >= ? AND t.business_day < ?) AS TEXT) AS shared_cash_movement_minor
+        CAST((SELECT COALESCE(SUM(r.delta_minor), 0) FROM retail_drawer_service_ledger r
+          WHERE r.source <> 'maintenance_cash' AND r.created_at >= ? AND r.created_at < ?) AS TEXT) AS shared_cash_movement_minor
       FROM cash_entries
-    `).bind(from, until, utcFrom, utcUntil, from, until, from, until, utcFrom, utcUntil, from, until),
+    `).bind(from, until, utcFrom, utcUntil, from, until, from, until, utcFrom, utcUntil, utcFrom, utcUntil),
   ]);
 
   const activity = new Map(byDay.results.map(row => [String(row.day), row]));

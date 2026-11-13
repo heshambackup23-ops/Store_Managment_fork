@@ -1382,6 +1382,7 @@ private fun StoreHomeScreen(
     damagedEditTarget?.let { item ->
         DamagedItemEditDialog(
             item = item,
+            canManageCost = "page.products.cost.manage" in user.permissions,
             onDismiss = { damagedEditTarget = null },
             onSave = { input, key -> storeViewModel.updateDamagedItem(item.id, input, key) },
         )
@@ -1444,6 +1445,7 @@ private fun StoreHomeScreen(
             products = damagedProductsState.products,
             isLoading = damagedProductsState.isLoading,
             error = damagedProductsState.error,
+            canManageCost = "page.products.cost.manage" in user.permissions,
             onSearch = storeViewModel::searchDamagedProducts,
             onDismiss = { damagedDialogOpen = false },
             onCreate = storeViewModel::createDamagedItem,
@@ -2117,7 +2119,8 @@ private fun MoreHubScreen(
             if (canViewInstallments) MoreActionRow("الأقساط والديون", "الأرصدة ومواعيد السداد", Icons.AutoMirrored.Filled.ReceiptLong, onOpenInstallments)
             if (canViewWallets) MoreActionRow("المحافظ", "الأرصدة والنقدية والحدود", Icons.Filled.AccountBalanceWallet, onOpenWallets)
             if (canViewWalletCashier) MoreActionRow("كاشير المحافظ", "تسجيل التحويلات والتحصيلات", Icons.Filled.AccountBalanceWallet, onOpenWalletCashier)
-            if (canViewProductCashier) MoreActionRow("نقطة البيع", "بحث المنتجات والسلة والتحصيل", Icons.Filled.Store, onOpenProductCashier)
+            if (canViewProductCashier) MoreActionRow("نقطة البيع", "بحث المنتجات والسلة والتحصيل", Icons.Filled.Store, onOpenProductCashier,
+                Modifier.testTag("retail-menu-checkout"))
             if (canViewRetailShifts) MoreActionRow("ورديات الكاشير", "الفتح والإغلاق واعتماد الفروق", Icons.Filled.Payments, onOpenRetailShifts,
                 Modifier.testTag("retail-menu-shifts"))
             if (canViewRetailDevices) MoreActionRow("الأجهزة المتتبعة", "بحث السيريال وIMEI والضمان", Icons.Filled.Inventory2, onOpenRetailDevices,
@@ -2460,6 +2463,7 @@ private fun ProductCashierScreen(
                             }
                             Button(
                                 enabled = product.stock > 0,
+                                modifier = Modifier.testTag("cashier-add-${product.barcode ?: product.id}"),
                                 onClick = {
                                     val current = cart[product.id]?.quantity ?: 0
                                     if (current < product.stock) {

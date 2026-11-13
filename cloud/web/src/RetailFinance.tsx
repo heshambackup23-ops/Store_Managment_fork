@@ -4,12 +4,13 @@ import type { FormEvent } from 'react'
 import { allowed, apiUrl, decimal, integer, money, readMoney, request } from './api'
 import type { User } from './api'
 import { tenderLabels } from './RetailShifts'
+import { RetailInventoryValuation } from './RetailInventoryValuation'
 import { dataText, Modal, Notice, PageTitle } from './ui'
 import type { Row } from './ui'
 
 const ages: Record<string, string> = { undated: 'بلا استحقاق مسجل', not_due: 'غير مستحق بعد', overdue_1_30: 'متأخر ١–٣٠ يومًا', overdue_31_60: '٣١–٦٠ يومًا', overdue_61_90: '٦١–٩٠ يومًا', overdue_90_plus: 'أكثر من ٩٠ يومًا' }
 const sourceLabels: Record<string, string> = { invoice: 'فاتورة', installment: 'قسط', wallet_debt: 'آجل محفظة', personal_debt: 'دين شخصي', maintenance: 'صيانة', purchase: 'شراء', supplier_opening: 'افتتاحي مورد' }
-const labels = { aging: 'أعمار الأرصدة', settlement: 'حركات القنوات غير النقدية', margin: 'هامش البضاعة المثبت', audit: 'سجل تدقيق المتجر' }
+const labels = { aging: 'أعمار الأرصدة', settlement: 'حركات القنوات غير النقدية', margin: 'هامش البضاعة المثبت', valuation: 'قيمة المخزون المثبتة', audit: 'سجل تدقيق المتجر' }
 type View = keyof typeof labels
 type Report = { items: Row[]; totals?: Record<string, number> | Row[]; from?: string; to?: string; as_of?: string }
 type Column = [string, string, ('money' | 'number' | 'method' | 'source' | 'bucket')?]
@@ -41,7 +42,7 @@ export function RetailFinance({ user }: { user: User }) {
   const canAudit = allowed(user, 'retail.audit.view')
   const canExport = allowed(user, 'retail.accountant.export')
   const selectedView = params.get('view')
-  const view: View = selectedView === 'settlement' && canViewSettlement ? 'settlement' : selectedView === 'margin' && canViewMargin ? 'margin' : selectedView === 'audit' && canAudit ? 'audit' : 'aging'
+  const view: View = selectedView === 'settlement' && canViewSettlement ? 'settlement' : selectedView === 'margin' && canViewMargin ? 'margin' : selectedView === 'valuation' && canViewMargin ? 'valuation' : selectedView === 'audit' && canAudit ? 'audit' : 'aging'
   const [from, setFrom] = useState('')
   const [to, setTo] = useState('')
   const [side, setSide] = useState('receivable')
@@ -53,9 +54,12 @@ export function RetailFinance({ user }: { user: User }) {
   const [report, setReport] = useState<Report>()
   const [error, setError] = useState('')
   const [match, setMatch] = useState<Row>()
+  const [batch, setBatch] = useState<Row[]>([])
+  const [settlementAction, setSettlementAction] = useState<'batch' | 'reverse'>()
   const [revision, refresh] = useState(0)
 
   useEffect(() => {
+    if (view === 'valuation') return
     const controller = new AbortController()
     setError(''); setReport(undefined)
     const query = new URLSearchParams({ page: String(page), per_page: '25' })
@@ -87,14 +91,21 @@ export function RetailFinance({ user }: { user: User }) {
   }
   const columns = view === 'aging' ? agingColumns : view === 'settlement' ? settlementColumns : view === 'audit' ? auditColumns : marginColumns
   const totals = report?.totals
+  function toggleBatch(row: Row) {
+    const same = (item: Row) => item.operation_id === row.operation_id && item.source === row.source && item.position === row.position
+    setBatch(items => items.some(same) ? items.filter(item => !same(item)) : [...items, row])
+  }
+  function settlementDone() {
+    setSettlementAction(undefined); setMatch(undefined); setBatch([]); refresh(value => value + 1)
+  }
   const exportQuery = new URLSearchParams()
   if (from) exportQuery.set('from', from)
   if (to) exportQuery.set('to', to)
   return <>
     <PageTitle title="تقارير مالية للمتجر" action={canExport && <a className="secondary" href={apiUrl('/retail/accountant.csv?' + exportQuery)}>حركات المتجر للمحاسب CSV</a>} />
-    <div className="form-actions section-space" aria-label="التقرير المعروض">{(Object.keys(labels) as View[]).filter(name => name === 'aging' || name === 'settlement' && canViewSettlement || name === 'margin' && canViewMargin || name === 'audit' && canAudit).map(name =>
+    <div className="form-actions section-space" aria-label="التقرير المعروض">{(Object.keys(labels) as View[]).filter(name => name === 'aging' || name === 'settlement' && canViewSettlement || (name === 'margin' || name === 'valuation') && canViewMargin || name === 'audit' && canAudit).map(name =>
       <button className={name === view ? 'primary' : 'secondary'} aria-pressed={name === view} key={name} onClick={() => { setPage(1); setParams({ view: name }) }}>{labels[name]}</button>)}</div>
-    <section className="panel panel-inner form-section section-space"><h2>{labels[view]}</h2>
+    {view === 'valuation' ? <RetailInventoryValuation canFilter={allowed(user, 'categories.view')} /> : <section className="panel panel-inner form-section section-space"><h2>{labels[view]}</h2>
       {view === 'aging' ? <label className="field">نوع الرصيد<select value={side} onChange={event => { setSide(event.target.value); setPage(1) }}>
         <option value="receivable">لنا · مستحقات العملاء</option><option value="payable">علينا · مستحقات الموردين</option></select></label> : <div className="form-grid">
         <label className="field">من تاريخ<input type="date" value={from} onChange={event => { setFrom(event.target.value); setPage(1) }} /></label>
@@ -106,6 +117,10 @@ export function RetailFinance({ user }: { user: User }) {
         {view === 'audit' && <label className="field">الموظف أو الإجراء أو رقم السجل<input type="search" value={auditQuery} onChange={event => { setAuditQuery(event.target.value); setPage(1) }} /></label>}
       </div>}
       {view === 'settlement' && <p>قارن الحركات المسجّلة ومراجعها بكشف البنك أو المزود.</p>}
+      {view === 'settlement' && batch.length > 0 && <div className="form-actions">
+        <button type="button" className="primary" onClick={() => setSettlementAction('batch')}>تسوية الحركات المحددة ({integer(batch.length)})</button>
+        <button type="button" className="secondary" onClick={() => setBatch([])}>مسح الاختيار</button>
+      </div>}
       {canExport && <p className="muted">ملف المحاسب يفصل مستندات البيع والشراء عن التحصيل وحركات الدرج، ويبيّن المدفوعات القديمة مجهولة الوسيلة.</p>}
       {view === 'margin' && <p>الهامش يضم الأجهزة التي ثبتت تكلفة استلامها والأصناف الكمية ذات المتوسط المرجّح المثبت. القطع الأخرى تظهر بلا تكلفة مثبتة، وتظهر المرتجعات مقابل تاريخ الفاتورة الأصلية.</p>}
       {report && <p className="muted">{report.as_of ? `الأرصدة القائمة في ${report.as_of}` : `الفترة ${report.from ?? '—'} إلى ${report.to ?? '—'}`}</p>}
@@ -116,43 +131,58 @@ export function RetailFinance({ user }: { user: User }) {
         <div className="table-scroll"><table><thead><tr>{columns.map(([key, label]) => <th scope="col" key={key}>{label}</th>)}{view === 'settlement' && <th scope="col">مطابقة الكشف</th>}</tr></thead>
           <tbody>{report.items.map((row, index) => <tr key={String(row.id ?? row.category_id ?? row.operation_id ?? index) + ':' + index}>
             {columns.map(([key, , kind]) => <td key={key}>{render(row[key], kind)}</td>)}
-            {view === 'settlement' && <td>{row.settlement_status === 'matched' ? `مطابق · ${String(row.statement_reference)} · ${String(row.statement_date)}`
-              : <button type="button" className="link-button" onClick={() => setMatch(row)}>طابق مع الكشف</button>}</td>}
+            {view === 'settlement' && <td>{row.settlement_status === 'matched' ? <>
+              <span>{`مطابق · ${String(row.statement_reference)} · ${String(row.statement_date)}`}</span>{' '}
+              <button type="button" className="link-button" onClick={() => { setMatch(row); setSettlementAction('reverse') }}>اعكس المطابقة</button>
+            </> : <label className="checkbox-field"><input type="checkbox"
+              disabled={batch.length > 0 && batch[0].method !== row.method || batch.length >= 40 && !batch.some(item => item.operation_id === row.operation_id && item.source === row.source && item.position === row.position)}
+              checked={batch.some(item => item.operation_id === row.operation_id && item.source === row.source && item.position === row.position)}
+              onChange={() => toggleBatch(row)} /> اختر للتسوية</label>}</td>}
           </tr>)}</tbody></table></div>}
       {total > 25 && view !== 'margin' && <nav className="pagination" aria-label="صفحات التقرير"><button className="secondary" disabled={page === 1} onClick={() => setPage(page - 1)}>السابق</button>
         <button className="secondary" disabled={page * 25 >= total} onClick={() => setPage(page + 1)}>التالي</button></nav>}
-    </section>
-    {match && <MatchTender row={match} close={() => setMatch(undefined)} done={() => { setMatch(undefined); refresh(value => value + 1) }} />}
+    </section>}
+    {settlementAction && <SettleTenders key={settlementAction} rows={batch} reverse={settlementAction === 'reverse' ? match : undefined}
+      close={() => { setSettlementAction(undefined); setMatch(undefined) }} done={settlementDone} />}
   </>
 }
 
-function MatchTender({ row, close, done }: { row: Row; close: () => void; done: () => void }) {
+function SettleTenders({ rows, reverse, close, done }: { rows: Row[]; reverse?: Row; close: () => void; done: () => void }) {
   const [reference, setReference] = useState('')
   const [date, setDate] = useState('')
   const [amount, setAmount] = useState('')
+  const [fee, setFee] = useState('0')
+  const [reason, setReason] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const gross = rows.reduce((sum, row) => sum + Number(row.delta_minor), 0)
   async function submit(event: FormEvent) {
     event.preventDefault()
     if (busy) return
     setBusy(true); setError('')
     try {
-      const magnitude = readMoney(amount)
-      await request('/reports/tender-settlements/match', { method: 'POST', financial: true, body: {
-        operation_id: row.operation_id, source: row.source, position: row.position,
-        observed_delta_minor: Number(row.delta_minor) < 0 ? -magnitude : magnitude,
-        statement_reference: reference.trim(), statement_date: date,
-      } })
+      if (reverse) await request(`/reports/tender-settlements/${reverse.settlement_id}/reverse`, { method: 'POST', financial: true, body: { reason: reason.trim() } })
+      else {
+        const negative = amount.trim().startsWith('-')
+        await request('/reports/tender-settlements/batches', { method: 'POST', financial: true, body: {
+          method: rows[0].method, items: rows.map(({ operation_id, source, position }) => ({ operation_id, source, position })),
+          observed_minor: (negative ? -1 : 1) * readMoney(amount.trim().replace(/^-/, '')), fee_minor: readMoney(fee),
+          statement_reference: reference.trim(), statement_date: date,
+        } })
+      }
       done()
     } catch (error) { setError(error instanceof Error ? error.message : 'تعذّر مطابقة الحركة.') }
     finally { setBusy(false) }
   }
-  return <Modal title="مطابقة حركة مع كشف البنك أو المزود" close={() => { if (!busy) close() }}><form className="modal-form" onSubmit={submit}>
-    <p>{Number(row.delta_minor) < 0 ? 'حركة صادرة' : 'حركة واردة'} · القيمة الدفترية {money(row.delta_minor)}</p>
-    <label className="field">المبلغ من الكشف بالجنيه<input inputMode="decimal" value={amount} required disabled={busy} onChange={event => setAmount(event.target.value)} /></label>
+  return <Modal title={reverse ? 'عكس مطابقة الكشف' : 'تسوية مع كشف البنك أو المزود'} close={() => { if (!busy) close() }}><form className="modal-form" onSubmit={submit}>
+    {reverse ? <><p>مرجع الكشف {String(reverse.statement_reference)}. ترجع حركات هذه التسوية إلى انتظار المطابقة.</p>
+      <label className="field">سبب العكس<textarea value={reason} maxLength={1000} required disabled={busy} onChange={event => setReason(event.target.value)} /></label></> : <>
+    <p>صافي {integer(rows.length)} حركة قبل الرسوم {money(gross)}. اكتب المبلغ بإشارة سالبة لو خرج من الحساب.</p>
+    <label className="field">الرسوم بالجنيه<input inputMode="decimal" value={fee} required disabled={busy} onChange={event => setFee(event.target.value)} /></label>
+    <label className="field">صافي المبلغ في الكشف بالجنيه<input inputMode="decimal" value={amount} required disabled={busy} onChange={event => setAmount(event.target.value)} /></label>
     <label className="field">مرجع الحركة في الكشف<input value={reference} maxLength={100} required disabled={busy} onChange={event => setReference(event.target.value)} /></label>
-    <label className="field">تاريخ الحركة في الكشف<input type="date" value={date} required disabled={busy} onChange={event => setDate(event.target.value)} /></label>
+    <label className="field">تاريخ الحركة في الكشف<input type="date" value={date} required disabled={busy} onChange={event => setDate(event.target.value)} /></label></>}
     {error && <Notice error>{error}</Notice>}
-    <div className="form-actions"><button className="primary" disabled={busy}>اعتمد المطابقة</button><button className="secondary" type="button" disabled={busy} onClick={close}>إلغاء</button></div>
+    <div className="form-actions"><button className="primary" disabled={busy}>{reverse ? 'سجّل العكس' : 'اعتمد المطابقة'}</button><button className="secondary" type="button" disabled={busy} onClick={close}>إلغاء</button></div>
   </form></Modal>
 }

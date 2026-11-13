@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import type { write } from './business';
+import { retailSerialInventory } from './retail-serial-inventory';
 import { body, fail, hasPermission, identifier, ok, permit, searchPrefix, searchText, selectPage, timestamp, type ApiContext, type ApiEnv } from './http';
 
 const count = 'inventory.stocktake.count';
@@ -26,8 +27,10 @@ export function retailStocktakes(writeOperation: typeof write) {
   const routes = new Hono<ApiEnv>();
   routes.get('/retail/stocktake-products', permit(count), c => {
     const q = searchText.optional().parse(c.req.query('q'));
+    const tracking = z.enum(['quantity', 'tracked']).optional().parse(c.req.query('tracking'));
+    const scope = tracking === 'quantity' ? " AND tracking = 'quantity'" : tracking === 'tracked' ? " AND tracking <> 'quantity'" : '';
     return selectPage(c, 'id, name, barcode, tracking', 'products',
-      "WHERE active = 1" + (q ? " AND (barcode = ? OR name LIKE ? ESCAPE '\\')" : ''),
+      "WHERE active = 1" + scope + (q ? " AND (barcode = ? OR name LIKE ? ESCAPE '\\')" : ''),
       q ? [q, searchPrefix(q)] : [], 'name, id');
   });
 
@@ -64,5 +67,6 @@ export function retailStocktakes(writeOperation: typeof write) {
         VALUES (?, ${op}, ?, ?, ${timestamp})`).bind(countId, ...binds, actor, data.reason),
     ], () => stocktakeResponse(c, countId));
   });
+  routes.route('/', retailSerialInventory(writeOperation));
   return routes;
 }

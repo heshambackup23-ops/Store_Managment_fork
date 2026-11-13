@@ -211,8 +211,10 @@ const moduleNames: Record<string, string> = {
 }
 
 function permissionLabel(value: string) {
+  if (value === 'retail.devices.disposition.approve') return 'الأجهزة المتتبعة — اعتماد قرار الجهاز المعزول'
   if (value === 'retail.shifts.operate') return 'ورديات الكاشير — فتح وإقفال'
   if (value === 'retail.shifts.approve') return 'ورديات الكاشير — اعتماد الفروق'
+  if (value === 'retail.shifts.emergency_close') return 'ورديات الكاشير — إقفال استثنائي'
   if (value === 'retail.cash.manage') return 'ورديات الكاشير — حركات الدرج والخزنة'
   if (value === 'retail.safe.manage') return 'الخزنة — توثيق الافتتاح والجرد'
   if (value === 'retail.audit.view') return 'الرقابة — عرض سجل تدقيق المتجر'
@@ -220,6 +222,7 @@ function permissionLabel(value: string) {
   if (value === 'products.cost.view') return 'المنتجات — عرض التكلفة والهامش'
   if (value === 'products.cost.manage') return 'المنتجات — تعديل التكلفة'
   if (value === 'invoices.discount') return 'الفواتير — السماح بخصم السعر'
+  if (value === 'retail.discounts.approve') return 'الفواتير — اعتماد تجاوز حد الخصم'
   if (value === 'inventory.stocktake.count') return 'المخزون — تسجيل الجرد'
   if (value === 'inventory.stocktake.approve') return 'المخزون — اعتماد تسوية الجرد'
   const [module, action] = value.split('.')

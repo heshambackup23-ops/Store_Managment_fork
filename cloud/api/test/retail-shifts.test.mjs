@@ -20,19 +20,19 @@ test('retail tenders and shifts reconcile cash, guard the register and preserve 
     await execute(readFileSync(new URL(name, migrations), 'utf8'));
   }
   await execute(`
-    INSERT INTO roles(id,name) VALUES (2,'cashier'), (3,'viewer');
+    INSERT INTO roles(id,name) VALUES (2,'cashier'), (3,'viewer'), (4,'emergency-only');
     INSERT INTO role_permissions(role_id,permission) VALUES (2,'retail.shifts.operate'), (2,'retail.shifts.approve'),
       (2,'invoices.create'), (2,'invoices.view'), (2,'invoices.pay'), (2,'invoices.refund'),
       (2,'suppliers.pay'), (2,'suppliers.manage'), (2,'installments.manage'), (2,'installments.pay'),
-      (2,'reports.view'), (3,'products.view');
+      (2,'reports.view'), (3,'products.view'), (4,'retail.shifts.emergency_close');
     INSERT INTO users(id,name,email,password_hash,role_id) VALUES (1,'Supervisor','admin@example.invalid','unused',1),
       (2,'Cashier A','cashier-a@example.invalid','unused',2), (3,'Cashier B','cashier-b@example.invalid','unused',2),
-      (4,'Reader','reader@example.invalid','unused',3);
+      (4,'Reader','reader@example.invalid','unused',3), (5,'Duty manager','duty-manager@example.invalid','unused',4);
     INSERT INTO products(id,name,price_minor,stock) VALUES (1,'Mobile accessory',1000,15);
     INSERT INTO customers(id,name) VALUES (1,'Demo customer');
     INSERT INTO suppliers(id,name,opening_minor) VALUES (1,'Demo supplier',5000);
   `);
-  const tokens = Array.from({ length: 4 }, () => randomBytes(32).toString('base64url'));
+  const tokens = Array.from({ length: 5 }, () => randomBytes(32).toString('base64url'));
   await db.batch(tokens.map((token, i) => db.prepare('INSERT INTO auth_sessions(token_hash,user_id,expires_at) VALUES (?,?,?)')
     .bind(createHash('sha256').update(token).digest('base64url'), i + 1, Math.floor(Date.now() / 1000) + 300)));
 
@@ -164,6 +164,63 @@ test('retail tenders and shifts reconcile cash, guard the register and preserve 
   const pending = expect(await call('/reports/tender-settlements?method=card&status=pending', { user: 1 }), 200);
   assert.equal(pending.items.length, 1);
   assert.equal(pending.items[0].settlement_status, 'pending');
+
+  await t.test('settles mixed signed card lines net of fees and reverses without deleting evidence', async () => {
+    const base = '/reports/tender-settlements';
+    const reverse = id => `${base}/${id}/reverse`;
+    expect(await call(reverse(match.match_operation_id), { user: 1, input: { reason: 'Correct statement grouping' } }), 201);
+    const items = [posting, pending.items[0]].map(({ operation_id, source, position }) => ({ operation_id, source, position }));
+    const input = { items, method: 'card', fee_minor: 25, observed_minor: -25,
+      statement_date: shift.business_day, statement_reference: 'BANK-BATCH' };
+    expect(await call(base + '/batches', { user: 1, input: { ...input, observed_minor: 0 } }), 422, 'RETAIL_SETTLEMENT_NET');
+    const key = randomUUID();
+    const batch = expect(await call(base + '/batches', { user: 1, key, input }), 201);
+    assert.equal(expect(await call(base + '/batches', { user: 1, key, input }), 201).id, batch.id);
+    expect(await call(base + '/batches', { user: 1, input: { ...input, statement_reference: 'BANK-BATCH-DUPLICATE' } }), 409, 'RETAIL_TENDER_ALREADY_MATCHED');
+    const report = expect(await call(base + '?method=card&status=matched', { user: 1 }), 200);
+    assert.equal(report.items.length, 2);
+    assert.ok(report.items.every(row => row.settlement_id === batch.id && row.settlement_type === 'batch'));
+    expect(await call(reverse(batch.id), { user: 1, input: { reason: 'Statement corrected' } }), 201);
+    assert.equal(expect(await call(base + '?method=card&status=pending', { user: 1 }), 200).items.length, 2);
+    assert.equal(await db.prepare('SELECT COUNT(*) AS total FROM retail_settlement_batches').first('total'), 1);
+  });
+
+  await t.test('emergency closure releases the drawer and requires review by a third actor', async () => {
+    const absent = expect(await call(shifts, { input: { register_name: 'Emergency Drawer', opening_minor: 5000 } }), 201);
+    const route = shifts + '/' + absent.id;
+    const close = route + '/emergency-close';
+    const counted = { observed_minor: 4950, expected_minor: 5000, reason: 'Operator absent after count' };
+    expect(await call(close, { input: counted }), 403, 'forbidden');
+    expect(await call(close, { user: 1, input: { ...counted, expected_minor: 4999 } }), 409, 'RETAIL_SHIFT_BALANCE_CHANGED');
+    expect(await call(close, { user: 1, input: { ...counted, reason: '   ' } }), 422, 'validation');
+    expect(await call(close, { user: 5, input: { observed_minor: 4950, reason: counted.reason } }), 422, 'validation');
+    assert.ok(expect(await call(shifts + '?status=open', { user: 5 }), 200).some(row => row.id === absent.id));
+    const closeKey = randomUUID();
+    const emergency = expect(await call(close, { user: 1, input: counted, key: closeKey }), 201);
+    assert.equal(emergency.emergency_close, 1);
+    assert.equal(emergency.status, 'pending_approval');
+    assert.equal(emergency.closed_by_name, 'Supervisor');
+    assert.equal(emergency.closed_by, 1);
+    assert.equal(emergency.difference_minor, -50);
+    assert.deepEqual(expect(await call(close, { user: 1, input: counted, key: closeKey }), 201), emergency);
+    expect(await call(close, { user: 1, input: { ...counted, reason: 'Changed' }, key: closeKey }), 409, 'IDEMPOTENCY_CONFLICT');
+    expect(await call(close, { user: 5, input: counted }), 409, 'RETAIL_SHIFT_NOT_OPEN');
+    expect(await call(route + '/approve', { user: 1, input: { reason: 'Self' } }), 403, 'RETAIL_SHIFT_APPROVAL_SEPARATION');
+    expect(await call(route + '/approve', { user: 2, input: { reason: 'Owner' } }), 403, 'RETAIL_SHIFT_APPROVAL_SEPARATION');
+    expect(await call(route + '/approve', { user: 5, input: { reason: 'Emergency-only' } }), 403, 'forbidden');
+    assert.equal(await db.prepare("SELECT count(*) AS count FROM audit_logs WHERE action = 'retail.shift.emergency_close'").first('count'), 1);
+    const next = expect(await call(shifts, { user: 3, input: { register_name: 'Emergency Drawer', opening_minor: 4950 } }), 201);
+    assert.equal(next.status, 'open');
+    assert.equal(expect(await call(route + '/approve', { user: 3, input: { reason: 'Independent review' } }), 201).status, 'approved');
+
+    const own = expect(await call(shifts, { user: 1, input: { register_name: 'Supervisor drawer', opening_minor: 100 } }), 201);
+    const noDifference = { observed_minor: 100, expected_minor: 100, reason: 'Counted' };
+    const ownRoute = shifts + '/' + own.id;
+    expect(await call(ownRoute + '/emergency-close', { user: 1, input: noDifference }), 422, 'RETAIL_EMERGENCY_CLOSE_OWN_SHIFT');
+    assert.equal(expect(await call(ownRoute + '/emergency-close', { user: 5, input: noDifference }), 201).status, 'pending_approval');
+    assert.equal(expect(await call(ownRoute + '/approve', { user: 3, input: { reason: 'Verified matched count' } }), 201).status, 'approved');
+  });
+
   await assert.rejects(db.prepare('UPDATE retail_tender_matches SET observed_delta_minor = 1').run(), /IMMUTABLE_LEDGER/);
   await assert.rejects(db.prepare('UPDATE retail_shift_closures SET expected_minor = 0').run(), /IMMUTABLE_LEDGER/);
   await assert.rejects(db.prepare('DELETE FROM retail_tenders').run(), /IMMUTABLE_LEDGER/);

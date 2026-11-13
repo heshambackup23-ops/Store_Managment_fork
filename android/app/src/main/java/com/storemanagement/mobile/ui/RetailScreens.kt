@@ -50,7 +50,8 @@ private val shiftStatuses = listOf(
 )
 private val deviceStatuses = listOf(
     null to "الكل", "available" to "متاح", "sold" to "مباع", "quarantined" to "معزول للفحص",
-    "voided" to "ملغى", "returned_to_supplier" to "مرتجع للمورد",
+    "stocktake_missing" to "مفقود بالجرد", "voided" to "ملغى", "returned_to_supplier" to "مرتجع للمورد",
+    "in_repair" to "صيانة داخلية", "written_off" to "هالك معتمد",
 )
 
 internal const val retailShiftScreenTag = "retail-shifts-screen"
@@ -64,7 +65,7 @@ internal fun UserDto.canApproveRetailShifts() = "page.retail_shifts.approve" in 
 internal fun UserDto.canViewRetailDevices() = "page.retail_devices.view" in permissions
 internal fun RetailShiftDto.canClose(user: UserDto) = status == "open" && actorId == user.id && user.canOperateRetailShifts()
 internal fun RetailShiftDto.canApprove(user: UserDto) =
-    status == "pending_approval" && actorId != user.id && user.canApproveRetailShifts()
+    status == "pending_approval" && actorId != user.id && closedBy != user.id && user.canApproveRetailShifts()
 
 private fun Long.egp() = BigDecimal.valueOf(this, 2).toPlainString() + " ج.م."
 
@@ -244,6 +245,9 @@ private fun RetailShiftSummary(shift: RetailShiftDto) {
         shift.observedMinor?.let { DetailLine("النقد الفعلي", it.egp()) }
         shift.differenceMinor?.let { DetailLine("الفرق", it.egp()) }
         shift.closedAt?.let { DetailLine("الإغلاق (UTC)", it.retailTime()) }
+        if (shift.emergencyClose == 1) {
+            DetailLine("أقفل الوردية استثنائيًا", shift.closedByName ?: "#${shift.closedBy}")
+        }
         shift.closeReason?.takeIf(String::isNotBlank)?.let { Text("سبب الإغلاق: $it") }
         shift.approvedBy?.let { DetailLine("رقم المشرف المعتمِد", it.toString()) }
         shift.approvedAt?.let { DetailLine("الاعتماد (UTC)", it.retailTime()) }
@@ -396,7 +400,10 @@ private fun RetailDeviceDetails(device: RetailDeviceDto, modifier: Modifier = Mo
         item {
             ManagedCard {
                 RetailDeviceIdentity(device)
-                DetailLine("استلام المخزون", "#${device.receiptId}")
+                device.receiptId?.let { DetailLine("استلام المخزون", "#$it") }
+                device.inventoryIntakeId?.let {
+                    DetailLine("محضر افتتاح أو جرد", device.intakeSourceReference ?: "#$it")
+                }
                 device.purchaseId?.let { DetailLine("المشتريات", "#$it") }
             }
         }

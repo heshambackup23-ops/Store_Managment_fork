@@ -3,6 +3,7 @@ import type { FormEvent } from 'react'
 import { allowed, formatDate, integer, request } from './api'
 import type { User } from './api'
 import { Notice, PageTitle } from './ui'
+import { RetailSerialStocktakes } from './RetailSerialStocktakes'
 
 type Product = { id: number; name: string; barcode?: string; tracking: string }
 type Count = {
@@ -41,7 +42,7 @@ export function RetailStocktakes({ user }: { user: User }) {
   async function search(event: FormEvent) {
     event.preventDefault(); setError('')
     try {
-      const { data } = await request<Product[]>('/retail/stocktake-products?' + new URLSearchParams({ q: query.trim(), per_page: '30' }))
+      const { data } = await request<Product[]>('/retail/stocktake-products?' + new URLSearchParams({ q: query.trim(), tracking: 'quantity', per_page: '30' }))
       setProducts(data); setId(data.length === 1 ? String(data[0].id) : '')
     } catch (error) { setError(error instanceof Error ? error.message : 'تعذّر البحث.') }
   }
@@ -75,7 +76,7 @@ export function RetailStocktakes({ user }: { user: User }) {
       </form>
     </section>}
     <section className="panel panel-inner form-section">
-      <h2>سجل الجرد</h2>
+      <h2>سجل الجرد الكمي</h2>
       {!rows.length ? <p>لا توجد نتائج جرد.</p> : <div className="table-scroll"><table>
         <thead><tr>{['الصنف', 'الدفتري', 'الفعلي', 'الفرق', 'الحالة', 'العدّ والتاريخ', 'الإجراء'].map(label => <th key={label} scope="col">{label}</th>)}</tr></thead>
         <tbody>{rows.map(row => <tr key={row.id}><th scope="row">{row.product_name}</th><td>{integer(row.expected_quantity)}</td><td>{integer(row.observed_quantity)}</td>
@@ -89,5 +90,6 @@ export function RetailStocktakes({ user }: { user: User }) {
       {total > 20 && <nav className="pagination" aria-label="صفحات الجرد"><button className="secondary" disabled={page === 1} onClick={() => setPage(page - 1)}>السابق</button>
         <button className="secondary" disabled={page * 20 >= total} onClick={() => setPage(page + 1)}>التالي</button></nav>}
     </section>
+    <RetailSerialStocktakes user={user} />
   </>
 }

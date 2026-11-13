@@ -112,13 +112,13 @@ retailFinanceReports.get('/reports/tender-settlements', permit('reports.view'), 
   if (shiftId) { clauses.push('t.shift_id = ?'); values.push(shiftId); }
   if (status) clauses.push(status === 'matched' ? 'm.operation_id IS NOT NULL' : 'm.operation_id IS NULL');
   const entries = `FROM retail_tender_ledger t JOIN retail_shifts s ON s.id = t.shift_id
-    LEFT JOIN retail_tender_matches m USING (operation_id, source, position) WHERE ${clauses.join(' AND ')}`;
+    LEFT JOIN retail_active_tender_matches m USING (operation_id, source, position) WHERE ${clauses.join(' AND ')}`;
   const db = c.env.DB;
   const [items, sums] = await db.batch<Record<string, unknown>>([
     db.prepare(`SELECT t.operation_id, t.source, t.position, t.method, t.amount_minor, t.delta_minor, t.reference,
       t.shift_id, t.invoice_id, t.actor_id, t.created_at, s.register_name,
       CASE WHEN m.operation_id IS NULL THEN 'pending' ELSE 'matched' END AS settlement_status,
-      m.observed_delta_minor, m.statement_reference, m.statement_date, m.matched_by, m.matched_at ${entries}
+      m.settlement_id, m.settlement_type, m.observed_delta_minor, m.statement_reference, m.statement_date, m.matched_by, m.matched_at ${entries}
       ORDER BY t.operation_id DESC, t.source, t.position LIMIT ? OFFSET ?`).bind(...values, paging.limit, paging.offset),
     db.prepare(`SELECT t.method, SUM(CASE WHEN delta_minor > 0 THEN delta_minor ELSE 0 END) AS received_minor,
       SUM(CASE WHEN delta_minor < 0 THEN -delta_minor ELSE 0 END) AS paid_out_minor, SUM(delta_minor) AS net_minor,
@@ -144,9 +144,33 @@ const matchInput = z.strictObject({
   statement_reference: z.string().trim().min(1).max(100).regex(/^[^\p{Cc}\p{Cf}]+$/u),
   statement_date: z.iso.date(),
 });
+const batchInput = matchInput.pick({ statement_reference: true, statement_date: true }).extend({
+  method: z.enum(nonCashMethods),
+  fee_minor: z.number().int().min(0).max(900_000_000_000_000),
+  observed_minor: z.number().int().min(-900_000_000_000_000).max(900_000_000_000_000),
+  items: z.array(matchInput.pick({ operation_id: true, source: true, position: true })).min(1).max(40),
+});
 
 export function retailTenderMatch(writeOperation: typeof write) {
   const routes = new Hono<ApiEnv>();
+  routes.post('/reports/tender-settlements/batches', permit('reports.view'), permit('retail.shifts.approve'), async c => {
+    const data = await body(c, batchInput);
+    if (data.statement_date > cairoRetailDay()) return fail(422, 'RETAIL_TENDER_STATEMENT_DATE', 'أدخل تاريخًا من كشف الحساب حتى اليوم.');
+    return writeOperation(c, 'retail.tender.batch', data, (op, binds, actor) => [
+      c.env.DB.prepare(`INSERT INTO retail_settlement_batches(id, method, statement_reference, statement_date,
+        fee_minor, observed_minor, items_json, actor_id) VALUES (${op}, ?, ?, ?, ?, ?, ?, ?)`)
+        .bind(...binds, data.method, data.statement_reference, data.statement_date, data.fee_minor, data.observed_minor,
+          JSON.stringify(data.items), actor),
+    ]);
+  });
+  routes.post('/reports/tender-settlements/:id/reverse', permit('reports.view'), permit('retail.shifts.approve'), async c => {
+    const settlement = identifier.parse(c.req.param('id'));
+    const { reason } = await body(c, z.strictObject({ reason: z.string().trim().min(1).max(1000) }));
+    return writeOperation(c, 'retail.tender.reverse', { settlement, reason }, (op, binds, actor) => [
+      c.env.DB.prepare(`INSERT INTO retail_settlement_reversals(id, settlement_id, reason, actor_id) VALUES (${op}, ?, ?, ?)`)
+        .bind(...binds, settlement, reason, actor),
+    ]);
+  });
   routes.post('/reports/tender-settlements/match', permit('reports.view'), permit('retail.shifts.approve'), async c => {
     const data = await body(c, matchInput);
     if (data.statement_date > cairoRetailDay()) return fail(422, 'RETAIL_TENDER_STATEMENT_DATE', 'أدخل تاريخًا من كشف الحساب حتى اليوم.');

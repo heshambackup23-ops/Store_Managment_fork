@@ -78,16 +78,22 @@ const damageReasons: Record<string, string> = {
   broken: 'كسر', water: 'تلف بالمياه', defective: 'عيب تصنيع', not_working: 'لا يعمل',
   lost: 'فقد / سرقة', expired: 'منتهي الصلاحية', returned: 'مرتجع تالف', other: 'أخرى',
 }
-function damageView({ unit_cost_minor, total_minor, delta, ...row }: Damage) {
+function canReadDamageCost(c: ApiContext) {
+  const actor = c.get('actor')
+  return hasPermission(actor, 'products.cost.view') || hasPermission(actor, 'products.cost.manage')
+}
+
+function damageView({ unit_cost_minor, total_minor, delta, ...row }: Damage, includeCost: boolean) {
   return {
-    ...row, unit_value: asDecimal(unit_cost_minor), total_value: asDecimal(total_minor),
+    ...row, unit_value: includeCost ? asDecimal(unit_cost_minor) : '',
+    total_value: includeCost ? asDecimal(total_minor) : '',
     reason_label: damageReasons[row.reason] ?? row.reason, stock_before: row.stock_after - delta,
   }
 }
 async function damageDetail(c: ApiContext, id: number, status: 200 | 201 = 200) {
   const row = await c.env.DB.prepare(`SELECT ${damageSelect} FROM ${damageFrom} WHERE d.id = ?`).bind(id).first<Damage>()
   if (!row) fail(404, 'not_found', 'سجل الهالك غير موجود.')
-  return ok(c, damageView(row), status)
+  return ok(c, damageView(row, canReadDamageCost(c)), status)
 }
 mobileWalletDamage.get('/damaged', async (c, next) => {
   if (!isAndroid(c)) return next()
@@ -98,8 +104,9 @@ mobileWalletDamage.get('/damaged', async (c, next) => {
   if (query) predicates.push(`(COALESCE(d.legacy_product_name, p.name) LIKE ? ESCAPE '\\'
     OR CASE WHEN d.legacy_damage_fingerprint IS NULL THEN p.barcode ELSE d.legacy_product_barcode END = ?)`)
   if (status) predicates.push('reversal.id IS ' + (status === 'recorded' ? 'NULL' : 'NOT NULL'))
+  const includeCost = canReadDamageCost(c)
   return selectPage(c, damageSelect, damageFrom, predicates.length ? 'WHERE ' + predicates.join(' AND ') : '',
-    query ? [searchPrefix(query), query] : [], 'damaged_on DESC, d.id DESC', row => damageView(row as Damage))
+    query ? [searchPrefix(query), query] : [], 'damaged_on DESC, d.id DESC', row => damageView(row as Damage, includeCost))
 })
 mobileWalletDamage.get('/damaged/products', async (c, next) => {
   if (!isAndroid(c)) return next()

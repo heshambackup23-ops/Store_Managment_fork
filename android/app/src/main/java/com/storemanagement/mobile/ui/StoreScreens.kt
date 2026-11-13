@@ -980,7 +980,9 @@ internal fun DamagedScreen(
             state.items.isEmpty() -> EmptyState(if (state.error == null) "لا توجد سجلات هالك" else "تعذر تحميل سجل الهالك")
             else -> {
                 val active = state.items.filter { it.status == "recorded" }
-                val loss = active.fold(BigDecimal.ZERO) { sum, item -> sum + item.totalValue.moneyOrZero() }
+                val loss = active.mapNotNull { it.totalValue?.takeIf(String::isNotBlank) }
+                    .takeIf { active.isNotEmpty() && it.size == active.size }
+                    ?.fold(BigDecimal.ZERO) { sum, value -> sum + value.moneyOrZero() }
                 val units = active.sumOf { it.quantity }
                 LazyColumn(
                     contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 10.dp, bottom = 96.dp),
@@ -988,7 +990,7 @@ internal fun DamagedScreen(
                 ) {
                     item {
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                            SummaryTile("قيمة الهالك (المسجل)", "${loss.display()} ج.م", Modifier.weight(1f), StatusTone.Danger)
+                            loss?.let { SummaryTile("قيمة الهالك (المسجل)", "${it.display()} ج.م", Modifier.weight(1f), StatusTone.Danger) }
                             SummaryTile("الوحدات", units.toString(), Modifier.weight(0.6f))
                         }
                     }
@@ -1031,7 +1033,7 @@ private fun DamagedCard(
         )
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             InfoStat("الكمية", item.quantity.toString(), Modifier.weight(1f))
-            InfoStat("القيمة", "${item.totalValue} ج.م", Modifier.weight(1.3f), emphasize = !voided)
+            item.totalValue?.takeIf(String::isNotBlank)?.let { InfoStat("القيمة", "$it ج.م", Modifier.weight(1.3f), emphasize = !voided) }
             InfoStat("المخزون", "${item.stockBefore} ← ${item.stockAfter}", Modifier.weight(1f))
         }
         item.notes?.takeIf(String::isNotBlank)?.let {
@@ -1066,8 +1068,8 @@ internal fun DamagedDetailsSheet(item: DamagedItemDto) {
         item.productBarcode?.takeIf(String::isNotBlank)?.let { DetailLine("الباركود", it) }
         DetailLine("السبب", item.reasonLabel)
         DetailLine("الكمية", item.quantity.toString())
-        DetailLine("قيمة الوحدة", "${item.unitValue} ج.م")
-        DetailLine("إجمالي القيمة", "${item.totalValue} ج.م")
+        item.unitValue?.takeIf(String::isNotBlank)?.let { DetailLine("قيمة الوحدة", "$it ج.م") }
+        item.totalValue?.takeIf(String::isNotBlank)?.let { DetailLine("إجمالي القيمة", "$it ج.م") }
         DetailLine("تاريخ الهالك", item.damagedOn.toShortDate())
         DetailLine("المخزون قبل / بعد", "${item.stockBefore} ← ${item.stockAfter}")
         item.notes?.takeIf(String::isNotBlank)?.let {
@@ -1084,12 +1086,13 @@ internal fun DamagedDetailsSheet(item: DamagedItemDto) {
 @Composable
 internal fun DamagedItemEditDialog(
     item: DamagedItemDto,
+    canManageCost: Boolean,
     onDismiss: () -> Unit,
     onSave: (DamagedItemInputDto, String) -> Unit,
 ) {
     var quantity by rememberSaveable(item.id) { mutableStateOf(item.quantity.toString()) }
     var reason by rememberSaveable(item.id) { mutableStateOf(item.reason) }
-    var unitValue by rememberSaveable(item.id) { mutableStateOf(item.unitValue) }
+    var unitValue by rememberSaveable(item.id, canManageCost) { mutableStateOf(if (canManageCost) item.unitValue.orEmpty() else "") }
     var damagedOn by rememberSaveable(item.id) { mutableStateOf(item.damagedOn.take(10)) }
     var notes by rememberSaveable(item.id) { mutableStateOf(item.notes.orEmpty()) }
     var reasonMenuOpen by remember { mutableStateOf(false) }
@@ -1151,7 +1154,7 @@ internal fun DamagedItemEditDialog(
                         }
                     }
                 }
-                OutlinedTextField(
+                if (canManageCost) OutlinedTextField(
                     value = unitValue,
                     onValueChange = { value ->
                         val normalized = value.normalizeArabicDigits()

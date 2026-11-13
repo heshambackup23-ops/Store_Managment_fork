@@ -195,6 +195,38 @@ test('Android wallet and damaged stock DTOs, permissions and ledger effects', as
   const correction = { method: 'PUT', key: updateKey, data: { ...damage, quantity: 2 } }
   assert.equal((await call('/damaged/' + damaged.id, 200, correction)).stock_after, 3)
   assert.equal((await call('/damaged/' + damaged.id, 200, correction)).total_value, '8.00')
+  await db.prepare("INSERT INTO role_permissions(role_id,permission) VALUES (2,'damaged.view'), (2,'damaged.manage')").run()
+  const nonCostActor = (await call('/me', 200, { viewer: true })).permissions
+  assert.ok(nonCostActor.includes('page.damaged.manage'))
+  assert.ok(!nonCostActor.includes('page.products.cost.manage'))
+  assert.ok(permissions.includes('page.products.cost.manage'))
+  const hiddenMobile = await call('/damaged/' + damaged.id, 200, { viewer: true })
+  assert.equal(hiddenMobile.unit_value, '')
+  assert.equal(hiddenMobile.total_value, '')
+  assert.equal((await call('/damaged', 200, { viewer: true }))[0].total_value, '')
+  const publicDamage = await call('/damaged/' + damaged.id, 200, { viewer: true, android: false })
+  const publicList = await call('/damaged', 200, { viewer: true, android: false })
+  for (const row of [publicDamage, publicList[0]]) {
+    assert.equal(row.quantity, 2)
+    for (const field of ['unit_cost_minor', 'unit_value_minor', 'total_value_minor', 'verified_inventory_loss_minor']) {
+      assert.ok(!(field in row), field)
+    }
+  }
+  assert.ok(publicDamage.corrections.length > 0)
+  assert.ok(publicDamage.corrections.every(row => !('unit_value_minor' in row) && !('previous_unit_minor' in row)))
+  const auditReport = '/reports/damaged?from=2026-01-01&to=2026-01-01'
+  const hiddenReport = await call(auditReport, 200, { viewer: true, android: false })
+  assert.equal(hiddenReport.units, 2)
+  assert.ok(!('total_value_minor' in hiddenReport))
+  assert.equal((await call(auditReport, 200, { android: false })).total_value_minor, 800)
+  await post('/damaged', 403, damage, { viewer: true })
+  await call('/damaged/' + damaged.id, 403, { ...correction, viewer: true })
+  const { unit_value: _, ...noCost } = damage
+  const ordinaryCorrection = await call('/damaged/' + damaged.id, 200, {
+    method: 'PUT', viewer: true, data: { ...noCost, quantity: 2, notes: 'Operational correction' },
+  })
+  assert.equal(ordinaryCorrection.total_value, '')
+  assert.equal((await call('/damaged/' + damaged.id, 200)).total_value, '8.00')
   const reversed = await post('/damaged/' + damaged.id + '/void', 200, { reason: 'test reversal' })
   assert.equal(reversed.status, 'voided')
   assert.equal((await call('/damaged?status=voided&q=TEST-7', 200)).length, 1)

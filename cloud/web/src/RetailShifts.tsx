@@ -19,12 +19,18 @@ export type Shift = {
   opened_at: string; business_day: string; status: 'open' | 'closed' | 'pending_approval' | 'approved';
   expected_minor: number; observed_minor: number | null; difference_minor: number | null;
   close_reason: string; approval_reason: string; closed_at: string | null;
+  emergency_close?: 0 | 1 | null; closed_by?: number | null; closed_by_name?: string | null;
   totals?: { method: TenderMethod; received_minor: number; paid_out_minor: number }[];
   cash_movements_minor?: number;
   service_cash_minor?: number;
   cash_movement_totals?: { kind: CashMovementKind; amount_minor: number }[];
 }
 export const shiftStatus = { open: 'مفتوحة', closed: 'مغلقة', pending_approval: 'بانتظار اعتماد الفرق', approved: 'تم اعتماد الفرق' }
+function shiftStatusLabel(shift: Shift) {
+  if (shift.emergency_close && shift.status === 'pending_approval') return 'بانتظار مراجعة الإقفال الاستثنائي'
+  if (shift.emergency_close && shift.status === 'approved') return 'إقفال استثنائي معتمد'
+  return shiftStatus[shift.status]
+}
 const cashMovementLabels = { safe_deposit: 'توريد نقدية من الدرج للخزنة', safe_withdrawal: 'تغذية الدرج من الخزنة', general_expense: 'مصروف عام من الدرج' }
 type CashMovementKind = keyof typeof cashMovementLabels
 type CashMovement = { id: number; kind: CashMovementKind; amount_minor: number; reason: string; reference?: string | null; created_at: string }
@@ -121,6 +127,8 @@ export function SharedDrawerDialog({ user, ...props }: ActionDialogProps & { use
   function prepare(body: Row) {
     if (!required && !useDrawer) return body
     if (!shift.shift) throw new Error('افتح وردية قبل استخدام الدرج المشترك.')
+    if (body.wallet_id != null) throw new Error('اترك المحفظة فارغة عند السحب من درج الوردية.')
+    if (body.kind && body.kind !== 'expense') throw new Error('اختر قيد مصروف لاستخدام درج الوردية من شاشة نقدية المحافظ.')
     return { ...body, shared_shift_id: shift.shift.id }
   }
   return <ActionDialog {...props} prepare={prepare} waiting={required && shift.loading} extra={required || props.action.sharedDrawer === 'optional' ? <>
@@ -134,6 +142,7 @@ export function SharedDrawerDialog({ user, ...props }: ActionDialogProps & { use
 export function RetailShifts({ user }: { user: User }) {
   const canOperate = allowed(user, 'retail.shifts.operate')
   const canApprove = allowed(user, 'retail.shifts.approve')
+  const canCloseInEmergency = allowed(user, 'retail.shifts.emergency_close')
   const canSettings = allowed(user, 'settings.update')
   const [shifts, setShifts] = useState<Shift[]>([])
   const [required, setRequired] = useState<boolean>()
@@ -201,9 +210,12 @@ export function RetailShifts({ user }: { user: User }) {
   }
 
   const close = details?.status === 'open' && details.actor_id === user.id && canOperate
-  const approve = details?.status === 'pending_approval' && details.actor_id !== user.id && canApprove
+  const emergencyClose = details?.status === 'open' && details.actor_id !== user.id && canCloseInEmergency
+  const approve = details?.status === 'pending_approval' && details.actor_id !== user.id && details.closed_by !== user.id && canApprove
   let difference: number | undefined
-  if (close && observed) { try { difference = readMoney(observed) - details.expected_minor } catch { /* Validate on submit. */ } }
+  if (details && (close || emergencyClose) && observed) {
+    try { difference = readMoney(observed) - details.expected_minor } catch { /* Validate on submit. */ }
+  }
 
   return <>
     <PageTitle title="ورديات الكاشير" description="عهدة الدرج، طرق الدفع، والإقفال باعتماد فرق النقدية." action={<Link className="secondary" to="/pos">نقطة البيع</Link>} />
@@ -220,13 +232,14 @@ export function RetailShifts({ user }: { user: User }) {
       <button className="primary" disabled={busy}>افتح الوردية</button>
     </form>}
     {details && details.id === selected && <section className="panel panel-inner form-section section-space" aria-label="تفاصيل الوردية">
-      <h2>{details.register_name} · {shiftStatus[details.status]}</h2>
+      <h2>{details.register_name} · {shiftStatusLabel(details)}</h2>
       <dl className="invoice-summary">
         <div><dt>الكاشير</dt><dd>{details.actor_name}</dd></div><div><dt>العهدة</dt><dd>{money(details.opening_minor)}</dd></div>
         <div><dt>النقدية المتوقعة</dt><dd>{money(details.expected_minor)}</dd></div><div><dt>النقدية المعدودة</dt><dd>{money(details.observed_minor)}</dd></div>
         <div><dt>الفرق</dt><dd>{money(details.difference_minor)}</dd></div><div><dt>يوم العمل</dt><dd>{formatDate(details.business_day)}</dd></div>
       </dl>
-      {details.close_reason && <p>سبب الفرق · {details.close_reason}</p>}
+      {details.emergency_close === 1 && <p>أقفل الوردية استثنائيًا · {details.closed_by_name ?? details.closed_by}</p>}
+      {details.close_reason && <p>{details.emergency_close ? 'سبب الإقفال الاستثنائي' : 'سبب الفرق'} · {details.close_reason}</p>}
       {details.approval_reason && <p>اعتماد المشرف · {details.approval_reason}</p>}
       {details.totals?.length ? <div className="table-scroll"><table><thead><tr><th scope="col">الوسيلة</th><th scope="col">الوارد</th><th scope="col">الصادر</th></tr></thead>
         <tbody>{details.totals.map(row => <tr key={row.method}><th scope="row">{tenderLabels[row.method]}</th><td>{money(row.received_minor)}</td><td>{money(row.paid_out_minor)}</td></tr>)}</tbody></table></div> : null}
@@ -249,22 +262,27 @@ export function RetailShifts({ user }: { user: User }) {
           <button className="secondary" disabled={busy}>سجّل حركة الدرج</button>
         </form>}
       </section>}
-      {close && <form className="form-section" onSubmit={event => action(event, `/retail/shifts/${details.id}/close`, () => ({ observed_minor: readMoney(observed), expected_minor: details.expected_minor, reason: reason.trim() || undefined }), 'تم تسجيل إقفال الوردية.')}>
+      {(close || emergencyClose) && <form className="form-section" onSubmit={event => action(event,
+        `/retail/shifts/${details.id}/${emergencyClose ? 'emergency-close' : 'close'}`,
+        () => ({ observed_minor: readMoney(observed), expected_minor: details.expected_minor, reason: reason.trim() || undefined }),
+        emergencyClose ? 'تم إقفال الدرج استثنائيًا وإحالته للمراجعة.' : 'تم تسجيل إقفال الوردية.')}>
+        {emergencyClose && <p>عُد النقدية قبل الإقفال. سيتاح الدرج للوردية التالية ويُحال الإقفال إلى مشرف مستقل للمراجعة.</p>}
         <label className="field">النقدية المعدودة بالجنيه<input required inputMode="decimal" value={observed} disabled={busy} onChange={event => setObserved(event.target.value)} /></label>
         {difference !== undefined && <p>الفرق عند الإقفال · {money(difference)}</p>}
-        <label className="field">سبب الفرق<textarea required={Boolean(difference)} value={reason} maxLength={500} disabled={busy} onChange={event => setReason(event.target.value)} /></label>
-        <button className="primary" disabled={busy}>أقفل الوردية</button>
+        <label className="field">{emergencyClose ? 'سبب الإقفال الاستثنائي' : 'سبب الفرق'}<textarea required={emergencyClose || Boolean(difference)} value={reason} maxLength={500} disabled={busy} onChange={event => setReason(event.target.value)} /></label>
+        <button className="primary" disabled={busy}>{emergencyClose ? 'أقفل الوردية استثنائيًا' : 'أقفل الوردية'}</button>
       </form>}
-      {approve && <form className="form-section" onSubmit={event => action(event, `/retail/shifts/${details.id}/approve`, () => ({ reason: reason.trim() }), 'تم اعتماد فرق الوردية.')}>
+      {approve && <form className="form-section" onSubmit={event => action(event, `/retail/shifts/${details.id}/approve`, () => ({ reason: reason.trim() }),
+        details.emergency_close ? 'تم اعتماد الإقفال الاستثنائي.' : 'تم اعتماد فرق الوردية.')}>
         <label className="field">قرار المشرف<textarea required value={reason} maxLength={500} disabled={busy} onChange={event => setReason(event.target.value)} /></label>
-        <button className="primary" disabled={busy}>اعتمد الفرق</button>
+        <button className="primary" disabled={busy}>{details.emergency_close ? 'اعتمد الإقفال الاستثنائي' : 'اعتمد الفرق'}</button>
       </form>}
     </section>}
     <section className="panel panel-inner form-section">
       <h2>سجل الورديات</h2>
       {!shifts.length ? <p className="muted">لا توجد ورديات في هذه الصفحة.</p> : <div className="table-scroll"><table>
         <thead><tr>{['الدرج', 'الكاشير', 'يوم العمل', 'الحالة', 'التفاصيل'].map(label => <th key={label} scope="col">{label}</th>)}</tr></thead>
-        <tbody>{shifts.map(shift => <tr key={shift.id}><th scope="row">{shift.register_name}</th><td>{shift.actor_name}</td><td>{formatDate(shift.business_day)}</td><td>{shiftStatus[shift.status]}</td>
+        <tbody>{shifts.map(shift => <tr key={shift.id}><th scope="row">{shift.register_name}</th><td>{shift.actor_name}</td><td>{formatDate(shift.business_day)}</td><td>{shiftStatusLabel(shift)}</td>
           <td><button className="link-button" type="button" onClick={() => { setSelected(shift.id); setObserved(''); setReason('') }}>عرض وردية {shift.id}</button></td></tr>)}</tbody>
       </table></div>}
       {total > 20 && <nav className="pagination" aria-label="صفحات الورديات">

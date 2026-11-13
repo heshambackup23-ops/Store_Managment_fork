@@ -45,7 +45,7 @@ function payment(path: string, permission: string, total: string, note = false):
     label: 'تسجيل سداد', permission, financial: true, visible: row => remaining(row, total) > 0 && !row.voided_at && row.status !== 'cancelled',
     endpoint: row => path + '/' + idOf(row) + '/payments',
     retailTender: ['/invoices', '/purchases', '/installments'].includes(path) ? 'amount' : undefined,
-    sharedDrawer: path === '/maintenance' ? 'optional' : undefined,
+    sharedDrawer: ['/maintenance', '/wallet-debts'].includes(path) ? 'optional' : undefined,
     fields: [required('amount_minor', 'المبلغ بالجنيه', 'money'), ...(note ? [notes] : [])],
   }
 }
@@ -332,13 +332,13 @@ export const businessModules: Record<string, ModuleConfig> = {
     title: 'حركات نقدية المحافظ', description: 'قيود الدرج النقدي ومصروفاته.', endpoint: '/wallet-cash', permission: 'wallets.cash', searchable: false,
     columns: [numberColumn, statusColumn('kind', 'نوع الحركة'), moneyColumn('delta_minor', 'أثر النقدية'),
       { key: 'category', label: 'التصنيف' }, { key: 'note', label: 'البيان' }, dateColumn('business_day', 'التاريخ')],
-    create: createAction('إضافة قيد نقدي', '/wallet-cash', 'wallets.cash', [
+    create: { ...createAction('إضافة قيد نقدي', '/wallet-cash', 'wallets.cash', [
       { ...required('kind', 'نوع القيد', 'select'), options: options(['opening', 'owner_deposit', 'owner_withdraw', 'correction', 'expense']) },
       required('amount_minor', 'المبلغ بالجنيه (السالب متاح للتصحيح)', 'signed-money'),
       { name: 'category', label: 'التصنيف (إلزامي للمصروف)' }, { name: 'business_day', label: 'تاريخ القيد', kind: 'date' },
       required('note', 'سبب القيد', 'textarea'),
-    ], true),
-    actions: [{ ...reverse('/wallet-cash', 'wallets.reverse'), visible: row => row.kind === 'expense' && !row.reversed_by }],
+    ], true), sharedDrawer: 'optional' },
+    actions: [{ ...reverse('/wallet-cash', 'wallets.reverse'), sharedDrawer: 'wallet_reversal', visible: row => row.kind === 'expense' && !row.reversed_by }],
   },
   'wallet-profit-withdrawals': {
     title: 'سجل سحب الأرباح', description: 'السحوبات المسجلة من الدرج النقدي أو أرصدة المحافظ.',
@@ -424,7 +424,18 @@ export function CommerceModule({ name, user }: { name: string; user: User }) {
   const [invoiceId, setInvoiceId] = useState('')
   const [range, setRange] = useState({ from: '', to: '' })
   const navigate = useNavigate()
-  const config = businessModules[name]
+  const base = businessModules[name]
+  const canReadCost = allowed(user, 'products.cost.view') || allowed(user, 'products.cost.manage')
+  const canManageCost = allowed(user, 'products.cost.manage')
+  const damageAction = (action: Action): Action => ({
+    ...action, fields: action.fields?.filter(field => field.name !== 'unit_value_minor'),
+  })
+  const config = name === 'damaged' ? {
+    ...base,
+    columns: canReadCost ? base.columns : base.columns.filter(column => !['unit_value_minor', 'total_value_minor'].includes(column.key)),
+    create: !base.create || canManageCost ? base.create : damageAction(base.create),
+    actions: canManageCost ? base.actions : base.actions?.map(damageAction),
+  } : base
   const isInvoice = name === 'invoices'
   const hasImages = name === 'damaged' || name === 'maintenance'
   const canManageImage = hasImages && allowed(user, name + '.manage')
@@ -530,6 +541,9 @@ export function Pos({ user }: { user: User }) {
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState('')
   const [lastInvoice, setLastInvoice] = useState<number>()
+  const [discountRequest, setDiscountRequest] = useState('')
+  const [discountReason, setDiscountReason] = useState('')
+  const [discountNotice, setDiscountNotice] = useState('')
   const navigate = useNavigate()
   const shiftContext = useOpenShift(user)
   const canDiscount = allowed(user, 'invoices.discount')
@@ -537,6 +551,7 @@ export function Pos({ user }: { user: User }) {
   let invalidDiscount = false
   try { total = cart.reduce((sum, line) => sum + (line.price - unitDiscount(line)) * line.quantity, 0) }
   catch { invalidDiscount = true }
+  const hasDiscount = !invalidDiscount && cart.some(line => unitDiscount(line) > 0)
   const canViewCatalog = allowed(user, 'products.view')
   const canSell = allowed(user, 'invoices.create') && (!invoiceId || canViewCatalog && allowed(user, 'invoices.refund') && allowed(user, 'invoices.view'))
 
@@ -649,6 +664,7 @@ export function Pos({ user }: { user: User }) {
           paid_minor: amount,
           ...(shiftContext.shift ? { shift_id: shiftContext.shift.id, payments: tendersForAmount(tenders, amount) } : {}),
           expected_total_minor: total,
+          discount_request_id: hasDiscount && discountRequest.trim() ? Number(discountRequest) : undefined,
           invoice_date: documentDate || undefined,
           due_date: amount < total ? dueDate || undefined : undefined,
           notes: invoiceNotes.trim() || undefined,
@@ -667,6 +683,7 @@ export function Pos({ user }: { user: User }) {
         setDocumentDate('')
         setDueDate('')
         setInvoiceNotes('')
+        setDiscountRequest(''); setDiscountReason(''); setDiscountNotice('')
         setCheckoutMode('full')
         setLastInvoice(result.data.id)
         if (allowed(user, 'invoices.view')) navigate('/invoices/' + result.data.id)
@@ -676,6 +693,20 @@ export function Pos({ user }: { user: User }) {
           .catch(() => { /* The confirmed sale remains valid if refreshing the catalog fails. */ })
       }
     } catch (error) { setError(error instanceof Error ? error.message : 'تعذر تأكيد الفاتورة.') }
+    finally { setSubmitting(false) }
+  }
+
+  async function requestDiscount() {
+    if (submitting || !hasDiscount || !discountReason.trim()) return
+    setSubmitting(true); setError(''); setDiscountNotice('')
+    try {
+      const result = await request<{ id: number }>('/retail/discounts', { method: 'POST', financial: true, body: {
+        total_minor: total, reason: discountReason.trim(),
+        items: cart.map(line => ({ product_id: line.id, quantity: line.quantity, unit_discount_minor: unitDiscount(line) })),
+      } })
+      setDiscountRequest(String(result.data.id))
+      setDiscountNotice(`أرسل رقم الطلب ${result.data.id} للمشرف. أكّد البيع بعد اعتماده.`)
+    } catch (error) { setError(error instanceof Error ? error.message : 'تعذّر إرسال طلب الخصم.') }
     finally { setSubmitting(false) }
   }
 
@@ -696,7 +727,7 @@ export function Pos({ user }: { user: User }) {
           <div className="pos-grid">
             <section className="panel panel-inner">
               <form className="search-form" onSubmit={search}>
-                <input value={query} type="search" aria-label="المنتج أو الباركود" placeholder="المنتج أو الباركود"
+                <input value={query} type="search" aria-label="المنتج أو الباركود" placeholder="المنتج أو الباركود أو الموديل المتوافق"
                   disabled={submitting} onChange={event => setQuery(event.target.value)} />
                 <button className="secondary" disabled={searching || submitting}>{searching ? 'جارٍ البحث…' : 'بحث'}</button>
               </form>
@@ -706,6 +737,7 @@ export function Pos({ user }: { user: User }) {
                   <div>
                     <strong>{dataText(product.name)}</strong>
                     <small>{money(product.price_minor)} · المتاح {integer(availableStock(product))} {product.barcode ? '· ' + String(product.barcode) : ''}</small>
+                    {Boolean(product.compatible_models) && <small>يتوافق مع {dataText(product.compatible_models)}</small>}
                   </div>
                   <button className="secondary" disabled={submitting || availableStock(product) < 1 || Boolean(invoiceId && !reissueLoaded)} onClick={() => add(product)}>إضافة</button>
                 </article>)}
@@ -757,6 +789,12 @@ export function Pos({ user }: { user: User }) {
                 value={reissueReason} onChange={event => setReissueReason(event.target.value)} /></label>}
               <div className="pos-total"><span>إجمالي الفاتورة</span><strong>{money(total)}</strong></div>
               {invalidDiscount && <Notice error>راجع خصم القطعة. أدخل مبلغًا بالجنيه لا يتجاوز سعرها.</Notice>}
+              {hasDiscount && <details className="form-section"><summary>اعتماد خصم يتجاوز الحد</summary>
+                <label className="field">رقم طلب الخصم المعتمد<input type="number" min="1" step="1" value={discountRequest} disabled={submitting} onChange={event => setDiscountRequest(event.target.value)} /></label>
+                <label className="field">سبب طلب الاعتماد<textarea maxLength={1000} value={discountReason} disabled={submitting} onChange={event => setDiscountReason(event.target.value)} /></label>
+                <button type="button" className="secondary" disabled={submitting || !discountReason.trim()} onClick={() => void requestDiscount()}>اطلب اعتماد المشرف</button>
+                {discountNotice && <Notice>{discountNotice}</Notice>}
+              </details>}
               <div className="pos-total"><span>المتبقي</span><strong>{money(due)}</strong></div>
               <button className="primary" disabled={!cart.length || submitting || invalidDiscount || shiftContext.loading || Boolean(shiftContext.required && !shiftContext.shift) || Boolean(invoiceId && !original)}>{submitting ? 'جارٍ تأكيد العملية…' : invoiceId ? 'إصدار الفاتورة البديلة' : 'تأكيد البيع'}</button>
             </form>
@@ -945,9 +983,9 @@ export function WalletReport({ user }: { user: User }) {
         <Link className="secondary" to="/wallet-profit-withdrawals">سجل سحب الأرباح</Link>
         {allowed(user, 'wallets.profit') && <button className="primary" onClick={() => setWithdrawing(true)}>سحب من الأرباح</button>}</div>
     } />
-    {withdrawing && <ActionDialog action={createAction('سحب من الأرباح', '/wallet-profit-withdrawals', 'wallets.profit', [
+    {withdrawing && <SharedDrawerDialog user={user} action={{ ...createAction('سحب من الأرباح', '/wallet-profit-withdrawals', 'wallets.profit', [
       required('amount_minor', 'المبلغ بالجنيه', 'money'), reference('wallet_id', 'المحفظة (اتركها فارغة للدرج النقدي)', '/wallets'), notes,
-    ], true)} close={() => setWithdrawing(false)} done={() => { setWithdrawing(false); setRevision(value => value + 1) }} />}
+    ], true), sharedDrawer: 'optional' }} close={() => setWithdrawing(false)} done={() => { setWithdrawing(false); setRevision(value => value + 1) }} />}
     {error ? <Notice error>{error}</Notice> : !report ? <Notice>جارٍ تحميل التقرير…</Notice> :
       <div className="metric-grid">{walletMetrics.map(([key, label]) =>
         <article className="panel metric" key={key}><p>{label}</p><strong>{money(report[key])}</strong></article>,
@@ -992,7 +1030,7 @@ export function DamageReport() {
       <div className="form-actions"><button className="primary" disabled={busy}>{busy ? 'جارٍ التحميل…' : 'عرض التقرير'}</button></div>
     </form>
     {error && <Notice error>{error}</Notice>}
-    {result && <div className="metric-grid">{metrics.map(([key, label, format]) =>
+    {result && <div className="metric-grid">{metrics.filter(([key]) => key in result).map(([key, label, format]) =>
       <article className="panel metric" key={key}><p>{label}</p><strong>{format(result[key])}</strong></article>,
     )}</div>}
   </>

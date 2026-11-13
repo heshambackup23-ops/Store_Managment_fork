@@ -53,7 +53,8 @@ export function retailProcurement(writeOperation: typeof write) {
 
   routes.get('/purchases/:id/returns', permit('suppliers.view'), c => {
     const purchaseId = identifier.parse(c.req.param('id'));
-    return selectPage(c, `r.id, r.purchase_id, r.credit_minor, r.reason, r.actor_id, r.created_at,
+    return selectPage(c, `r.id, r.purchase_id, r.credit_minor, r.unapplied_credit_minor, r.vendor_reference,
+      r.reason, r.actor_id, r.created_at,
       (SELECT json_group_array(json_object('product_id', i.product_id, 'product_name', o.product_name, 'quantity', i.quantity,
         'unit_cost_minor', i.unit_cost_minor, 'device_ids', json((SELECT json_group_array(d.device_id)
         FROM supplier_stock_return_devices d WHERE d.return_id = i.return_id AND d.product_id = i.product_id))))

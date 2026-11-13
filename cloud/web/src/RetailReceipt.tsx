@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { request } from './api'
 import { FormInput, Modal, Notice } from './ui'
@@ -10,6 +10,93 @@ type CodeDraft = { serial_number: string; imei1: string; imei2: string }
 type Line = { id: number; name: string; tracking: Tracking; quantity: number; devices: CodeDraft[] }
 const productField: Field = { name: 'product_id', label: 'الصنف المستلم', kind: 'reference', reference: { path: '/products' } }
 const blankCode = () => ({ serial_number: '', imei1: '', imei2: '' })
+const displayLine = (row: number) => new Intl.NumberFormat('ar-EG').format(row)
+const invalidCodeCharacters = /[\p{Cc}\p{Cf}]/u
+
+function isImei(value: string) {
+  return /^[0-9]{15}$/.test(value) && value !== '000000000000000' &&
+    [...value].reduce((sum, digit, index) => {
+      const amount = Number(digit) * (index % 2 === 0 ? 1 : 2)
+      return sum + (amount > 9 ? amount - 9 : amount)
+    }, 0) % 10 === 0
+}
+
+function bulkCodes(value: string, tracking: Tracking, quantity: number) {
+  const lines = value.split(/\r?\n/).map(line => line.trim()).filter(Boolean)
+  if (lines.length !== quantity) throw new Error(`عدد سطور الأرقام يجب أن يطابق الكمية (${displayLine(quantity)}).`)
+  return lines.map((line, index) => {
+    if (tracking === 'serial') {
+      if (line.length > 100 || invalidCodeCharacters.test(line)) throw new Error(`راجع الرقم المسلسل في السطر ${displayLine(index + 1)}.`)
+      return { ...blankCode(), serial_number: line }
+    }
+    const fields = line.split(/[\t,]/).map(field => field.trim())
+    if (fields.length > 3) throw new Error(`السطر ${displayLine(index + 1)} يجب أن يحتوي على IMEI 1 وIMEI 2 والرقم المسلسل بالترتيب.`)
+    const [imei1, imei2 = '', serial_number = ''] = fields
+    if (!isImei(imei1) || (imei2 && (!isImei(imei2) || imei1 === imei2)) || serial_number.length > 100 || invalidCodeCharacters.test(serial_number)) {
+      throw new Error(`راجع الأرقام في السطر ${displayLine(index + 1)}.`)
+    }
+    return { serial_number, imei1, imei2 }
+  })
+}
+
+function conflicts(devices: CodeDraft[]) {
+  const seen = new Set<string>()
+  for (const device of devices) {
+    const serial = device.serial_number.trim().toLowerCase()
+    const keys = [serial && `serial:${serial}`, device.imei1.trim() && `imei:${device.imei1.trim()}`,
+      device.imei2.trim() && `imei:${device.imei2.trim()}`].filter(Boolean)
+    for (const key of keys) {
+      if (seen.has(key)) return true
+      seen.add(key)
+    }
+  }
+  return false
+}
+
+function wireCode(code: CodeDraft) {
+  return { serial_number: code.serial_number.trim() || undefined, imei1: code.imei1.trim() || undefined, imei2: code.imei2.trim() || undefined }
+}
+
+function ReceiptBulkCodes({ line, endpoint, disabled, apply }: { line: Line; endpoint: string; disabled: boolean; apply: (codes: CodeDraft[]) => boolean }) {
+  const [input, setInput] = useState('')
+  const [error, setError] = useState('')
+  const [message, setMessage] = useState('')
+  const [busy, setBusy] = useState(false)
+  const current = useRef(input)
+
+  async function preview() {
+    if (busy || !input.trim()) return
+    const source = input
+    setBusy(true); setError(''); setMessage('')
+    try {
+      const codes = bulkCodes(source, line.tracking, line.quantity)
+      if (conflicts(codes)) throw new Error('يوجد رقم مكرر ضمن السطور المدخلة.')
+      const response = await request<{ duplicate_positions: number[] }>(endpoint + '/validate-devices', {
+        method: 'POST', body: { devices: codes.map(wireCode) },
+      })
+      if (current.current !== source) return
+      if (response.data.duplicate_positions.length) {
+        throw new Error('أرقام مسجلة من قبل في السطور ' + response.data.duplicate_positions.map(row => displayLine(row + 1)).join('، '))
+      }
+      if (!apply(codes)) throw new Error('يوجد رقم مكرر مع صنف آخر في السند.')
+      setMessage('تمت تعبئة حقول القطع. راجعها قبل حفظ السند.')
+    } catch (failure) {
+      if (current.current === source) setError(failure instanceof Error ? failure.message : 'تعذّر فحص الأرقام.')
+    } finally { setBusy(false) }
+  }
+
+  return <details className="form-section">
+    <summary>إدخال أرقام القطع دفعة واحدة</summary>
+    <label className="field">{line.tracking === 'serial' ? 'رقم مسلسل واحد في كل سطر' : 'IMEI 1 ثم IMEI 2 ثم الرقم المسلسل في كل سطر'}
+      {line.tracking === 'imei' && <small>افصل الحقول بفاصلة أو انسخ الأعمدة من جدول. يمكن ترك الحقلين الأخيرين فارغين.</small>}
+      <textarea value={input} onChange={event => { current.current = event.target.value; setInput(current.current); setError(''); setMessage('') }}
+        rows={4} maxLength={8000} dir="ltr" spellCheck={false} disabled={disabled || busy} />
+    </label>
+    <button className="secondary" type="button" onClick={preview} disabled={disabled || busy || !input.trim()}>{busy ? 'جارٍ فحص الأرقام…' : 'افحص الأرقام وعبّئ الحقول'}</button>
+    {error && <Notice error>{error}</Notice>}
+    {message && <Notice>{message}</Notice>}
+  </details>
+}
 
 export function RetailReceipt({ endpoint, close, done }: { endpoint: string; close: () => void; done: () => void }) {
   const [ref, setRef] = useState('')
@@ -20,6 +107,8 @@ export function RetailReceipt({ endpoint, close, done }: { endpoint: string; clo
   const [packSize, setPackSize] = useState(1)
   const [pack, setPack] = useState(false)
   const [lines, setLines] = useState<Line[]>([])
+  const latestLines = useRef(lines)
+  latestLines.current = lines
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
 
@@ -55,14 +144,21 @@ export function RetailReceipt({ endpoint, close, done }: { endpoint: string; clo
     setLines(previous => previous.map(line => line.id === lineId ? { ...line, devices: line.devices.map((device, index) => index === unit ? { ...device, [field]: value } : device) } : line))
   }
 
+  function applyCodes(lineId: number, devices: CodeDraft[]) {
+    const next = latestLines.current.map(line => line.id === lineId ? { ...line, devices } : line)
+    if (conflicts(next.flatMap(line => line.devices))) return false
+    latestLines.current = next
+    setLines(next)
+    return true
+  }
+
   async function submit(event: FormEvent) {
     event.preventDefault()
     if (busy || !lines.length) return
     setBusy(true); setError('')
     try {
-      const items = lines.map(line => ({ product_id: line.id, quantity: line.quantity, devices: line.devices.length ? line.devices.map(code => ({
-        serial_number: code.serial_number.trim() || undefined, imei1: code.imei1.trim() || undefined, imei2: code.imei2.trim() || undefined,
-      })) : undefined }))
+      if (conflicts(lines.flatMap(line => line.devices))) throw new Error('راجع أرقام القطع المكررة قبل حفظ السند.')
+      const items = lines.map(line => ({ product_id: line.id, quantity: line.quantity, devices: line.devices.length ? line.devices.map(wireCode) : undefined }))
       await request(endpoint, { method: 'POST', financial: true, body: { reference: ref.trim(), received_on: date || undefined, note: note.trim() || undefined, items } })
       done()
     } catch (error) { setError(error instanceof Error ? error.message : 'تعذّر تسجيل سند الاستلام.') }
@@ -81,6 +177,7 @@ export function RetailReceipt({ endpoint, close, done }: { endpoint: string; clo
       </fieldset>
       {lines.map(line => <fieldset className="panel panel-inner form-section" key={line.id} disabled={busy}>
         <legend>{line.name} · {line.quantity}</legend>
+        {line.devices.length > 0 && <ReceiptBulkCodes line={line} endpoint={endpoint} disabled={busy} apply={codes => applyCodes(line.id, codes)} />}
         {line.devices.map((device, index) => <div className="form-grid" key={index}>
           <label className="field">رقم مسلسل القطعة {index + 1}
             <input required={line.tracking === 'serial'} maxLength={100} value={device.serial_number} onChange={event => setCode(line.id, index, 'serial_number', event.target.value)} />

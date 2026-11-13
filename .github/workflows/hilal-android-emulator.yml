@@ -119,11 +119,22 @@ jobs:
           pepper="$(openssl rand -hex 32)"
           export AUTH_PEPPER="$pepper"
           node scripts/provision-user.mjs "$RUNNER_TEMP/hilal-emulator-user.generated.sql"
+          STORE_USER_NAME='مراجع محاكي هلال' STORE_USER_EMAIL=emulator-reviewer@example.invalid \
+            STORE_USER_USERNAME=emulator-reviewer node scripts/provision-user.mjs "$RUNNER_TEMP/hilal-emulator-reviewer.generated.sql"
+          cat >> "$RUNNER_TEMP/hilal-emulator-reviewer.generated.sql" <<'SQL'
+          INSERT INTO roles (name) VALUES ('Emulator shift reviewer');
+          INSERT INTO role_permissions (role_id, permission)
+            SELECT id, 'retail.shifts.approve' FROM roles WHERE name = 'Emulator shift reviewer';
+          UPDATE users SET role_id = (SELECT id FROM roles WHERE name = 'Emulator shift reviewer')
+            WHERE email = 'emulator-reviewer@example.invalid';
+          SQL
           node scripts/import-laravel-catalog.mjs fixtures/mysql-catalog.synthetic.json \
             --emit-sql "$RUNNER_TEMP/hilal-emulator-catalog.generated.sql"
           npx --no-install wrangler d1 migrations apply DB --local --persist-to "$state"
           npx --no-install wrangler d1 execute DB --local --persist-to "$state" \
             --file "$RUNNER_TEMP/hilal-emulator-user.generated.sql"
+          npx --no-install wrangler d1 execute DB --local --persist-to "$state" \
+            --file "$RUNNER_TEMP/hilal-emulator-reviewer.generated.sql"
           npx --no-install wrangler d1 execute DB --local --persist-to "$state" \
             --file "$RUNNER_TEMP/hilal-emulator-catalog.generated.sql"
           printf 'AUTH_PEPPER=%s\n' "$pepper" > .dev.vars
@@ -145,25 +156,20 @@ jobs:
               --header 'Content-Type: application/json' --header "Idempotency-Key: emulator-fixture-$2" \
               --data-binary "$3" "$base/$1"
           }
-          product="$(post_fixture products tracked-product '{"name":"هاتف محاكي هلال","price_minor":5000,"tracking":"imei","warranty_months":1}' | jq -er '.data.id')"
+          product="$(post_fixture products tracked-product '{"name":"هاتف محاكي هلال","barcode":"HILAL-EMU-TRACKED","price_minor":5000,"tracking":"imei","warranty_months":1}' | jq -er '.data.id')"
           supplier="$(post_fixture suppliers supplier '{"name":"Emulator tracked fixture supplier"}' | jq -er '.data.id')"
           purchase="$(post_fixture purchases purchase "$(jq -nc --argjson supplier "$supplier" \
             '{supplier_id:$supplier,description:"Emulator tracked delivery",total_minor:5000,purchase_date:"2026-01-01"}')" | jq -er '.data.id')"
           post_fixture "purchases/$purchase/receipts" receipt "$(jq -nc --argjson product "$product" \
             '{reference:"EMULATOR-IMEI",items:[{product_id:$product,quantity:1,devices:[{serial_number:"HILAL-EMU-IMEI",imei1:"490154203237518"}]}]}')" | \
             jq -e '.success and (.data.id > 0)'
-          device="$(curl --fail --silent --show-error --header "Authorization: Bearer $token" \
-            "$base/retail/devices?q=490154203237518" | jq -er '.data[] | select(.serial_number == "HILAL-EMU-IMEI") | .id')"
-          post_fixture retail/checkout warranty-sale "$(jq -nc --argjson product "$product" --argjson device "$device" \
-            '{items:[{product_id:$product,quantity:1,device_ids:[$device]}],paid_minor:5000,expected_total_minor:5000}')" | \
-            jq -e '.success and .data.total_minor == 5000 and .data.paid_minor == 5000'
           curl --fail --silent --show-error --header "Authorization: Bearer $token" \
-            --header 'X-Store-Client: android' "$base/retail/devices/$device" | \
-            jq -e '.success and .data.imei1 == "490154203237518" and .data.sales[0].warranty_status == "active"'
+            "$base/retail/devices?q=490154203237518" | \
+            jq -e '.success and (.data | length == 1 and .[0].serial_number == "HILAL-EMU-IMEI" and .[0].status == "available")'
           curl --fail --silent --show-error --request DELETE --header "Authorization: Bearer $token" \
             --header 'X-Store-Client: android' http://127.0.0.1:8787/api/v1/auth/token > /dev/null
           adb reverse tcp:8787 tcp:8787
-      - name: Test sign-in, product creation, Arabic PDF and sign-out
+      - name: Test tracked checkout, shift review and Arabic PDF
         working-directory: android
         shell: bash
         run: |
@@ -173,7 +179,7 @@ jobs:
           adb install -r -t app/build/outputs/apk/staging/debug/*.apk
           adb install -r -t app/build/outputs/apk/androidTest/staging/debug/*.apk
           timeout 180 adb shell am instrument -w -r \
-            -e class 'com.storemanagement.mobile.StagingAcceptanceTest#signsInReadsAndCreatesProductAndSignsOutAgainstIsolatedWorker,com.storemanagement.mobile.data.AndroidInvoicePdfTest' \
+            -e class 'com.storemanagement.mobile.StagingAcceptanceTest#sellsTrackedDeviceAndClosesShiftAgainstIsolatedWorker,com.storemanagement.mobile.data.AndroidInvoicePdfTest' \
             com.storemanagement.mobile.staging.test/androidx.test.runner.AndroidJUnitRunner \
             | tee "$RUNNER_TEMP/hilal-emulator/isolated-operations.txt"
           grep -Fq 'OK (2 tests)' "$RUNNER_TEMP/hilal-emulator/isolated-operations.txt"
@@ -184,6 +190,18 @@ jobs:
           npx --no-install wrangler d1 execute DB --local --persist-to "$RUNNER_TEMP/hilal-d1" \
             --command "SELECT name, price_minor FROM products WHERE name = 'منتج من محاكي هلال'" \
             --json | jq -e '.[0].results == [{"name":"منتج من محاكي هلال","price_minor":1325}]'
+          npx --no-install wrangler d1 execute DB --local --persist-to "$RUNNER_TEMP/hilal-d1" \
+            --command "SELECT d.status AS device_status, v.status AS shift_status, v.expected_minor, v.observed_minor,
+              v.difference_minor, r.username AS reviewer,
+              SUM(CASE WHEN l.method = 'cash' THEN l.delta_minor ELSE 0 END) AS cash_minor,
+              SUM(CASE WHEN l.method = 'card' AND l.reference = 'EMULATOR-CARD' THEN l.delta_minor ELSE 0 END) AS card_minor
+              FROM retail_devices d JOIN retail_device_sales s ON s.device_id = d.id
+              JOIN retail_tender_ledger l ON l.invoice_id = s.invoice_id
+              JOIN retail_shift_positions v ON v.id = l.shift_id
+              JOIN users r ON r.id = v.approved_by AND r.id <> v.actor_id
+              WHERE d.serial_number = 'HILAL-EMU-IMEI' GROUP BY d.id, v.id" \
+            --json | jq -e '.[0].results == [{"device_status":"sold","shift_status":"approved","expected_minor":8000,
+              "observed_minor":7900,"difference_minor":-100,"reviewer":"emulator-reviewer","cash_minor":3000,"card_minor":2000}]'
       - uses: actions/upload-artifact@v4
         if: always()
         with:

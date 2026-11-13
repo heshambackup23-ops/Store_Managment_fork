@@ -243,6 +243,7 @@ function mobileActor(user: Actor, hilalClient: boolean) {
       ['invoices.pay', 'invoices.pay'], ['invoices.refund', 'invoices.refund'],
       ['retail_shifts.operate', 'retail.shifts.operate'], ['retail_shifts.approve', 'retail.shifts.approve'],
       ['retail_devices.view', 'inventory.view'],
+      ['products.cost.manage', 'products.cost.manage'],
     ]) {
       if (user.permissions.includes('*') || user.permissions.includes(permission)) permits.add('page.' + clientPermission)
     }

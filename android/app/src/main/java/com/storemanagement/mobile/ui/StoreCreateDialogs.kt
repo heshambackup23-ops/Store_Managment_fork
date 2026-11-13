@@ -1191,6 +1191,7 @@ internal fun DamagedItemCreateDialog(
     products: List<DamagedProductDto>,
     isLoading: Boolean,
     error: String?,
+    canManageCost: Boolean,
     onSearch: (String) -> Unit,
     onDismiss: () -> Unit,
     onCreate: (DamagedItemInputDto, String) -> Unit,
@@ -1208,7 +1209,7 @@ internal fun DamagedItemCreateDialog(
     var productId by rememberSaveable { mutableStateOf<Long?>(null) }
     var quantity by rememberSaveable { mutableStateOf("1") }
     var reason by rememberSaveable { mutableStateOf("broken") }
-    var unitValue by rememberSaveable { mutableStateOf("") }
+    var unitValue by rememberSaveable(canManageCost) { mutableStateOf("") }
     var damagedOn by rememberSaveable { mutableStateOf(SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())) }
     var notes by rememberSaveable { mutableStateOf("") }
     var search by rememberSaveable { mutableStateOf("") }
@@ -1289,10 +1290,10 @@ internal fun DamagedItemCreateDialog(
                         }
                     }
                 }
-                OutlinedTextField(
+                if (canManageCost) OutlinedTextField(
                     unitValue,
                     { value -> val normalized = value.normalizeArabicDigits(); updatePayload(payload(nextUnitValue = normalized)); unitValue = normalized },
-                    label = { Text("قيمة الوحدة (اختياري، الافتراضي سعر البيع)") },
+                    label = { Text("قيمة الوحدة (اختياري، الافتراضي تكلفة المنتج)") },
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),

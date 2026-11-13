@@ -14,6 +14,7 @@ import { RetailHardware } from './RetailHardware'
 import { DeviceDetail, DeviceList } from './RetailDevices'
 import { RetailStocktakes } from './RetailStocktakes'
 import { RetailFinance } from './RetailFinance'
+import { RetailDiscounts } from './RetailDiscounts'
 import { DataModule, idOf, Notice, PageTitle } from './ui'
 import { WalletLedger } from './WalletOperations'
 import './styles.css'
@@ -29,6 +30,7 @@ const navGroups: { title: string; items: NavigationItem[] }[] = [
     { path: '/pos', label: 'نقطة البيع', permission: 'invoices.create' },
     { path: '/retail-hardware', label: 'اختبار القارئ والطابعة', permission: 'invoices.create' },
     { path: '/retail-shifts', label: 'ورديات الكاشير', permission: 'retail.shifts.operate' },
+    { path: '/retail-discounts', label: 'اعتمادات الخصم', permission: 'retail.discounts.approve' },
     { path: '/retail-safe', label: 'خزنة المتجر', permission: 'retail.safe.manage' },
     { path: '/invoices', label: 'الفواتير', permission: 'invoices.view' },
     { path: '/products', label: 'المنتجات', permission: 'products.view' },
@@ -175,6 +177,8 @@ function Shell({ user, update, clear, theme, toggle }: {
   const menu = useRef<HTMLButtonElement>(null)
   const groups = navGroups.map(group => ({ ...group, items: group.items.filter(item => allowed(user, item.permission) ||
     ['/retail-shifts', '/retail-safe'].includes(item.path) && allowed(user, 'retail.shifts.approve') ||
+    item.path === '/retail-shifts' && allowed(user, 'retail.shifts.emergency_close') ||
+    item.path === '/retail-discounts' && allowed(user, 'invoices.discount') ||
     item.path === '/retail-stocktakes' && allowed(user, 'inventory.stocktake.approve')) })).filter(group => group.items.length > 0)
   const home = '/dashboard'
   const protect = (permission: string, element: ReactNode) => allowed(user, permission) ? element : <Notice error>ليست لديك صلاحية عرض هذه الصفحة.</Notice>
@@ -250,7 +254,8 @@ function Shell({ user, update, clear, theme, toggle }: {
             <Route path="/wallet-transactions" element={protect('wallets.view', <WalletLedger user={user} config={businessModules['wallet-transactions']} />)} />
             <Route path="/pos" element={<Pos key="sale" user={user} />} />
             <Route path="/retail-hardware" element={protect('invoices.create', <RetailHardware />)} />
-            <Route path="/retail-shifts" element={allowed(user, 'retail.shifts.operate') || allowed(user, 'retail.shifts.approve') ? <RetailShifts user={user} /> : <Notice error>ليست لديك صلاحية عرض الورديات.</Notice>} />
+            <Route path="/retail-shifts" element={['retail.shifts.operate', 'retail.shifts.approve', 'retail.shifts.emergency_close'].some(permission => allowed(user, permission)) ? <RetailShifts user={user} /> : <Notice error>ليست لديك صلاحية عرض الورديات.</Notice>} />
+            <Route path="/retail-discounts" element={allowed(user, 'invoices.discount') || allowed(user, 'retail.discounts.approve') ? <RetailDiscounts user={user} /> : <Notice error>ليست لديك صلاحية عرض الاعتمادات.</Notice>} />
             <Route path="/retail-safe" element={allowed(user, 'retail.safe.manage') || allowed(user, 'retail.shifts.approve') ? <RetailSafe user={user} /> : <Notice error>ليست لديك صلاحية عرض الخزنة.</Notice>} />
             <Route path="/retail-devices" element={protect('inventory.view', <DeviceList />)} />
             <Route path="/retail-stocktakes" element={allowed(user, 'inventory.stocktake.count') || allowed(user, 'inventory.stocktake.approve') ? <RetailStocktakes user={user} /> : <Notice error>ليست لديك صلاحية عرض الجرد.</Notice>} />

@@ -5,7 +5,9 @@ import { body, fail, hasPermission, identifier, ok, permit, searchPrefix, select
 import { cairoRetailDay } from './retail-shifts';
 
 export const retailTracking = z.enum(['quantity', 'serial', 'imei']);
-export const retailDeviceStatuses = z.enum(['available', 'sold', 'quarantined', 'voided', 'returned_to_supplier']);
+export const retailDeviceStatuses = z.enum(['available', 'sold', 'quarantined', 'voided', 'returned_to_supplier',
+  'stocktake_missing', 'in_repair', 'written_off']);
+export const deviceDispositionApprove = 'retail.devices.disposition.approve';
 export const retailDeviceEvents = z.enum(['delivered', 'installed', 'warranty_claim']);
 export const warrantyBasis = z.enum(['sale', 'delivery', 'installation']);
 export const warrantyGuarantor = z.string().trim().min(1).max(160).regex(/^[^\p{Cc}]+$/u);
@@ -35,10 +37,32 @@ export const retailDeviceErrors: ReadonlyArray<readonly [string, string]> = [
   ['RETAIL_DEVICE_EVENT_STATE', 'أضف هذا الحدث لقطعة مبيعة وفي تاريخ لا يسبق الفاتورة.'],
   ['RETAIL_DEVICE_MILESTONE_ORDER', 'يجب أن يسبق التسليم التركيب أو يوافقه في التاريخ.'],
   ['RETAIL_QUARANTINE_STATE', 'القطعة ليست معزولة للفحص أو تغيّر المرتجع المرتبط بها.'],
+  ['RETAIL_DISPOSITION_SUPPLIER_SOURCE', 'رد الجهاز للمورد يتطلب استلامًا مرتبطًا ببند شراء مسعّر.'],
+  ['RETAIL_DISPOSITION_SEPARATION', 'يجب أن يراجع هذا القرار موظف آخر.'],
+  ['RETAIL_DISPOSITION_COST', 'تغيّرت تكلفة الجهاز المرتبطة بالبيع الأصلي.'],
+  ['RETAIL_DISPOSITION_OPEN', 'أكمل مراجعة القرار أو الصيانة قبل إعادة الجهاز للبيع.'],
+  ['RETAIL_DISPOSITION_INTERNAL_REPAIR', 'يحافظ أمر الصيانة الداخلي على الجهاز وتكلفة الخدمة الصفرية ولا ينشئ مديونية عميل.'],
 ];
 
-const deviceColumns = 'd.*, p.name AS product_name, p.tracking';
-const devicesTable = 'retail_devices d JOIN products p ON p.id = d.product_id';
+const deviceStatus = 'COALESCE(a.effective_status, d.status)';
+const deviceColumns = `d.id, d.product_id, d.receipt_id, d.inventory_intake_id, d.serial_number, d.imei1, d.imei2,
+  d.created_at, ${deviceStatus} AS status, p.name AS product_name, p.tracking`;
+const devicesTable = `retail_devices d JOIN products p ON p.id = d.product_id
+  LEFT JOIN retail_active_device_dispositions a ON a.device_id = d.id`;
+
+const dispositionReason = z.string().trim().min(1).max(1000);
+const dispositionReturnId = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
+const deviceDispositionInput = z.discriminatedUnion('disposition', [
+  z.strictObject({ disposition: z.enum(['repair', 'write_off']), reason: dispositionReason, return_id: dispositionReturnId }),
+  z.strictObject({ disposition: z.literal('supplier'), reason: dispositionReason, return_id: dispositionReturnId,
+    supplier_reference: z.string().trim().min(1).max(100).regex(/^[^\p{Cc}\p{Cf}]+$/u) }),
+]);
+
+function canDispose(actor: Parameters<typeof hasPermission>[0], disposition: string) {
+  const permissions: Record<string, string> = { repair: 'maintenance.manage', supplier: 'suppliers.manage', write_off: 'damaged.manage' };
+  const permission = permissions[disposition];
+  return Boolean(permission && hasPermission(actor, permission));
+}
 
 export function deviceWarrantyView(row: Record<string, unknown>, today: string, canReadCost: boolean) {
   const { unit_cost_minor, warranty_returned, ...data } = row;
@@ -77,7 +101,7 @@ export function retailDevices(writeOperation: typeof write) {
       clauses.push('d.receipt_id IN (SELECT id FROM purchase_stock_receipts WHERE purchase_id = ?)');
       parameters.push(query.purchase_id);
     }
-    if (query.status !== undefined) { clauses.push('d.status = ?'); parameters.push(query.status); }
+    if (query.status !== undefined) { clauses.push(`${deviceStatus} = ?`); parameters.push(query.status); }
     if (query.q) {
       const prefix = searchPrefix(query.q);
       clauses.push("(d.serial_number LIKE ? ESCAPE '\\' OR d.imei1 LIKE ? ESCAPE '\\' OR d.imei2 LIKE ? ESCAPE '\\')");
@@ -91,25 +115,78 @@ export function retailDevices(writeOperation: typeof write) {
     const id = identifier.parse(c.req.param('id'));
     const db = c.env.DB;
     const actor = c.get('actor');
-    const [devices, sales, events, returns, quarantine, repairs] = await db.batch<Record<string, unknown>>([
-      db.prepare(`SELECT ${deviceColumns}, r.purchase_id FROM ${devicesTable}
-        JOIN purchase_stock_receipts r ON r.id = d.receipt_id WHERE d.id = ?`).bind(id),
+    const canReadCost = hasPermission(actor, 'products.cost.view') || hasPermission(actor, 'products.cost.manage');
+    const canReadSupplier = hasPermission(actor, 'suppliers.view') || hasPermission(actor, 'suppliers.manage');
+    const [devices, sales, events, returns, quarantine, dispositions, repairs] = await db.batch<Record<string, unknown>>([
+      db.prepare(`SELECT ${deviceColumns}, r.purchase_id, d.intake_cost_minor, v.source_reference AS intake_source_reference FROM ${devicesTable}
+        LEFT JOIN purchase_stock_receipts r ON r.id = d.receipt_id
+        LEFT JOIN retail_device_inventory_reviews v ON v.id = d.inventory_intake_id WHERE d.id = ?`).bind(id),
       db.prepare(`SELECT w.*, i.invoice_date FROM retail_device_sale_warranty w JOIN invoices i ON i.id = w.invoice_id
         WHERE w.device_id = ? ORDER BY w.invoice_id DESC LIMIT 100`).bind(id),
       db.prepare('SELECT * FROM retail_device_events WHERE device_id = ? ORDER BY id DESC LIMIT 100').bind(id),
       db.prepare('SELECT * FROM retail_return_devices WHERE device_id = ? ORDER BY return_id DESC LIMIT 100').bind(id),
       db.prepare('SELECT * FROM retail_quarantine_resolutions WHERE device_id = ? ORDER BY id DESC LIMIT 100').bind(id),
+      db.prepare(`SELECT q.id, q.return_id, q.disposition, q.reason, q.actor_id, requestor.name AS requested_by,
+          q.created_at, r.id AS review_id, r.decision, r.reason AS review_reason, reviewer.name AS reviewed_by,
+          r.decided_on, m.status AS repair_status, m.archived_at AS repair_archived_at,
+          ${canReadCost ? 'r.loss_minor' : 'NULL'} AS loss_minor,
+          ${canReadSupplier ? 'q.supplier_reference' : 'NULL'} AS supplier_reference,
+          ${canReadSupplier ? 's.credit_minor' : 'NULL'} AS credit_minor,
+          ${canReadSupplier ? 's.unapplied_credit_minor' : 'NULL'} AS unapplied_credit_minor
+        FROM retail_device_dispositions q JOIN users requestor ON requestor.id = q.actor_id
+        LEFT JOIN retail_device_disposition_reviews r ON r.request_id = q.id
+        LEFT JOIN users reviewer ON reviewer.id = r.actor_id
+        LEFT JOIN maintenance_requests m ON m.id = r.id AND q.disposition = 'repair' AND r.decision = 'approve'
+        LEFT JOIN supplier_stock_returns s ON s.disposition_review_id = r.id
+        WHERE q.device_id = ? ORDER BY q.id DESC LIMIT 100`).bind(id),
       ...(hasPermission(actor, 'maintenance.view') ? [db.prepare(`
         SELECT id, item, status, requested_date, completed_date, archived_at
         FROM maintenance_requests WHERE retail_device_id = ? ORDER BY id DESC LIMIT 100
       `).bind(id)] : []),
     ]);
     if (!devices.results[0]) return fail(404, 'not_found', 'الجهاز غير موجود.');
-    const canReadCost = hasPermission(actor, 'products.cost.view') || hasPermission(actor, 'products.cost.manage');
     const today = cairoRetailDay();
     const history = sales.results.map(row => deviceWarrantyView(row, today, canReadCost));
-    return ok(c, { ...devices.results[0], sales: history, events: events.results, returns: returns.results,
-      quarantine_resolutions: quarantine.results, ...(repairs ? { repairs: repairs.results } : {}) });
+    const { intake_cost_minor, ...device } = devices.results[0];
+    return ok(c, { ...device, ...(canReadCost ? { intake_cost_minor } : {}), sales: history, events: events.results, returns: returns.results,
+      quarantine_resolutions: quarantine.results, dispositions: dispositions.results, can_read_cost: canReadCost,
+      ...(repairs ? { repairs: repairs.results } : {}) });
+  });
+
+  routes.post('/retail/devices/:id/dispositions', permit('inventory.manage'), async c => {
+    const deviceId = identifier.parse(c.req.param('id'));
+    const data = await body(c, deviceDispositionInput);
+    if (!canDispose(c.get('actor'), data.disposition)) return fail(403, 'forbidden', 'تحتاج صلاحية إدارة القسم المختص بهذا القرار.');
+    return writeOperation(c, 'retail.device.disposition.request', { deviceId, ...data }, (op, binds, actor) => [
+      c.env.DB.prepare(`INSERT INTO retail_device_dispositions (id, return_id, device_id, disposition, reason, supplier_reference, actor_id)
+        VALUES (${op}, ?, ?, ?, ?, ?, ?)`)
+        .bind(...binds, data.return_id, deviceId, data.disposition, data.reason,
+          data.disposition === 'supplier' ? data.supplier_reference : null, actor),
+    ]);
+  });
+
+  routes.post('/retail/devices/:id/dispositions/:requestId/review', permit('inventory.view'), permit(deviceDispositionApprove), async c => {
+    const deviceId = identifier.parse(c.req.param('id'));
+    const requestId = identifier.parse(c.req.param('requestId'));
+    const data = await body(c, z.strictObject({ decision: z.enum(['approve', 'reject']), reason: dispositionReason }));
+    const db = c.env.DB;
+    const request = await db.prepare('SELECT disposition, actor_id FROM retail_device_dispositions WHERE id = ? AND device_id = ?')
+      .bind(requestId, deviceId).first<{ disposition: string; actor_id: number }>();
+    if (!request) return fail(404, 'not_found', 'طلب الإجراء غير موجود.');
+    if (request.actor_id === c.get('actor').id) return fail(403, 'RETAIL_DISPOSITION_SEPARATION', 'يجب أن يراجع هذا القرار موظف آخر.');
+    if (data.decision === 'approve' && !canDispose(c.get('actor'), request.disposition)) {
+      return fail(403, 'forbidden', 'تحتاج صلاحية إدارة القسم المختص بهذا القرار.');
+    }
+    const day = cairoRetailDay();
+    return writeOperation(c, 'retail.device.disposition.review', { deviceId, requestId, ...data }, (op, binds, actor) => [
+      db.prepare(`INSERT INTO retail_device_disposition_reviews (id, request_id, decision, reason, actor_id, decided_on, loss_minor)
+        VALUES (${op}, ?, ?, ?, ?, ?, (
+          SELECT s.unit_cost_minor FROM retail_device_dispositions q
+          JOIN retail_return_devices r USING (return_id, device_id)
+          JOIN retail_device_sales s USING (invoice_id, product_id, device_id)
+          WHERE q.id = ? AND q.disposition = 'write_off' AND ? = 'approve'
+        ))`).bind(...binds, requestId, data.decision, data.reason, actor, day, requestId, data.decision),
+    ]);
   });
 
   routes.post('/retail/devices/:id/quarantine-resolution', permit('inventory.manage'), async c => {

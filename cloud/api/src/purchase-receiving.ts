@@ -50,6 +50,23 @@ export function purchaseReceiving(writeOperation: typeof write) {
     return paginated(c, data, Number(total.results[0]?.total ?? 0), paging);
   });
 
+  routes.post('/purchases/:id/receipts/validate-devices', permit('suppliers.manage'), permit('inventory.manage'), async c => {
+    const purchaseId = identifier.parse(c.req.param('id'));
+    const { devices } = await body(c, z.strictObject({ devices: z.array(retailDeviceInput).min(1).max(200) }));
+    const db = c.env.DB;
+    const [purchase, existing] = await db.batch<{ position: number }>([
+      db.prepare('SELECT 1 FROM purchases WHERE id = ?').bind(purchaseId),
+      db.prepare(`SELECT CAST(j.key AS INTEGER) AS position FROM json_each(?) j
+        WHERE EXISTS (SELECT 1 FROM retail_devices d WHERE d.status <> 'voided' AND (
+          d.serial_number = json_extract(j.value, '$.serial_number') COLLATE NOCASE
+          OR d.imei1 IN (json_extract(j.value, '$.imei1'), json_extract(j.value, '$.imei2'))
+          OR d.imei2 IN (json_extract(j.value, '$.imei1'), json_extract(j.value, '$.imei2'))
+        )) ORDER BY position`).bind(JSON.stringify(devices)),
+    ]);
+    if (!purchase.results.length) return fail(404, 'not_found', 'فاتورة الشراء غير موجودة.');
+    return c.json({ success: true, data: { duplicate_positions: existing.results.map(row => Number(row.position)) } });
+  });
+
   routes.post('/purchases/:id/receipts', permit('suppliers.manage'), permit('inventory.manage'), async c => {
     const purchaseId = identifier.parse(c.req.param('id'));
     const data = await body(c, receiptInput);

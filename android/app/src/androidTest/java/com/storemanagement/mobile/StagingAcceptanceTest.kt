@@ -50,13 +50,9 @@ class StagingAcceptanceTest {
     }
 
     @Test
-    fun signsInReadsAndCreatesProductAndSignsOutAgainstIsolatedWorker() {
+    fun sellsTrackedDeviceAndClosesShiftAgainstIsolatedWorker() {
         assertEquals("http://127.0.0.1:8787/api/", BuildConfig.API_BASE_URL)
-        waitForText("سجّل الدخول للمتابعة")
-        compose.onNodeWithText("اسم المستخدم").performTextReplacement("emulator-operator")
-        compose.onNodeWithText("كلمة المرور").performTextReplacement("hilal-emulator-fixture-only")
-        compose.onNodeWithText("دخول").performScrollTo().performClick()
-        waitForText("مسؤول محاكي هلال")
+        signIn("emulator-operator", "مسؤول محاكي هلال")
 
         compose.onNodeWithTag("store-tab-Products").performSemanticsAction(SemanticsActions.OnClick)
         waitForText("دفتر ملاحظات")
@@ -75,8 +71,39 @@ class StagingAcceptanceTest {
         compose.onNodeWithText("عهدة الفتح بالجنيه").performTextReplacement("50.00")
         compose.onNodeWithTag(retailShiftConfirmTag).performClick()
         waitForText("درج محاكي هلال")
-        compose.onNodeWithTag(retailShiftCloseTag).performScrollTo().performClick()
-        compose.onNodeWithText("النقد الفعلي بالجنيه").performTextReplacement("49.00")
+
+        openMenuEntry("retail-menu-checkout")
+        val phone = "هاتف محاكي هلال"
+        val barcode = "HILAL-EMU-TRACKED"
+        val serial = "HILAL-EMU-IMEI"
+        val imei = "490154203237518"
+        waitForText("اسم المنتج أو الباركود")
+        compose.onNodeWithText("اسم المنتج أو الباركود").performTextReplacement(barcode)
+        compose.onNodeWithContentDescription("بحث عن منتج").performSemanticsAction(SemanticsActions.OnClick)
+        waitForText(phone)
+        compose.onNodeWithTag("cashier-add-$barcode").performSemanticsAction(SemanticsActions.OnClick)
+        clickText("إتمام البيع")
+        waitForText("تحصيل الفاتورة")
+        clickText("$phone · اختيار الأجهزة 0/1")
+        compose.onNodeWithText("الرقم التسلسلي أو IMEI").performTextReplacement(imei)
+        waitForText("$serial · $imei")
+        clickText("$serial · $imei")
+        clickText("اعتماد الأجهزة")
+        waitForText("$phone · اختيار الأجهزة 1/1")
+        waitForText("بطاقة بالجنيه")
+        compose.onNodeWithText("نقدي بالجنيه").performScrollTo().performTextReplacement("30.00")
+        compose.onNodeWithText("بطاقة بالجنيه").performScrollTo().performTextReplacement("20.00")
+        compose.onNodeWithText("مرجع بطاقة (اختياري)").performScrollTo().performTextReplacement("EMULATOR-CARD")
+        clickText("تأكيد البيع")
+        waitForText("تمت عملية البيع")
+        clickText("تم")
+
+        openRetailMenu("retail-menu-shifts", retailShiftScreenTag)
+        waitForText("درج محاكي هلال")
+        clickText("درج محاكي هلال")
+        waitFor("open shift details") { compose.onAllNodes(hasTestTag(retailShiftCloseTag)).fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithTag(retailShiftCloseTag).performScrollTo().performSemanticsAction(SemanticsActions.OnClick)
+        compose.onNodeWithText("النقد الفعلي بالجنيه").performTextReplacement("79.00")
         compose.onNodeWithText("سبب الفرق (مطلوب)").performScrollTo().performTextReplacement("فرق اختبار المحاكي")
         compose.onNodeWithTag(retailShiftConfirmTag).performClick()
         waitForText("تنتظر الاعتماد")
@@ -86,22 +113,52 @@ class StagingAcceptanceTest {
         val deviceSearch = compose.onNodeWithText("الرقم التسلسلي أو IMEI")
         deviceSearch.performTextReplacement("NO-EMULATOR-DEVICE")
         waitForText("لا توجد أجهزة مطابقة.")
-        deviceSearch.performTextReplacement("490154203237518")
-        waitForText("HILAL-EMU-IMEI")
-        compose.onNode(hasText("HILAL-EMU-IMEI") and hasClickAction()).performSemanticsAction(SemanticsActions.OnClick)
+        deviceSearch.performTextReplacement(imei)
+        waitForText(serial)
+        clickText(serial)
         waitForText("استلام المخزون")
-        waitForText("490154203237518")
+        waitForText(imei)
         waitForText("ضمان ساري")
 
-        compose.onNodeWithContentDescription("تسجيل الخروج").performClick()
+        signOut()
+        signIn("emulator-reviewer", "مراجع محاكي هلال")
+        openRetailMenu("retail-menu-shifts", retailShiftScreenTag)
+        waitForText("درج محاكي هلال")
+        clickText("درج محاكي هلال")
+        waitForText("اعتماد فرق الوردية")
+        clickText("اعتماد فرق الوردية")
+        compose.onNodeWithText("سبب الاعتماد").performScrollTo().performTextReplacement("راجعت فرق اختبار المحاكي")
+        compose.onNodeWithTag(retailShiftConfirmTag).performSemanticsAction(SemanticsActions.OnClick)
+        waitForText("معتمدة")
+        signOut()
+    }
+
+    private fun signIn(username: String, name: String) {
+        waitForText("سجّل الدخول للمتابعة")
+        compose.onNodeWithText("اسم المستخدم").performTextReplacement(username)
+        compose.onNodeWithText("كلمة المرور").performTextReplacement("hilal-emulator-fixture-only")
+        compose.onNodeWithText("دخول").performScrollTo().performClick()
+        waitForText(name)
+    }
+
+    private fun signOut() {
+        compose.onNodeWithContentDescription("تسجيل الخروج").performSemanticsAction(SemanticsActions.OnClick)
         waitForText("سجّل الدخول للمتابعة")
     }
 
+    private fun clickText(text: String) {
+        compose.onNode(hasText(text) and hasClickAction()).performSemanticsAction(SemanticsActions.OnClick)
+    }
+
     private fun openRetailMenu(menu: String, screen: String) {
+        openMenuEntry(menu)
+        waitFor("screen '$screen'") { compose.onAllNodes(hasTestTag(screen)).fetchSemanticsNodes().isNotEmpty() }
+    }
+
+    private fun openMenuEntry(menu: String) {
         compose.onNodeWithTag("store-tab-More").performSemanticsAction(SemanticsActions.OnClick)
         val entry = compose.onNodeWithTag(menu).performScrollTo()
         entry.performSemanticsAction(SemanticsActions.OnClick)
-        waitFor("screen '$screen'") { compose.onAllNodes(hasTestTag(screen)).fetchSemanticsNodes().isNotEmpty() }
     }
 
     private fun waitForText(text: String) = waitFor("visible text '$text'") {

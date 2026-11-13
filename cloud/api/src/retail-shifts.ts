@@ -11,8 +11,9 @@ const methods = ['cash', 'card', 'wallet', 'bank_transfer'] as const;
 const statuses = ['open', 'closed', 'pending_approval', 'approved'] as const;
 const operates = 'retail.shifts.operate';
 const approves = 'retail.shifts.approve';
+const closesInEmergency = 'retail.shifts.emergency_close';
 const managesCash = 'retail.cash.manage';
-export const retailPermissions = [operates, approves, managesCash];
+export const retailPermissions = [operates, approves, closesInEmergency, managesCash];
 const cashMovementKinds = ['safe_deposit', 'safe_withdrawal', 'general_expense'] as const;
 
 export const retailPayments = z.array(z.strictObject({
@@ -68,7 +69,7 @@ export function retailTenderStatements(db: D1Database, operation: string, binds:
 
 function shiftScope(c: ApiContext) {
   const actor = c.get('actor');
-  if (hasPermission(actor, approves)) return { clause: '', values: [] };
+  if (hasPermission(actor, approves) || hasPermission(actor, closesInEmergency)) return { clause: '', values: [] };
   if (hasPermission(actor, operates)) return { clause: ' AND s.actor_id = ?', values: [actor.id] };
   return fail(403, 'forbidden', 'ليست لديك صلاحية لعرض الورديات.');
 }
@@ -102,6 +103,10 @@ const closeInput = z.strictObject({
   observed_minor: amount,
   expected_minor: z.number().int().min(-maxBookMinor).max(maxBookMinor).optional(),
   reason: reason.default(''),
+});
+const emergencyCloseInput = closeInput.extend({
+  expected_minor: z.number().int().min(-maxBookMinor).max(maxBookMinor),
+  reason: reason.min(1),
 });
 const approvalInput = z.strictObject({ reason: reason.refine(value => value.length > 0) });
 const movementInput = z.strictObject({
@@ -180,6 +185,17 @@ export function retailShifts(writeOperation: typeof write) {
       c.env.DB.prepare(`INSERT INTO retail_shift_closures(shift_id, operation_id, closed_by, expected_minor, observed_minor, close_reason, closed_at)
         VALUES (?, ${op}, ?, COALESCE(?, (SELECT expected_minor FROM retail_shift_positions WHERE id = ?), 0), ?, ?, ?)`)
         .bind(shiftId, ...binds, actor, data.expected_minor ?? null, shiftId, data.observed_minor, data.reason, now),
+    ], () => shiftDetail(c, shiftId, 201));
+  });
+
+  routes.post('/retail/shifts/:id/emergency-close', permit(closesInEmergency), async c => {
+    const shiftId = identifier.parse(c.req.param('id'));
+    const data = await body(c, emergencyCloseInput);
+    const now = new Date().toISOString();
+    return writeOperation(c, 'retail.shift.emergency_close', { shiftId, ...data }, (op, binds, actor) => [
+      c.env.DB.prepare(`INSERT INTO retail_shift_closures(shift_id, operation_id, closed_by, expected_minor,
+        observed_minor, close_reason, closed_at, emergency_close) VALUES (?, ${op}, ?, ?, ?, ?, ?, 1)`)
+        .bind(shiftId, ...binds, actor, data.expected_minor, data.observed_minor, data.reason, now),
     ], () => shiftDetail(c, shiftId, 201));
   });
 

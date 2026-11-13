@@ -167,7 +167,7 @@ export function DamageDetail() {
         <dl className="invoice-summary">
           <div><dt>المنتج</dt><dd>{dataText(result.product_name)}</dd></div>
           <div><dt>الكمية</dt><dd>{dataText(result.quantity)}</dd></div>
-          <div><dt>قيمة الوحدة</dt><dd>{money(result.unit_value_minor)}</dd></div>
+          {'unit_value_minor' in result && <div><dt>قيمة الوحدة</dt><dd>{money(result.unit_value_minor)}</dd></div>}
           {'verified_inventory_loss_minor' in result && <div><dt>تكلفة الهالك المثبتة</dt><dd>{result.verified_inventory_loss_minor == null ? 'غير مثبتة' : money(result.verified_inventory_loss_minor)}</dd></div>}
           {result.legacy_stock_before != null && <div><dt>الرصيد وقت تسجيل الهالك</dt>
             <dd>{dataText(result.legacy_stock_before)} ← {dataText(result.legacy_stock_after)}</dd></div>}
@@ -180,7 +180,7 @@ export function DamageDetail() {
       <DetailTable title="التصحيحات المرتبطة" rows={result.corrections} columns={[
         { key: 'id', label: 'رقم التصحيح' }, dateColumn('created_at', 'تاريخ التسجيل'),
         countColumn('previous_quantity', 'الكمية السابقة'), countColumn('quantity', 'الكمية الجديدة'),
-        moneyColumn('unit_value_minor', 'قيمة الوحدة'), { key: 'reason', label: 'السبب' },
+        ...('unit_value_minor' in result ? [moneyColumn('unit_value_minor', 'قيمة الوحدة')] : []), { key: 'reason', label: 'السبب' },
       ]} />
     </>}
   </>

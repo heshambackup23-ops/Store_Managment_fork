@@ -117,6 +117,7 @@ catalog.get('/products', permit('products.view'), async (c) => {
   }).parse(c.req.query())
   const predicates = []
   const parameters = []
+  let order = 'p.id DESC'
   if (filter.active !== 'all') {
     predicates.push('p.active = ?')
     parameters.push(Number(filter.active === 'true'))
@@ -133,10 +134,15 @@ catalog.get('/products', permit('products.view'), async (c) => {
     predicates.push(filter.in_stock === 'true' ? 'p.stock > 0' : 'p.stock = 0')
   }
   if (filter.q) {
-    predicates.push(`(p.name ${prefixOperator} OR p.variant_group ${prefixOperator} OR p.barcode = ? OR p.pack_barcode = ?)`)
-    parameters.push(searchPrefix(filter.q), searchPrefix(filter.q), filter.q, filter.q)
+    const literal = '?' + (parameters.length + 3)
+    const barcodeMatch = `(p.barcode = ${literal} OR p.pack_barcode = ${literal})`
+    predicates.push(`(p.name ${prefixOperator} OR p.variant_group ${prefixOperator} OR ${barcodeMatch}
+      OR instr(lower(p.compatible_models), lower(${literal})) > 0)`)
+    parameters.push(searchPrefix(filter.q), searchPrefix(filter.q), filter.q)
+    order = `${barcodeMatch} DESC, ${order}`
   }
-  return selectPage(c, productColumns, productTable, predicates.length ? 'WHERE ' + predicates.join(' AND ') : '', parameters, 'p.id DESC', row => productView(c, row))
+  return selectPage(c, productColumns, productTable, predicates.length ? 'WHERE ' + predicates.join(' AND ') : '',
+    parameters, order, row => productView(c, row))
 })
 
 catalog.get('/products/:id', permit('products.view'), async (c) =>

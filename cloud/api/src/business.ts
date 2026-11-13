@@ -8,11 +8,13 @@ import { retailFinanceReports, retailTenderMatch } from './retail-finance-report
 import { retailSalesReport } from './retail-sales-report';
 import { cairoRetailDay, retailPayments, retailPermissions, retailShifts, retailTenderInput, retailTenderStatements } from './retail-shifts';
 import { retailSafe, retailSafePermission } from './retail-safe';
-import { deviceWarrantyView, retailDeviceErrors, retailDevices } from './retail-devices';
+import { deviceDispositionApprove, deviceWarrantyView, retailDeviceErrors, retailDevices } from './retail-devices';
 import { procurementErrors, purchaseOrderDetail, purchaseOrderItems, purchaseOrderStatements, retailProcurement } from './retail-procurement';
 import { retailQuantityCosts } from './retail-quantity-costs';
 import { retailReturns } from './retail-returns';
+import { approveRetailDiscount, retailDiscounts } from './retail-discounts';
 import { retailStocktakes, stocktakePermissions } from './retail-stocktakes';
+import { retailSerialInventoryErrors } from './retail-serial-inventory';
 import { walletReconciliation } from './wallet-reconciliation';
 import { walletReporting } from './wallet-reporting';
 
@@ -27,7 +29,9 @@ export const businessPermissions = [
   'maintenance.view', 'maintenance.manage', 'maintenance.pay',
   'reports.view',
   ...retailPermissions,
+  approveRetailDiscount,
   retailSafePermission,
+  deviceDispositionApprove,
   ...stocktakePermissions,
 ];
 
@@ -90,6 +94,9 @@ function businessError(error: unknown): never {
     [409, 'RETAIL_SAFE_BALANCE', 'الرصيد المتوقع للخزنة لا يسمح بهذه الحركة.'],
     [422, 'RETAIL_SAFE_REASON_REQUIRED', 'اذكر سبب الفرق بين الرصيد المتوقع والرصيد الفعلي للخزنة.'],
     [403, 'RETAIL_SHIFT_NOT_OWNED', 'يمكن لموظف الوردية وحده تسجيل إقفالها.'],
+    [404, 'RETAIL_SHIFT_NOT_FOUND', 'الوردية المطلوبة غير موجودة.'],
+    [422, 'RETAIL_EMERGENCY_CLOSE_OWN_SHIFT', 'استخدم الإقفال العادي لورديتك.'],
+    [422, 'RETAIL_EMERGENCY_CLOSE_REASON', 'اذكر سبب الإقفال الاستثنائي.'],
     [409, 'RETAIL_SHIFT_NOT_OPEN', 'الوردية مغلقة بالفعل.'],
     [409, 'RETAIL_SHIFT_BALANCE_CHANGED', 'تغيّر الرصيد المتوقع. حدّث الوردية وأعد الجرد.'],
     [422, 'RETAIL_SHIFT_REASON_REQUIRED', 'اذكر سبب الفرق بين الرصيد المتوقع والرصيد الفعلي.'],
@@ -100,6 +107,13 @@ function businessError(error: unknown): never {
     [404, 'RETAIL_TENDER_NOT_FOUND', 'حركة الدفع غير النقدية غير موجودة.'],
     [409, 'RETAIL_TENDER_ALREADY_MATCHED', 'سُجّلت مطابقة لهذه الحركة بالفعل.'],
     [422, 'RETAIL_TENDER_MATCH_AMOUNT', 'مبلغ كشف الحساب واتجاهه يجب أن يطابقا الحركة.'],
+    [422, 'RETAIL_SETTLEMENT_NET', 'صافي الكشف يجب أن يساوي مجموع الحركات بعد خصم الرسوم.'],
+    [409, 'RETAIL_SETTLEMENT_REFERENCE', 'مرجع التسوية مسجل لهذا اليوم والقناة.'],
+    [404, 'RETAIL_SETTLEMENT_NOT_FOUND', 'سجل التسوية غير موجود.'],
+    [409, 'RETAIL_DISCOUNT_APPROVAL_REQUIRED', 'الخصم يتجاوز الحد. اطلب اعتماد مشرف وأدخل رقم الطلب المعتمد.'],
+    [409, 'RETAIL_DISCOUNT_APPROVAL_INVALID', 'اعتماد الخصم منتهي أو مستخدم أو غير مطابق لهذه السلة.'],
+    [409, 'RETAIL_DISCOUNT_EXPIRED', 'انتهت صلاحية طلب الخصم أو أنه غير موجود.'],
+    [403, 'RETAIL_DISCOUNT_SEPARATION', 'يجب أن يعتمد الخصم مشرف غير مقدم الطلب.'],
   ] as const;
   const retailRule = retailRules.find(([, code]) => message.includes(code));
   if (retailRule) return fail(retailRule[0], retailRule[1], retailRule[2]);
@@ -137,6 +151,7 @@ function businessError(error: unknown): never {
     ['PURCHASE_PRODUCT_UNAVAILABLE', 'أحد منتجات الاستلام غير متاح.'],
     ['PURCHASE_RECEIPT_EMPTY', 'سند الاستلام لا يحتوي على أصناف.'],
     ...retailDeviceErrors,
+    ...retailSerialInventoryErrors,
     ...procurementErrors,
     ['RETAIL_OPENING_VALUE_STALE', 'راجع الرصيد وآخر حركة قبل اعتماد قيمة افتتاحية لصنف كمي غير مقيّم.'],
     ['RETAIL_INVENTORY_VALUE_LIMIT', 'قيمة المخزون تتجاوز النطاق المسموح.'],
@@ -296,6 +311,7 @@ const checkout = z.object({
   paid_minor: money,
   ...retailTenderInput,
   expected_total_minor: money.optional(),
+  discount_request_id: id.optional(),
   invoice_date: date.optional(),
   due_date: date.nullish(),
   notes: note.optional(),
@@ -374,6 +390,11 @@ export function checkoutInvoice(c: ApiContext, data: z.infer<typeof checkout>, o
       INSERT INTO invoice_payments (id, invoice_id, amount_minor, source_type, actor_id)
       SELECT id, id, paid_minor, 'checkout', ? FROM invoices WHERE id = ${op} AND paid_minor > 0
     `).bind(actor, ...binds));
+    if (items.some(item => (item.unit_discount_minor ?? 0) > 0)) {
+      statements.push(db.prepare(`INSERT INTO retail_invoice_discount_controls(invoice_id,request_id,cashier_id,limit_bps)
+        SELECT ${op}, ?, ?, retail_discount_limit_bps FROM settings WHERE id = 1`)
+        .bind(...binds, data.discount_request_id ?? null, actor));
+    }
     return [...statements, ...retailTenderStatements(db, op, binds, actor, 'invoice_payment', data)];
   }, output ?? (legacy ? invoiceId => legacyCheckoutResponse(c, invoiceId, legacy.receivedMinor) : undefined));
 }
@@ -425,8 +446,8 @@ async function legacyCheckoutResponse(c: ApiContext, invoiceId: number, received
   } }, 201);
 }
 
-type CashierProduct = { id: number; name: string; price_minor: number; stock: number; barcode: string | null; tracking: string; pack_barcode: string | null; units_per_pack: number };
-const cashierProducts = 'SELECT id, name, price_minor, stock, barcode, tracking, pack_barcode, units_per_pack FROM products WHERE active = 1';
+type CashierProduct = { id: number; name: string; price_minor: number; stock: number; barcode: string | null; tracking: string; pack_barcode: string | null; units_per_pack: number; compatible_models: string | null };
+const cashierProducts = 'SELECT id, name, price_minor, stock, barcode, tracking, pack_barcode, units_per_pack, compatible_models FROM products WHERE active = 1';
 const asCashierProduct = ({ price_minor, ...product }: CashierProduct) => ({ ...product, price: moneyString(price_minor) });
 
 business.get('/cashier/products', permit('invoices.create'), async c => {
@@ -438,8 +459,9 @@ business.get('/cashier/products', permit('invoices.create'), async c => {
   }
   const exact = await db.prepare(cashierProducts + ' AND (barcode = ? OR pack_barcode = ?)').bind(query, query).first<CashierProduct>();
   if (exact) return c.json({ exact: true, data: [asCashierProduct(exact)] });
-  const items = await db.prepare(cashierProducts + " AND (name LIKE ? ESCAPE '\\' OR variant_group LIKE ? ESCAPE '\\') ORDER BY stock = 0, name, id LIMIT 20")
-    .bind(searchPrefix(query), searchPrefix(query)).all<CashierProduct>();
+  const items = await db.prepare(cashierProducts + ` AND (name LIKE ? ESCAPE '\\' OR variant_group LIKE ? ESCAPE '\\'
+    OR instr(lower(compatible_models), lower(?)) > 0) ORDER BY stock = 0, name, id LIMIT 20`)
+    .bind(searchPrefix(query), searchPrefix(query), query).all<CashierProduct>();
   return c.json({ exact: false, data: items.results.map(asCashierProduct) });
 });
 
@@ -1046,6 +1068,18 @@ function sharedCashStatement(c: ApiContext, op: string, binds: Bind[], actor: nu
     .bind(shiftId, actor, source, ...binds);
 }
 
+const walletSharedSources = {
+  wallet_collection: ['wallet_debt_payments', 'amount_minor'],
+  wallet_expense: ['wallet_cash_entries', 'delta_minor'],
+  wallet_profit: ['wallet_profit_withdrawals', '-amount_minor'],
+} as const;
+
+function sharedWalletStatement(c: ApiContext, op: string, binds: Bind[], actor: number, shiftId: number, source: keyof typeof walletSharedSources) {
+  const [table, delta] = walletSharedSources[source];
+  return c.env.DB.prepare(`INSERT INTO retail_wallet_drawer(operation_id,shift_id,actor_id,source,delta_minor)
+    SELECT id, ?, ?, ?, ${delta} FROM ${table} WHERE id = ${op}`).bind(shiftId, actor, source, ...binds);
+}
+
 business.post('/wallets/:id/transactions', permit('wallets.transact'), async c => {
   const walletId = identifier(c);
   const data = await body(c, walletTransaction);
@@ -1112,8 +1146,8 @@ business.get('/wallet-debts', permit('wallets.view'), c =>
   list(c, 'd.*, c.name AS customer_name', 'wallet_debts d JOIN customers c ON c.id = d.customer_id', [], 'd.id DESC'));
 
 business.get('/wallet-cash', permit('wallets.cash'), c =>
-  list(c, 'e.*, r.id AS reversed_by',
-    'wallet_cash_entries e LEFT JOIN wallet_cash_entries r ON r.reversal_of = e.id', [], 'e.id DESC'));
+  list(c, 'e.*, r.id AS reversed_by, s.shift_id AS shared_shift_id',
+    'wallet_cash_entries e LEFT JOIN wallet_cash_entries r ON r.reversal_of = e.id LEFT JOIN retail_wallet_drawer s ON s.operation_id = e.id', [], 'e.id DESC'));
 
 const cashEntry = z.object({
   kind: z.enum(['opening', 'owner_deposit', 'owner_withdraw', 'correction', 'expense']),
@@ -1121,22 +1155,27 @@ const cashEntry = z.object({
   category: name.optional(),
   business_day: date.optional(),
   note: reason,
+  shared_shift_id: id.optional(),
 }).strict().refine(data => {
+  if (data.shared_shift_id !== undefined && data.kind !== 'expense') return false;
   if (data.kind === 'correction') return data.amount_minor !== 0;
   return data.amount_minor > 0 && (data.kind !== 'expense' || Boolean(data.category));
 });
 
 business.post('/wallet-cash', permit('wallets.cash'), async c => {
   const data = await body(c, cashEntry);
+  sharedDrawer(c, data.shared_shift_id);
   const day = cairoDay();
   const entryDate = data.business_day ?? day;
   if (entryDate > day) return fail(400, 'INVALID_CASH_DATE', 'تاريخ القيد لا يمكن أن يكون في المستقبل.');
+  if (data.shared_shift_id !== undefined && entryDate !== day) return fail(422, 'SHARED_DRAWER_DATE', 'سجّل مصروف الدرج المشترك في يوم العمل الحالي.');
   const delta = data.kind === 'owner_withdraw' || data.kind === 'expense' ? -data.amount_minor : data.amount_minor;
   return write(c, 'wallet.cash', data, (op, binds, actor) => [
     c.env.DB.prepare(`
       INSERT INTO wallet_cash_entries (id, kind, delta_minor, business_day, category, note, actor_id)
       VALUES (${op}, ?, ?, ?, ?, ?, ?)
     `).bind(...binds, data.kind, delta, entryDate, data.category ?? '', data.note, actor),
+    ...(data.shared_shift_id === undefined ? [] : [sharedWalletStatement(c, op, binds, actor, data.shared_shift_id, 'wallet_expense')]),
   ]);
 });
 
@@ -1145,7 +1184,13 @@ business.post('/wallet-cash/:id/reverse', permit('wallets.reverse'), async c => 
     return fail(403, 'FORBIDDEN', 'عكس مصروف الدرج يتطلب صلاحية حركات النقدية.');
   }
   const expenseId = identifier(c);
-  const data = await body(c, z.object({ reason }).strict());
+  const data = await body(c, z.object({ reason, shared_shift_id: id.optional() }).strict());
+  const shared = await c.env.DB.prepare('SELECT shift_id FROM retail_wallet_drawer WHERE operation_id = ? AND source = ?')
+    .bind(expenseId, 'wallet_expense').first();
+  if (Boolean(shared) !== (data.shared_shift_id !== undefined)) {
+    return fail(422, 'SHARED_DRAWER_REVERSAL', 'عكس المصروف يتبع نوع الدرج الأصلي ويحتاج وردية مفتوحة عند استخدام الدرج المشترك.');
+  }
+  sharedDrawer(c, data.shared_shift_id);
   return write(c, 'wallet.expense.reverse', { expenseId, ...data }, (op, binds, actor) => [
     c.env.DB.prepare(`
       WITH original AS (SELECT * FROM wallet_cash_entries WHERE id = ? AND kind = 'expense')
@@ -1153,6 +1198,7 @@ business.post('/wallet-cash/:id/reverse', permit('wallets.reverse'), async c => 
       VALUES (${op}, 'expense_reversal', (SELECT -delta_minor FROM original), ?,
         (SELECT category FROM original), ?, ?, ?)
     `).bind(expenseId, ...binds, cairoDay(), data.reason, expenseId, actor),
+    ...(data.shared_shift_id === undefined ? [] : [sharedWalletStatement(c, op, binds, actor, data.shared_shift_id, 'wallet_expense')]),
   ]);
 });
 
@@ -1166,42 +1212,63 @@ business.get('/wallet-profit-withdrawals', permit('wallets.cash'), c =>
     'wallet_profit_withdrawals p LEFT JOIN wallets w ON w.id = p.wallet_id', [], 'p.id DESC'));
 
 business.post('/wallet-profit-withdrawals', permit('wallets.cash'), permit('wallets.profit'), async c => {
-  const data = await body(c, z.object({ amount_minor: positiveMoney, wallet_id: id.nullish(), note: note.default('') }).strict());
+  const data = await body(c, z.object({ amount_minor: positiveMoney, wallet_id: id.nullish(), note: note.default(''),
+    shared_shift_id: id.optional() }).strict().refine(input => input.wallet_id == null || input.shared_shift_id === undefined));
+  sharedDrawer(c, data.shared_shift_id);
   return write(c, 'wallet.profit.withdraw', data, (op, binds, actor) => [
     c.env.DB.prepare(`
-      INSERT INTO wallet_profit_withdrawals (id, wallet_id, amount_minor, business_day, note, actor_id)
-      VALUES (${op}, ?, ?, ?, ?, ?)
-    `).bind(...binds, data.wallet_id ?? null, data.amount_minor, cairoDay(), data.note, actor),
+      INSERT INTO wallet_profit_withdrawals (id, wallet_id, amount_minor, business_day, note, actor_id, shared_shift_id)
+      VALUES (${op}, ?, ?, ?, ?, ?, ?)
+    `).bind(...binds, data.wallet_id ?? null, data.amount_minor, cairoDay(), data.note, actor, data.shared_shift_id ?? null),
+    ...(data.shared_shift_id === undefined ? [] : [sharedWalletStatement(c, op, binds, actor, data.shared_shift_id, 'wallet_profit')]),
   ]);
 });
 
-const damageColumns = `d.*, d.unit_cost_minor AS unit_value_minor, d.quantity * d.unit_cost_minor AS total_value_minor,
-  COALESCE(d.legacy_product_name, p.name) AS product_name,
+const damageSummaryColumns = `COALESCE(d.legacy_product_name, p.name) AS product_name,
   CASE WHEN d.legacy_damage_fingerprint IS NULL THEN p.barcode ELSE d.legacy_product_barcode END AS product_barcode,
   r.id AS reversed_by, r.reason AS reversal_reason,
   EXISTS (SELECT 1 FROM damaged_stock_images img WHERE img.record_id = d.id) AS has_image`;
 const damageTables = `damaged_stock d JOIN products p ON p.id = d.product_id
   LEFT JOIN damaged_stock_reversals r ON r.damage_id = d.id`;
+const damageOperationalColumns = `d.id, d.product_id, d.quantity, d.reason, d.actor_id, d.created_at, d.damaged_on, d.notes,
+  d.legacy_damage_fingerprint, d.legacy_product_name, d.legacy_product_barcode, d.legacy_quantity,
+  d.legacy_stock_before, d.legacy_stock_after, d.legacy_created_by, d.legacy_created_by_name, d.legacy_updated_at`;
+const damageOperationalCorrections = `id, damage_id, previous_quantity, quantity, previous_reason, reason,
+  previous_damaged_on, damaged_on, previous_notes, notes, actor_id, created_at`;
+
+function canReadDamageCost(c: ApiContext) {
+  const actor = c.get('actor');
+  return hasPermission(actor, 'products.cost.view') || hasPermission(actor, 'products.cost.manage');
+}
+
+function damageColumns(includeCost: boolean) {
+  const fields = includeCost
+    ? 'd.*, d.unit_cost_minor AS unit_value_minor, d.quantity * d.unit_cost_minor AS total_value_minor'
+    : damageOperationalColumns;
+  return fields + ', ' + damageSummaryColumns;
+}
 
 business.get('/damaged', permit('damaged.view'), c => {
   const predicates: string[] = [];
   const values: Bind[] = [];
   filterPeriod(c, 'COALESCE(d.damaged_on, date(d.created_at))', predicates, values);
-  return list(c, damageColumns, damageTables + where(predicates), values, 'd.id DESC');
+  return list(c, damageColumns(canReadDamageCost(c)), damageTables + where(predicates), values, 'd.id DESC');
 });
 
 business.get('/reports/damaged', permit('damaged.view'), async c => {
   const predicates: string[] = [];
   const values: Bind[] = [];
   const range = filterPeriod(c, 'COALESCE(d.damaged_on, date(d.created_at))', predicates, values);
+  const includeCost = canReadDamageCost(c);
   const totals = await c.env.DB.prepare(`
     SELECT COUNT(CASE WHEN r.id IS NULL THEN 1 END) AS entries,
       COALESCE(SUM(CASE WHEN r.id IS NULL THEN d.quantity END), 0) AS units,
-      CAST(COALESCE(SUM(CASE WHEN r.id IS NULL THEN d.quantity * d.unit_cost_minor END), 0) AS TEXT) AS total_value_minor,
+      ${includeCost ? 'CAST(COALESCE(SUM(CASE WHEN r.id IS NULL THEN d.quantity * d.unit_cost_minor END), 0) AS TEXT) AS total_value_minor,' : ''}
       COUNT(r.id) AS voided_entries
     FROM damaged_stock d LEFT JOIN damaged_stock_reversals r ON r.damage_id = d.id
     ${where(predicates)}
-  `).bind(...values).first<{ entries: number; units: number; total_value_minor: string; voided_entries: number }>();
+  `).bind(...values).first<{ entries: number; units: number; total_value_minor?: string; voided_entries: number }>();
+  if (!includeCost) return ok(c, { ...range, ...totals });
   const totalMinor = Number(totals?.total_value_minor ?? 0);
   if (!Number.isSafeInteger(totalMinor)) return fail(409, 'aggregate_range', 'مجموع التقرير خارج النطاق الرقمي المدعوم.');
   return ok(c, { ...range, ...totals, total_value_minor: totalMinor });
@@ -1210,13 +1277,13 @@ business.get('/reports/damaged', permit('damaged.view'), async c => {
 business.get('/damaged/:id', permit('damaged.view'), async c => {
   const damageId = identifier(c);
   const db = c.env.DB;
-  const actor = c.get('actor');
-  const canReadCost = hasPermission(actor, 'products.cost.view') || hasPermission(actor, 'products.cost.manage');
+  const canReadCost = canReadDamageCost(c);
   const [records, corrections] = await db.batch([
-    db.prepare(`SELECT ${damageColumns}${canReadCost ? `, (SELECT damage_value_after_minor
+    db.prepare(`SELECT ${damageColumns(canReadCost)}${canReadCost ? `, (SELECT damage_value_after_minor
       FROM retail_quantity_movement_costs WHERE damage_id = d.id ORDER BY movement_id DESC LIMIT 1) AS verified_inventory_loss_minor` : ''}
       FROM ${damageTables} WHERE d.id = ?`).bind(damageId),
-    db.prepare('SELECT * FROM damaged_stock_corrections WHERE damage_id = ? ORDER BY id DESC LIMIT 100').bind(damageId),
+    db.prepare(`SELECT ${canReadCost ? '*' : damageOperationalCorrections}
+      FROM damaged_stock_corrections WHERE damage_id = ? ORDER BY id DESC LIMIT 100`).bind(damageId),
   ]);
   if (!records.results[0]) return fail(404, 'NOT_FOUND', 'سجل الهالك غير موجود.');
   return ok(c, { ...records.results[0], corrections: corrections.results });
@@ -1228,6 +1295,9 @@ const damageInput = z.object({
 
 business.post('/damaged', permit('damaged.manage'), async c => {
   const data = await body(c, damageInput.extend({ product_id: id }));
+  if (data.unit_value_minor !== undefined && !hasPermission(c.get('actor'), 'products.cost.manage')) {
+    return fail(403, 'COST_PERMISSION', 'إدخال قيمة وحدة الهالك يحتاج صلاحية إدارة التكلفة.');
+  }
   return write(c, 'damage.create', data, (op, binds, actor) => [
     c.env.DB.prepare(`
       WITH incoming AS (SELECT ? AS quantity, COALESCE(?, cost_minor) AS unit_value FROM products WHERE id = ?)
@@ -1242,6 +1312,9 @@ business.post('/damaged', permit('damaged.manage'), async c => {
 business.post('/damaged/:id/correct', permit('damaged.manage'), async c => {
   const damageId = identifier(c);
   const data = await body(c, damageInput);
+  if (data.unit_value_minor !== undefined && !hasPermission(c.get('actor'), 'products.cost.manage')) {
+    return fail(403, 'COST_PERMISSION', 'تعديل قيمة وحدة الهالك يحتاج صلاحية إدارة التكلفة.');
+  }
   return write(c, 'damage.correct', { damageId, ...data }, (op, binds, actor) => [
     c.env.DB.prepare(`
       WITH original AS (SELECT * FROM damaged_stock WHERE id = ?)
@@ -1419,7 +1492,7 @@ for (const endpoint of paymentEndpoints) {
     const source = retailSources[endpoint.table as keyof typeof retailSources];
     const data = source
       ? await body(c, endpoint.hasNote ? retailPaymentWithNote : retailPaymentBody)
-      : endpoint.table === 'maintenance_payments' ? await body(c, paymentBody.extend({ shared_shift_id: id.optional() }))
+      : ['maintenance_payments', 'wallet_debt_payments'].includes(endpoint.table) ? await body(c, paymentBody.extend({ shared_shift_id: id.optional() }))
         : await body(c, endpoint.hasNote ? paymentWithNote : paymentBody);
     const sharedShiftId = 'shared_shift_id' in data && typeof data.shared_shift_id === 'number' ? data.shared_shift_id : undefined;
     sharedDrawer(c, sharedShiftId);
@@ -1437,7 +1510,9 @@ for (const endpoint of paymentEndpoints) {
       }
       if (source) statements.push(...retailTenderStatements(c.env.DB, op, binds, actor, source,
         data as z.infer<typeof retailPaymentBody>));
-      if (sharedShiftId !== undefined) statements.push(sharedCashStatement(c, op, binds, actor, sharedShiftId, 'maintenance_cash'));
+      if (sharedShiftId !== undefined) statements.push(endpoint.table === 'wallet_debt_payments'
+        ? sharedWalletStatement(c, op, binds, actor, sharedShiftId, 'wallet_collection')
+        : sharedCashStatement(c, op, binds, actor, sharedShiftId, 'maintenance_cash'));
       return statements;
     });
   });
@@ -1495,3 +1570,4 @@ business.route('/', retailShifts(write));
 business.route('/', retailSafe(write));
 business.route('/', retailFinanceReports);
 business.route('/', retailTenderMatch(write));
+business.route('/', retailDiscounts(write));

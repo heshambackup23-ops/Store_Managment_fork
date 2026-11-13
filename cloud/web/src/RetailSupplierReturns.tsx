@@ -30,7 +30,10 @@ export function RetailPurchaseSummary({ purchaseId, revision, canReturn, onSaved
     <div className="table-scroll"><table><thead><tr>{['الصنف', 'مطلوب', 'مستلم', 'باقي الاستلام', 'مردود'].map(label => <th key={label} scope="col">{label}</th>)}</tr></thead>
       <tbody>{purchase.items.map(item => <tr key={item.product_id}><th scope="row">{item.product_name}</th><td>{item.quantity}</td><td>{item.received_quantity}</td><td>{item.remaining_quantity}</td><td>{item.returned_quantity}</td></tr>)}</tbody></table></div>
     {canReturn && purchase.items.some(item => item.received_quantity > item.returned_quantity) && <button className="secondary" onClick={() => setOpen(true)}>مرتجع إلى المورد</button>}
-    {history.length > 0 && <ul className="dash-list" aria-label="إشعارات المورد الدائنة">{history.map(row => <li key={String(row.id)}>إشعار دائن {String(row.id)} · {money(row.credit_minor)} · {String(row.reason)}</li>)}</ul>}
+    {history.length > 0 && <ul className="dash-list" aria-label="إشعارات المورد الدائنة">{history.map(row => <li key={String(row.id)}>إشعار دائن {String(row.id)} · {money(row.credit_minor)} · {String(row.reason)}
+      {Boolean(row.vendor_reference) && <> · المرجع <bdi>{String(row.vendor_reference)}</bdi></>}
+      {Number(row.unapplied_credit_minor) > 0 && <> · رصيد دائن عند المورد للتسوية {money(row.unapplied_credit_minor)}</>}
+    </li>)}</ul>}
     {open && <SupplierReturnDialog purchaseId={purchaseId} items={purchase.items} close={() => setOpen(false)} done={() => { setOpen(false); onSaved() }} />}
   </section>
 }
