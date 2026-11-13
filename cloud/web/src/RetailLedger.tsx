@@ -233,7 +233,7 @@ export function RetailLedger({ user }: { user: User }) {
 
   return <>
     <PageTitle title="دفتر الأستاذ وإقفال الشهر" description="تُرحّل حركات المتجر بتاريخ تسجيلها بتوقيت القاهرة، وتُعرض القيود بالجنيه المصري." />
-    <div className="panel toolbar">
+    <div className="panel panel-inner form-grid section-space">
       <label className="field"><span>الدفتر</span><select value={book} onChange={event => changeScope({ book: event.target.value, view: '' })}>
         {Object.entries(books).map(([id, name]) => <option key={id} value={id}>{name}</option>)}</select></label>
       <label className="field"><span>شهر العمل</span><input type="month" value={period} min="2000-01" max={settings?.today.slice(0, 7)}
@@ -270,18 +270,18 @@ export function RetailLedger({ user }: { user: User }) {
           </ul>
         </section>}
       </section>
-      <div className="panel toolbar section-space" aria-label="عرض الدفتر">
+      <div className="panel panel-inner actions section-space" aria-label="عرض الدفتر">
         {([['trial', 'ميزان المراجعة'], ['entries', 'قيود اليومية'], ...(book === 'operating' ? [['issues', 'حركات تحتاج مراجعة']] : [])] as [View, string][])
           .map(([value, label]) => <button type="button" key={value} aria-pressed={view === value} className={view === value ? 'primary' : 'secondary'}
             onClick={() => changeScope({ view: value })}>{label}</button>)}
       </div>
-      {view === 'trial' && <div className="panel table-wrap section-space"><table>
+      {view === 'trial' && <div className="panel table-scroll section-space" tabIndex={0} role="region" aria-label="ميزان المراجعة"><table>
         <thead><tr><th>الحساب</th><th>رصيد أول المدة</th><th>مدين خلال الشهر</th><th>دائن خلال الشهر</th><th>رصيد آخر المدة</th></tr></thead>
         <tbody>{report.trial_balance.map(row => <tr key={row.code}><td><bdi>{row.code}</bdi> · {row.name}</td>
           <td>{displayMoney(row.opening_minor)}</td><td>{displayMoney(row.debit_minor)}</td><td>{displayMoney(row.credit_minor)}</td><td>{displayMoney(row.closing_minor)}</td></tr>)}</tbody>
         {total && <tfoot><tr><th colSpan={2}>إجمالي حركة الشهر</th><td>{displayMoney(total.debit)}</td><td>{displayMoney(total.credit)}</td><td></td></tr></tfoot>}
       </table></div>}
-      {view === 'entries' && <div className="panel table-wrap section-space"><table>
+      {view === 'entries' && <div className="panel table-scroll section-space" tabIndex={0} role="region" aria-label="قيود اليومية"><table>
         <thead><tr><th>رقم القيد</th><th>التاريخ</th><th>البيان</th><th>الحسابات</th><th>الإجراء</th></tr></thead>
         <tbody>{(rows as Entry[]).map(row => <tr key={row.id}><td><bdi>#{row.id}</bdi></td><td><bdi>{row.posting_day}</bdi></td>
           <td>{row.description}<br /><small>{kindNames[row.kind]} · {row.actor_name} {documentLink(row.source, row.source_ref)}</small></td>
@@ -289,13 +289,13 @@ export function RetailLedger({ user }: { user: User }) {
           <td>{row.kind === 'manual' && !row.reversed && canPost && <button className="secondary" onClick={() => setAction({ mode: 'reverse', entry: row })}>عكس</button>}
             {row.reversed ? 'معكوس' : row.reverses_id ? <bdi>#{row.reverses_id}</bdi> : null}</td></tr>)}</tbody>
       </table>{rows.length === 0 && <Notice>لا توجد قيود في هذا الشهر.</Notice>}</div>}
-      {view === 'issues' && <div className="panel table-wrap section-space"><table>
+      {view === 'issues' && <div className="panel table-scroll section-space" tabIndex={0} role="region" aria-label="حركات تحتاج مراجعة"><table>
         <thead><tr><th>حركة المصدر</th><th>التاريخ</th><th>المراجعة</th><th>الإجراء</th></tr></thead>
         <tbody>{(rows as Issue[]).map(row => <tr key={`${row.source}/${row.source_ref}`}><td>{row.description} · {documentLink(row.source, row.source_ref)}</td>
           <td><bdi>{row.posting_day}</bdi></td><td>{issueNames[row.issue]}{row.resolution_reason && <p>{row.resolution_reason}</p>}</td>
           <td>{!row.resolution_reason && activeMonth && canPost && <button className="secondary" onClick={() => setAction({ mode: 'resolve', issue: row })}>معالجة</button>}</td></tr>)}</tbody>
       </table>{rows.length === 0 && <Notice>لا توجد حركات معلّقة للمراجعة.</Notice>}</div>}
-      {view !== 'trial' && pages > 1 && <div className="toolbar section-space"><button className="secondary" disabled={page <= 1}
+      {view !== 'trial' && pages > 1 && <div className="pagination section-space"><button className="secondary" disabled={page <= 1}
         onClick={() => setPage(page - 1)}>السابق</button><span>{integer(page)} / {integer(pages)}</span>
         <button className="secondary" disabled={page >= pages} onClick={() => setPage(page + 1)}>التالي</button></div>}
     </>}

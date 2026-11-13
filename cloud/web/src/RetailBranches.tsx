@@ -129,7 +129,7 @@ export function RetailBranches({ user }: { user: User }) {
       </form>
       {loadError && <Notice error>{loadError} <button className="secondary" onClick={() => refresh(value => value + 1)}>إعادة المحاولة</button></Notice>}
       {loading && <p role="status" className="muted">جارٍ تحميل رصيد الفرع…</p>}
-      {!loading && !loadError && rows.length > 0 && <div className="table-wrap"><table>
+      {!loading && !loadError && rows.length > 0 && <div className="table-scroll" tabIndex={0} role="region" aria-label="أرصدة الفرع"><table>
         <thead><tr><th scope="col">الصنف</th><th scope="col">الباركود</th><th scope="col">الرصيد</th>{canTransfer && <th scope="col">إجراء</th>}</tr></thead>
         <tbody>{rows.map(row => <tr key={row.id}><th scope="row">{row.name}</th><td><bdi>{row.barcode || '—'}</bdi></td>
           <td>{display(row.stock, row.quantity_scale)}</td>{canTransfer && <td><button className="secondary" type="button" disabled={busy}
@@ -163,7 +163,7 @@ export function RetailBranches({ user }: { user: User }) {
       </form>
     </Modal>}
     <section className="panel panel-inner section-space" aria-busy={loading}><h2>أحدث تحويلات الفرع</h2>
-      {!loading && !loadError && (transfers.length ? <div className="table-wrap"><table>
+      {!loading && !loadError && (transfers.length ? <div className="table-scroll" tabIndex={0} role="region" aria-label="سجل التحويلات"><table>
         <thead><tr><th>رقم</th><th>المسار</th><th>الصنف</th><th>الكمية</th><th>السبب</th><th>المسجل</th><th>التاريخ</th></tr></thead>
         <tbody>{transfers.map(row => <tr key={row.id}><td>{row.id}</td><td>{row.from_name} ← {row.to_name}</td><td>{row.product_name}</td>
           <td>{display(row.quantity, row.quantity_scale)}</td><td>{row.reason}</td><td>{row.actor_name}</td><td>{formatDate(row.created_at)}</td></tr>)}</tbody>

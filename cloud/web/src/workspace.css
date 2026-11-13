@@ -43,6 +43,7 @@
   .shift-details summary { cursor: pointer; font-weight: 700; padding: .55rem 0; }
   .shift-review { border-inline-start: 4px solid var(--accent); }
   .ledger-scope { margin-block: .6rem; }
+  .main > .table-scroll { max-inline-size: 100%; }
 }
 
 @layer responsive {
