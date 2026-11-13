@@ -59,7 +59,6 @@ jobs:
       HILAL_RESTORE_AT: ${{ inputs.restored_at }}
       HILAL_RESTORE_SHA256: ${{ inputs.restored_sha256 }}
       HILAL_RESTORE_DATABASE_ID: ${{ inputs.restored_database }}
-      HILAL_PRODUCTION_PAGES_STAGE: ${{ runner.temp }}/hilal-production-pages
       WRANGLER_SEND_METRICS: 'false'
     steps:
       - uses: actions/checkout@v4
@@ -78,6 +77,7 @@ jobs:
         run: node cloud/api/scripts/production-config.mjs --prepare
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.HILAL_PRODUCTION_CF_API_TOKEN }}
+          HILAL_PRODUCTION_PAGES_STAGE: ${{ runner.temp }}/hilal-production-pages
       - name: Record the production recovery bookmark
         working-directory: cloud/api
         shell: bash
@@ -108,7 +108,7 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.HILAL_PRODUCTION_CF_API_TOKEN }}
         run: |
-          node "$GITHUB_WORKSPACE/cloud/api/node_modules/wrangler/bin/wrangler.js" --cwd "$HILAL_PRODUCTION_PAGES_STAGE" \
+          node "$GITHUB_WORKSPACE/cloud/api/node_modules/wrangler/bin/wrangler.js" --cwd "$RUNNER_TEMP/hilal-production-pages" \
             pages deploy ./dist --project-name hilal-store-production-ui --branch cloudflare-full-migration --commit-hash "$GITHUB_SHA"
       - name: Verify Pages and the protected Worker route
         shell: bash
