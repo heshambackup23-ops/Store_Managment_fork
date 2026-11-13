@@ -94,6 +94,7 @@ jobs:
           DB_DATABASE: hilal_migration_restored
         run: |
           evidence="$RUNNER_TEMP/hilal-source-evidence"
+          export APP_KEY="base64:$(openssl rand -base64 32)"
           php ../cloud/api/fixtures/export-original-backup.synthetic.php > "$evidence/hilal-laravel-v2.synthetic.zip"
           unzip -tq "$evidence/hilal-laravel-v2.synthetic.zip"
           unzip -p "$evidence/hilal-laravel-v2.synthetic.zip" pages/catalog.xlsx > "$evidence/hilal-catalog.synthetic.xlsx"

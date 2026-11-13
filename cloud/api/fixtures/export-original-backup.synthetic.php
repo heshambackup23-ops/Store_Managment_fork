@@ -7,5 +7,10 @@ $app->make(Illuminate\Contracts\Console\Kernel::class)->bootstrap();
 if (!$app->environment('testing') || config('database.connections.mysql.database') !== 'hilal_migration_restored') {
     throw new RuntimeException('This fixture must only export the restored synthetic rehearsal database.');
 }
-$request = Illuminate\Http\Request::create('/api/v1/backup/export', 'GET');
-$app->make(App\Http\Controllers\BackupController::class)->apiExport($request)->sendContent();
+try {
+    $request = Illuminate\Http\Request::create('/api/v1/backup/export', 'GET');
+    $app->make(App\Http\Controllers\BackupController::class)->apiExport($request)->sendContent();
+} catch (Throwable $error) {
+    fwrite(STDERR, get_class($error).': '.$error->getMessage().PHP_EOL);
+    exit(1);
+}
